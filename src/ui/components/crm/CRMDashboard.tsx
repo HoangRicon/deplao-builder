@@ -11,6 +11,7 @@ import { useAccountStore } from '@/store/accountStore';
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc from '@/lib/ipc';
 import { CampaignIcon, ChartIcon, ChatIcon, CheckIcon, CloudIcon, EditIcon, GhostIcon, HardDriveIcon, InboxIcon, PlayIcon, SendIcon, ShuffleIcon, TagIcon, UserCheckIcon, UserIcon, UsersIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 // ── Mini stat card ─────────────────────────────────────────────────────────────
 function MiniStat({ icon, label, value, sub, color = 'blue', onClick }: {
@@ -536,7 +537,7 @@ export default function CRMDashboard() {
                 }`}><HardDriveIcon className="w-4 h-4 inline" /> Local</button>
               <button onClick={() => setLabelSubTab('zalo')}
                 className={`px-3 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                  labelSubTab === 'zalo' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+                  labelSubTab === CHANNEL.ZALO ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
                 }`}><CloudIcon className="w-4 h-4 inline" /> Zalo</button>
             </div>
           </div>

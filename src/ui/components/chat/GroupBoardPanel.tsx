@@ -6,6 +6,7 @@ import { useChatStore } from '@/store/chatStore';
 import { useAppStore } from '@/store/appStore';
 import { PollDetailView as SharedPollDetailView } from './PollView';
 import { Spinner } from '@/components/common/PageLoading';
+import { toLocalMediaUrl } from '@/lib/localMedia';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ interface Props {
   onBack: () => void;
   onCreateNote?: () => void;
   onNoteClick?: (note: PinnedNote) => void;
-  onScrollToMsg?: (msgId: string) => void;
+  onScrollToMsg?: (msgId: string) => void | Promise<void>;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -266,11 +267,12 @@ export default function GroupBoardPanel({
 function BoardCard({ item, onNoteClick, onScrollToMsg, zaloId, threadId }: {
   item: BoardItem;
   onNoteClick?: (note: PinnedNote) => void;
-  onScrollToMsg?: (msgId: string) => void;
+  onScrollToMsg?: (msgId: string) => void | Promise<void>;
   zaloId: string;
   threadId: string;
   onUnpin?: (msgId: string) => void;
 }) {
+  const [opening, setOpening] = useState(false);
   if (item.type === 'poll' && item.poll) {
     return <PollBoardCard poll={item.poll} zaloId={zaloId} threadId={threadId} />;
   }
@@ -348,7 +350,7 @@ function BoardCard({ item, onNoteClick, onScrollToMsg, zaloId, threadId }: {
         {pin.preview_image ? (
           <div className="px-4 pb-2">
             <img
-              src={pin.preview_image}
+              src={toLocalMediaUrl(pin.preview_image)}
               alt=""
               className="max-w-[160px] h-24 object-cover rounded-xl"
               onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -362,10 +364,16 @@ function BoardCard({ item, onNoteClick, onScrollToMsg, zaloId, threadId }: {
         <div className="flex items-center justify-between px-4 pb-3 pt-1">
           <span className="text-xs text-gray-400">{formatTime(pin.timestamp)}</span>
           <button
-            onClick={() => onScrollToMsg?.(pin.msg_id)}
-            className="text-xs text-blue-400 hover:text-blue-300 font-semibold transition-colors"
+            disabled={opening}
+            onClick={async () => {
+              if (!onScrollToMsg || opening) return;
+              setOpening(true);
+              try { await onScrollToMsg(pin.msg_id); }
+              finally { setOpening(false); }
+            }}
+            className="text-xs text-blue-400 hover:text-blue-300 disabled:text-gray-500 font-semibold transition-colors"
           >
-            Xem tin nhắn
+            {opening ? 'Đang tải...' : 'Xem tin nhắn'}
           </button>
         </div>
       </div>

@@ -4,6 +4,7 @@ import DataAccessor from '@/lib/data/DataAccessor';
 import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import { Spinner } from '@/components/common/PageLoading';
+import { CHANNEL } from '@/lib/channelHelper';
 
 // ─── Webhook URL field component ─────────────────────────────────────
 function WebhookUrlField({ field, config, workflowId, update }: {
@@ -102,7 +103,7 @@ import { AlertIcon, ArrowDownIcon, BellIcon, BellOffIcon, BookIcon, BotIcon, Cal
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type FieldType = 'text' | 'textarea' | 'select' | 'number' | 'boolean' | 'json' | 'multiline' | 'cron' | 'html' | 'info' | 'label-picker' | 'assistant-picker' | 'contact-picker' | 'file-picker';
+type FieldType = 'text' | 'textarea' | 'select' | 'number' | 'boolean' | 'json' | 'multiline' | 'cron' | 'html' | 'info' | 'label-picker' | 'assistant-picker' | 'integration-picker' | 'contact-picker' | 'file-picker';
 
 interface SelectOption { value: string; label: string }
 
@@ -321,6 +322,23 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
     {
       key: 'labelIds', label: 'Nhãn cần lọc', type: 'label-picker', labelMode: 'multi',
       desc: 'Để trống = kích hoạt với mọi nhãn. Có thể chọn nhiều nhãn - workflow chạy khi bất kỳ nhãn nào được gán/gỡ.',
+    },
+  ],
+  'trigger.telegramCommand': [
+    {
+      key: 'integrationId', label: 'Chọn Bot Telegram', type: 'integration-picker',
+      desc: 'Chọn Bot Telegram đã kết nối trong Settings → Tích hợp.',
+    },
+    {
+      key: 'command', label: 'Lệnh kích hoạt', type: 'text',
+      placeholder: '/baocao',
+      desc: 'Lệnh mà người dùng gửi cho Bot để kích hoạt workflow. Bắt đầu bằng dấu /. Để trống = mọi tin nhắn đều kích hoạt.',
+    },
+    {
+      key: 'chatIdFilter', label: 'Chỉ nhận từ Chat ID cụ thể', type: 'text',
+      placeholder: 'Để trống = nhận từ tất cả',
+      desc: 'Nhập Chat ID nếu chỉ muốn nhận lệnh từ một người hoặc nhóm cụ thể.',
+      advanced: true,
     },
   ],
   'trigger.schedule': [
@@ -1241,9 +1259,14 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
 
   'notify.telegram': [
     {
-      key: 'botToken', label: 'Bot Token', type: 'text',
+      key: 'integrationId', label: 'Chọn Bot Telegram', type: 'integration-picker',
+      desc: 'Chọn Bot Telegram đã kết nối trong Settings → Tích hợp. Nếu chưa có, vào Settings để thêm Bot mới.',
+    },
+    {
+      key: 'botToken', label: 'Bot Token (nếu chưa chọn Bot)', type: 'text',
       placeholder: '7123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw',
-      desc: 'Token của Telegram Bot. Tạo bot miễn phí qua @BotFather trên Telegram → /newbot → sao chép token.',
+      desc: 'Hoặc nhập trực tiếp Bot Token. Ưu tiên sử dụng Bot đã kết nối ở trên.',
+      advanced: true,
     },
     {
       key: 'chatId', label: 'Chat ID nhận tin', type: 'text',
@@ -2109,6 +2132,251 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
       desc: 'Biệt danh mới trong nhóm cho thành viên này.',
     },
   ],
+
+  // ─── Telegram triggers ──────────────────────────────────────────────────────
+  'tg.trigger.message': [
+    {
+      key: 'chatId', label: 'Chỉ nhận từ hội thoại cụ thể', type: 'text',
+      placeholder: 'Để trống = tất cả hội thoại',
+      desc: 'ID hội thoại Telegram muốn lắng nghe. Để trống = nhận từ tất cả.',
+      advanced: true,
+    },
+    {
+      key: 'keyword', label: 'Từ khóa lọc', type: 'text',
+      placeholder: 'Để trống = tất cả tin nhắn',
+      desc: 'Chỉ kích hoạt khi tin nhắn chứa từ khóa này. Nhiều từ khóa cách nhau bằng dấu phẩy.',
+    },
+    {
+      key: 'keywordMode', label: 'Chế độ khớp từ khóa', type: 'select',
+      desc: 'Cách so sánh từ khóa với nội dung tin nhắn.',
+      options: [
+        { value: 'contains_any', label: 'Chứa bất kỳ từ khóa nào' },
+        { value: 'contains_all', label: 'Chứa tất cả từ khóa' },
+        { value: 'exact', label: 'Khớp chính xác' },
+        { value: 'starts_with', label: 'Bắt đầu bằng' },
+      ],
+      advanced: true,
+    },
+    {
+      key: 'ignoreOwn', label: 'Bỏ qua tin nhắn của mình', type: 'boolean',
+      desc: 'Không kích hoạt workflow khi tin nhắn do chính tài khoản gửi.',
+      advanced: true,
+    },
+    {
+      key: 'debounceSeconds', label: 'Chờ gom tin nhắn (giây)', type: 'number',
+      placeholder: '0',
+      desc: 'Chờ N giây sau tin nhắn cuối cùng rồi mới chạy workflow. 0 = chạy ngay mỗi tin.',
+      advanced: true,
+    },
+  ],
+
+  // ─── Telegram Actions ───────────────────────────────────────────────────────
+  'tg.sendMessage': [
+    {
+      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram cần gửi tin nhắn. Dùng {{ }} để chèn dữ liệu động.',
+      templateVars: ['$trigger.chatId', '$trigger.fromId'],
+    },
+    {
+      key: 'message', label: 'Nội dung tin nhắn', type: 'textarea',
+      placeholder: 'Xin chào! Mình có thể giúp gì?',
+      desc: 'Nội dung tin nhắn gửi đi. Dùng {{ }} để chèn dữ liệu động.',
+      templateVars: ['$trigger.fromName', '$trigger.content', '$trigger.chatId'],
+    },
+    {
+      key: 'continueOnError', label: 'Tiếp tục workflow dù gửi thất bại', type: 'boolean',
+      desc: 'Bật nếu muốn các bước sau vẫn chạy ngay cả khi tin nhắn này gửi lỗi.',
+      advanced: true,
+    },
+  ],
+  'tg.sendPhoto': [
+    {
+      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram cần gửi ảnh.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'filePath', label: 'Ảnh cần gửi', type: 'file-picker', fileType: 'image',
+      placeholder: 'https://example.com/image.png',
+      desc: 'Chọn ảnh từ máy tính hoặc nhập URL ảnh trực tiếp.',
+    },
+    {
+      key: 'caption', label: 'Chú thích ảnh', type: 'text',
+      placeholder: 'Để trống nếu không cần chú thích',
+      desc: 'Chú thích hiển thị dưới ảnh. Dùng {{ }} để chèn dữ liệu động.',
+      templateVars: ['$trigger.content'],
+      advanced: true,
+    },
+  ],
+  'tg.sendFile': [
+    {
+      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram cần gửi file.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'filePath', label: 'File cần gửi', type: 'file-picker', fileType: 'file',
+      placeholder: 'Chọn file từ máy tính',
+      desc: 'Chọn file (PDF, Excel, ...) để gửi.',
+    },
+    {
+      key: 'caption', label: 'Chú thích file', type: 'text',
+      placeholder: 'Để trống nếu không cần chú thích',
+      desc: 'Chú thích hiển thị cùng file.',
+      advanced: true,
+    },
+  ],
+  'tg.forwardMessage': [
+    {
+      key: 'fromChatId', label: 'Từ hội thoại', type: 'text',
+      placeholder: 'ID hội thoại nguồn',
+      desc: 'ID hội thoại Telegram chứa tin nhắn cần chuyển tiếp.',
+    },
+    {
+      key: 'toChatId', label: 'Đến hội thoại', type: 'text',
+      placeholder: 'ID hội thoại đích',
+      desc: 'ID hội thoại Telegram nhận tin nhắn chuyển tiếp.',
+    },
+    {
+      key: 'messageId', label: 'ID tin nhắn', type: 'text',
+      placeholder: '{{ $trigger.messageId }}',
+      desc: 'ID tin nhắn cần chuyển tiếp.',
+      templateVars: ['$trigger.messageId'],
+    },
+  ],
+  'tg.deleteMessage': [
+    {
+      key: 'chatId', label: 'Trong hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram chứa tin nhắn cần xóa.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'messageId', label: 'ID tin nhắn cần xóa', type: 'text',
+      placeholder: '{{ $trigger.messageId }}',
+      desc: 'ID tin nhắn Telegram muốn xóa.',
+      templateVars: ['$trigger.messageId'],
+    },
+  ],
+  'tg.editMessage': [
+    {
+      key: 'chatId', label: 'Trong hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram chứa tin nhắn cần chỉnh sửa.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'messageId', label: 'ID tin nhắn cần sửa', type: 'text',
+      placeholder: '{{ $trigger.messageId }}',
+      desc: 'ID tin nhắn Telegram muốn chỉnh sửa.',
+      templateVars: ['$trigger.messageId'],
+    },
+    {
+      key: 'text', label: 'Nội dung mới', type: 'textarea',
+      placeholder: 'Nhập nội dung mới cho tin nhắn...',
+      desc: 'Nội dung sẽ thay thế tin nhắn cũ.',
+    },
+  ],
+  'tg.addReaction': [
+    {
+      key: 'chatId', label: 'Trong hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram chứa tin nhắn cần thả reaction.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'messageId', label: 'ID tin nhắn', type: 'text',
+      placeholder: '{{ $trigger.messageId }}',
+      desc: 'ID tin nhắn Telegram muốn thả reaction.',
+      templateVars: ['$trigger.messageId'],
+    },
+    {
+      key: 'emoji', label: 'Biểu tượng cảm xúc', type: 'select',
+      desc: 'Chọn emoji reaction để thả vào tin nhắn.',
+      options: [
+        { value: '👍', label: 'Like' },
+        { value: '❤️', label: 'Heart' },
+        { value: '🔥', label: 'Fire' },
+        { value: '🥰', label: 'Love' },
+        { value: '😮', label: 'Wow' },
+        { value: '😢', label: 'Sad' },
+        { value: '🎉', label: 'Party' },
+        { value: '👎', label: 'Dislike' },
+        { value: '💩', label: 'Poop' },
+      ],
+    },
+  ],
+  'tg.pinMessage': [
+    {
+      key: 'chatId', label: 'Trong hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram chứa tin nhắn cần ghim.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'messageId', label: 'ID tin nhắn cần ghim', type: 'text',
+      placeholder: '{{ $trigger.messageId }}',
+      desc: 'ID tin nhắn Telegram muốn ghim.',
+      templateVars: ['$trigger.messageId'],
+    },
+  ],
+  'tg.sendPoll': [
+    {
+      key: 'chatId', label: 'Tạo trong hội thoại', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID hội thoại Telegram nơi poll sẽ được tạo.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'question', label: 'Câu hỏi bình chọn', type: 'text',
+      placeholder: 'Bạn thích sản phẩm nào nhất?',
+      desc: 'Nội dung câu hỏi hiển thị trong poll.',
+    },
+    {
+      key: 'options', label: 'Các lựa chọn', type: 'textarea',
+      placeholder: 'Lựa chọn 1\nLựa chọn 2\nLựa chọn 3',
+      desc: 'Mỗi dòng là một lựa chọn. Tối thiểu 2 lựa chọn.',
+    },
+  ],
+  'tg.banMember': [
+    {
+      key: 'chatId', label: 'Trong nhóm', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID nhóm Telegram.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'userId', label: 'Thành viên cần ban', type: 'text',
+      placeholder: '{{ $trigger.fromId }}',
+      desc: 'ID người dùng Telegram muốn khỏi khỏi nhóm.',
+      templateVars: ['$trigger.fromId'],
+    },
+  ],
+  'tg.promoteMember': [
+    {
+      key: 'chatId', label: 'Trong nhóm', type: 'text',
+      placeholder: '{{ $trigger.chatId }}',
+      desc: 'ID nhóm Telegram.',
+      templateVars: ['$trigger.chatId'],
+    },
+    {
+      key: 'userId', label: 'Thành viên', type: 'text',
+      placeholder: '{{ $trigger.fromId }}',
+      desc: 'ID người dùng Telegram muốn thay đổi quyền.',
+      templateVars: ['$trigger.fromId'],
+    },
+    {
+      key: 'isAdmin', label: 'Quyền admin', type: 'select',
+      desc: 'Thăng quyền hoặc hạ quyền admin.',
+      options: [
+        { value: 'true', label: 'Thăng quyền admin' },
+        { value: 'false', label: 'Hạ quyền thành viên' },
+      ],
+    },
+  ],
 };
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -2372,7 +2640,7 @@ function LabelPickerModal({
   const [selectedAccountId, setSelectedAccountId] = React.useState<string>('all');
 
   const localOpts = options.filter(o => o.source === 'local');
-  const zaloOpts = options.filter(o => o.source === 'zalo');
+  const zaloOpts = options.filter(o => o.source === CHANNEL.ZALO);
 
   // Build account lookup map
   const accountMap = React.useMemo(() => {
@@ -2386,7 +2654,7 @@ function LabelPickerModal({
     const currentOpts = activeTab === 'local' ? localOpts : zaloOpts;
 
     // For Zalo: show all accounts that have labels
-    if (activeTab === 'zalo') {
+    if (activeTab === CHANNEL.ZALO) {
       const pageIds = new Set<string>();
       currentOpts.forEach(o => {
         if (o.pageId) pageIds.add(o.pageId);
@@ -2426,7 +2694,7 @@ function LabelPickerModal({
     if (selectedAccountId === 'all') return currentOpts;
 
     // For Zalo: filter by pageId, but include labels without pageId
-    if (activeTab === 'zalo') {
+    if (activeTab === CHANNEL.ZALO) {
       return currentOpts.filter(o => !o.pageId || o.pageId === selectedAccountId);
     }
 
@@ -2581,9 +2849,9 @@ function LabelPickerModal({
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('zalo')}
+                onClick={() => setActiveTab(CHANNEL.ZALO)}
                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 ${
-                  activeTab === 'zalo'
+                  activeTab === CHANNEL.ZALO
                     ? 'border-purple-500 text-purple-400 bg-purple-500/5'
                     : 'border-transparent text-gray-400 hover:text-gray-300 hover:bg-gray-700/30'
                 }`}
@@ -2592,7 +2860,7 @@ function LabelPickerModal({
                 <span>Nhãn Zalo</span>
                 {zaloOpts.length > 0 && (
                   <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    activeTab === 'zalo' ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-700 text-gray-400'
+                    activeTab === CHANNEL.ZALO ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-700 text-gray-400'
                   }`}>
                     {zaloOpts.length}
                   </span>
@@ -4011,6 +4279,20 @@ export default function NodeConfigPanel({ node, nodes, edges, onConfigChange, on
     return () => { cancelled = true; };
   }, [node.type]);
 
+  // ── Load Integration list for integration-picker ───────────────────────
+  useEffect(() => {
+    if (node.type !== 'notify.telegram') return;
+    const load = async () => {
+      try {
+        const res = await ipc.integration?.list();
+        if (res?.success) {
+          (window as any).__integrationList = res.integrations || [];
+        }
+      } catch { /* ignore */ }
+    };
+    load();
+  }, [node.type]);
+
   // ── Backward compat: default aiConfigMode for ai.generateText / ai.classify ──
   useEffect(() => {
     if (node.type !== 'ai.generateText' && node.type !== 'ai.classify') return;
@@ -4216,7 +4498,7 @@ export default function NodeConfigPanel({ node, nodes, edges, onConfigChange, on
           // Tính mode: dynamic → phụ thuộc labelSource
           const pickerMode: 'single' | 'multi' =
             field.labelMode === 'dynamic'
-              ? (config.labelSource === 'zalo' ? 'single' : 'multi')
+              ? (config.labelSource === CHANNEL.ZALO ? 'single' : 'multi')
               : (field.labelMode === 'single' ? 'single' : 'multi');
 
           // Pass ALL labels to picker - user can switch tabs Local/Zalo in modal
@@ -4300,6 +4582,54 @@ export default function NodeConfigPanel({ node, nodes, edges, onConfigChange, on
                       <p className="text-[10px] text-gray-400 truncate">
                         {a.platform?.toUpperCase()} • {a.model}
                       </p>
+                    </div>
+                    {isActive && (
+                      <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+        {/* ── Integration Picker ──────────────────────────────────────── */}
+        {field.type === 'integration-picker' && (() => {
+          const selected = config[field.key] ?? '';
+          // Filter integrations by type hint (e.g., telegram_bot)
+          const integrations = (window as any).__integrationList || [];
+          const telegramBots = integrations.filter((i: any) => i.type === 'telegram_bot' && i.enabled);
+
+          if (telegramBots.length === 0) {
+            return (
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-3 py-3 text-xs">
+                <p className="text-yellow-400 font-medium">⚠️ Chưa có Bot Telegram nào</p>
+                <p className="text-yellow-400/70 mt-1">Vào <b>Settings → Tích hợp</b> để kết nối Bot Telegram trước, sau đó quay lại đây chọn.</p>
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-1.5">
+              {telegramBots.map((i: any) => {
+                const isActive = selected === i.id;
+                return (
+                  <button
+                    key={i.id}
+                    type="button"
+                    onClick={() => update(field.key, isActive ? '' : i.id)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
+                      isActive
+                        ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/30'
+                        : 'bg-gray-800/60 border-gray-700/50 hover:border-gray-600 hover:bg-gray-800'
+                    }`}
+                  >
+                    <span className="text-lg">🤖</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-200 font-medium truncate">{i.name}</p>
+                      <p className="text-[10px] text-gray-400">Telegram Bot</p>
                     </div>
                     {isActive && (
                       <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">

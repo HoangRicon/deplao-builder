@@ -7,6 +7,7 @@ import { showConfirm } from '../../common/ConfirmDialog';
 import AccountSelectorDropdown, { AccountOption } from '../../common/AccountSelectorDropdown';
 import { QuickMessage, LocalMediaFile, fetchZaloQuickMessages, invalidateZaloQuickMessageCache } from '../../chat/QuickMessageManager';
 import { toLocalMediaUrl } from '@/lib/localMedia';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
 import PhoneDisplay from '@/components/common/PhoneDisplay';
 import { AlertIcon, ChartIcon, CheckIcon, ClipboardListIcon, CloudIcon, HardDriveIcon, ImageIcon, InboxIcon, LightningIcon, PluginIcon, PlusIcon, RefreshIcon } from '@/components/common/icons';
 
@@ -714,12 +715,17 @@ export default function QuickMessageSettings({ accounts, filterAccounts, searchT
   const [source, setSource] = useState<QuickMsgSource>('local');
   const [showHelp, setShowHelp] = useState(false);
 
-  // If all selected accounts are Facebook → hide Zalo tab, force Local
-  const allFB = filterAccounts.length > 0 && filterAccounts.every(id => {
+  // Remote quick messages exist only for Zalo. A standalone Telegram/Facebook
+  // settings context must stay on Local instead of loading Zalo data.
+  const hideZaloTab = filterAccounts.length > 0 && filterAccounts.every(id => {
     const acc = accounts.find(a => a.zalo_id === id);
-    return (acc?.channel || 'zalo') === 'facebook';
+    return !isZalo(acc?.channel);
   });
-  const effectiveSource: QuickMsgSource = allFB ? 'local' : source;
+  const effectiveSource: QuickMsgSource = hideZaloTab ? 'local' : source;
+
+  useEffect(() => {
+    if (hideZaloTab && source !== 'local') setSource('local');
+  }, [hideZaloTab, source]);
 
   // ─── State ──────────────────────────────────────────────────────────────
   const [localMessages, setLocalMessages] = useState<LocalQMItem[]>([]);
@@ -788,9 +794,9 @@ export default function QuickMessageSettings({ accounts, filterAccounts, searchT
   useEffect(() => { fetchLocalMessages(); }, []);
 
   useEffect(() => {
-    if (effectiveSource === 'zalo' && activeZaloId && isConnected) {
+    if (effectiveSource === CHANNEL.ZALO && activeZaloId && isConnected) {
       fetchZaloMsgs(activeZaloId);
-    } else if (effectiveSource === 'zalo') {
+    } else if (effectiveSource === CHANNEL.ZALO) {
       setZaloMessages([]);
     }
   }, [source, activeZaloId]);
@@ -962,7 +968,7 @@ export default function QuickMessageSettings({ accounts, filterAccounts, searchT
         <div className="flex bg-gray-800 rounded-lg p-0.5 gap-0.5">
           {([
             { id: 'local' as const, label: 'Local' },
-            ...(!allFB ? [{ id: 'zalo' as const, label: 'Zalo' }] : []),
+            ...(!hideZaloTab ? [{ id: 'zalo' as const, label: 'Zalo' }] : []),
           ] as const).map(src => (
             <button key={src.id} onClick={() => setSource(src.id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap
@@ -989,7 +995,7 @@ export default function QuickMessageSettings({ accounts, filterAccounts, searchT
               Thêm mới
             </button>
           </>)}
-          {effectiveSource === 'zalo' && activeZaloId && (<>
+          {effectiveSource === CHANNEL.ZALO && activeZaloId && (<>
             {zaloMessages.length > 0 && (
               <button onClick={() => setSyncModal(true)}
                 className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 border border-gray-600"><InboxIcon className="w-4 h-4 inline" /> Đồng bộ về Local
@@ -1034,7 +1040,7 @@ export default function QuickMessageSettings({ accounts, filterAccounts, searchT
         )}
 
         {/* Zalo Quick Msgs */}
-        {effectiveSource === 'zalo' && (<>
+        {effectiveSource === CHANNEL.ZALO && (<>
           {!activeZaloId && (
             <EmptyState icon={<CloudIcon className="w-4 h-4" />} title="Chọn đúng 1 tài khoản" subtitle="Vui lòng chọn chính xác 1 tài khoản để xem tin nhắn nhanh trên Zalo." />
           )}

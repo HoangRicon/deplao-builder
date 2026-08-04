@@ -5,6 +5,7 @@ import { useAppStore } from '@/store/appStore';
 import { showConfirm } from '../common/ConfirmDialog';
 import { extractApiError } from '@/utils/apiError';
 import { FolderIcon, GlobeIcon, HardDriveIcon, SettingsIcon, TrashIcon, UserIcon } from '@/components/common/icons';
+import { isFacebook } from '@/lib/channelHelper';
 
 function Section({ children }: { children: React.ReactNode }) {
   return (
@@ -107,8 +108,8 @@ export default function AccountSettings() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm text-gray-200 truncate font-medium">{acc.full_name || acc.zalo_id}</p>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${(acc.channel || 'zalo') === 'facebook' ? 'bg-blue-900/50 text-blue-400' : 'bg-blue-900/50 text-blue-300'}`}>
-                      {(acc.channel || 'zalo') === 'facebook' ? 'FB' : 'Zalo'}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${isFacebook(acc.channel) ? 'bg-blue-900/50 text-blue-400' : 'bg-blue-900/50 text-blue-300'}`}>
+                      {isFacebook(acc.channel) ? 'FB' : 'Zalo'}
                     </span>
                   </div>
                   <p className="text-xs text-gray-400">{acc.zalo_id}</p>

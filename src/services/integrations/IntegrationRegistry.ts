@@ -14,6 +14,7 @@ import { HaravanAdapter } from './adapters/HaravanAdapter';
 import { SapoAdapter } from './adapters/SapoAdapter';
 import { NhanhAdapter } from './adapters/NhanhAdapter';
 import { PancakeAdapter } from './adapters/PancakeAdapter';
+import { TelegramBotAdapter } from './adapters/TelegramBotAdapter';
 
 /** Map of active adapter instances (integrationId → adapter) */
 const adapterInstances = new Map<string, IntegrationAdapter>();
@@ -35,6 +36,7 @@ function createAdapter(config: IntegrationConfig): IntegrationAdapter {
     case 'sapo':     return new SapoAdapter(config);
     case 'nhanh':    return new NhanhAdapter(config);
     case 'pancake':  return new PancakeAdapter(config);
+    case 'telegram_bot': return new TelegramBotAdapter(config);
     default:
       throw new Error(`Loại integration không hỗ trợ: ${config.type}`);
   }

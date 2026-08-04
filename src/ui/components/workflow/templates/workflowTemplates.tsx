@@ -1,6 +1,8 @@
 import React from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { DEFAULT_CONFIGS } from '../workflowConfig';import { AwardIcon, BellIcon, BookIcon, BookmarkIcon, BotIcon, BrainIcon, CalendarIcon, ChartIcon, ChatIcon, CheckIcon, ClipboardListIcon, ClockIcon, CreditCardIcon, CrownIcon, DollarIcon, EditIcon, FileTextIcon, GiftIcon, HardDriveIcon, HomeIcon, ImageIcon, InboxIcon, KeyIcon, LightningIcon, LinkIcon, MaximizeIcon, MegaphoneIcon, MinimizeIcon, PackageIcon, PinIcon, PluginIcon, RefreshIcon, RocketIcon, SendIcon, SettingsIcon, ShieldIcon, ShoppingCartIcon, ShuffleIcon, SmartphoneIcon, StarIcon, TagIcon, TargetIcon, TrendingUpIcon, TruckIcon, UserCheckIcon, UserIcon, UsersIcon, WaveIcon, WifiIcon } from '@/components/common/icons';
+import { DEFAULT_CONFIGS } from '../workflowConfig';
+import { Channel } from '../../../../configs/channelConfig';
+import { AwardIcon, BellIcon, BookIcon, BookmarkIcon, BotIcon, BrainIcon, CalendarIcon, ChartIcon, ChatIcon, CheckIcon, ClipboardListIcon, ClockIcon, CreditCardIcon, CrownIcon, DollarIcon, EditIcon, FileTextIcon, GiftIcon, HardDriveIcon, HomeIcon, ImageIcon, InboxIcon, KeyIcon, LightningIcon, LinkIcon, MaximizeIcon, MegaphoneIcon, MinimizeIcon, PackageIcon, PinIcon, PluginIcon, RefreshIcon, RocketIcon, SendIcon, SettingsIcon, ShieldIcon, ShoppingCartIcon, ShuffleIcon, SmartphoneIcon, StarIcon, TagIcon, TargetIcon, TrendingUpIcon, TruckIcon, UserCheckIcon, UserIcon, UsersIcon, WaveIcon, WifiIcon } from '@/components/common/icons';
 
 
 // ── Template types ─────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ export interface WorkflowTemplate {
   tags: string[];
   icon: string | React.ReactNode;
   difficulty: 'easy' | 'medium' | 'advanced';
-  channel?: 'zalo' | 'facebook';
+  channel?: Channel;
   nodes: TemplateNode[];
   edges: TemplateEdge[];
 }
@@ -2108,5 +2110,827 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       { id: 'e4', source: 'n2', sourceHandle: 'true', target: 'n5' },
     ],
   },
-];
 
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // TELEGRAM TEMPLATES
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  // TG-1. Tự động trả lời tin nhắn Telegram
+  {
+    id: 'tpl-tg-auto-reply',
+    name: 'Tự động trả lời tin nhắn Telegram',
+    description: 'Khi nhận tin nhắn mới trên Telegram, tự động gửi lại câu trả lời. Phù hợp làm thông báo "đã nhận tin" hoặc CSKH cơ bản.',
+    category: 'ban-hang',
+    tags: ['telegram', 'trả lời', 'tự động', 'cơ bản'],
+    icon: <ChatIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn Telegram', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'tg.sendMessage', label: 'Gửi câu trả lời', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Cảm ơn bạn đã nhắn tin! Mình sẽ phản hồi trong thời gian sớm nhất 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-2. Trả lời theo từ khoá Telegram
+  {
+    id: 'tpl-tg-keyword-reply',
+    name: 'Trả lời theo từ khoá (Telegram)',
+    description: 'Phân nhánh theo nội dung tin nhắn Telegram: "giá" → bảng giá, "địa chỉ" → vị trí, còn lại → trả lời mặc định.',
+    category: 'ban-hang',
+    tags: ['telegram', 'từ khoá', 'rẽ nhánh', 'CSKH'],
+    icon: <KeyIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 350, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'logic.if', label: 'Có chứa "giá"?', position: { x: 350, y: 200 },
+        config: { left: '{{ $trigger.content }}', operator: 'contains', right: 'giá' } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi bảng giá', position: { x: 100, y: 380 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '📋 Bảng giá sản phẩm:\n\n• Gói A: 199k/tháng\n• Gói B: 399k/tháng\n• Gói C: 799k/tháng\n\nBạn quan tâm gói nào ạ?' } },
+      { id: 'n4', type: 'logic.if', label: 'Có chứa "địa chỉ"?', position: { x: 600, y: 380 },
+        config: { left: '{{ $trigger.content }}', operator: 'contains', right: 'địa chỉ' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Gửi địa chỉ', position: { x: 400, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '📍 Địa chỉ cửa hàng:\n123 Nguyễn Huệ, Q.1, TP.HCM\n\n⏰ Giờ mở cửa: 8h - 21h hàng ngày' } },
+      { id: 'n6', type: 'tg.sendMessage', label: 'Trả lời mặc định', position: { x: 750, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Cảm ơn bạn đã liên hệ! Nhắn "giá" để xem bảng giá, hoặc "địa chỉ" để biết nơi mua hàng nhé 😊' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', sourceHandle: 'true', target: 'n3' },
+      { id: 'e3', source: 'n2', sourceHandle: 'false', target: 'n4' },
+      { id: 'e4', source: 'n4', sourceHandle: 'true', target: 'n5' },
+      { id: 'e5', source: 'n4', sourceHandle: 'false', target: 'n6' },
+    ],
+  },
+
+  // TG-3. Chào mừng thành viên mới vào nhóm Telegram
+  {
+    id: 'tpl-tg-group-welcome',
+    name: 'Chào mừng thành viên mới (Telegram)',
+    description: 'Khi có tin nhắn trong nhóm Telegram, tự động gửi lời chào. Có thể tuỳ chỉnh để chỉ chào tin đầu tiên.',
+    category: 'quan-ly',
+    tags: ['telegram', 'nhóm', 'chào mừng', 'tự động'],
+    icon: <WaveIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn nhóm', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], ignoreOwn: true } },
+      { id: 'n2', type: 'tg.sendMessage', label: 'Chào mừng', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '👋 Chào mừng {{ $trigger.fromName }} đã tham gia nhóm!\n\nNếu cần hỗ trợ, hãy nhắn tin trực tiếp nhé.' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-4. Chuyển tiếp tin nhắn quan trọng sang Telegram Bot
+  {
+    id: 'tpl-tg-forward-alert',
+    name: 'Chuyển tiếp tin khẩn cấp → Telegram Bot',
+    description: 'Lọc tin nhắn Telegram chứa từ khoá quan trọng ("gấp", "khiếu nại"...) rồi chuyển tiếp sang kênh Telegram Bot để đội ngũ xử lý.',
+    category: 'thong-bao',
+    tags: ['telegram', 'chuyển tiếp', 'thông báo', 'khẩn cấp'],
+    icon: <SmartphoneIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 60 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'gấp,khẩn,khiếu nại', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'data.textFormat', label: 'Soạn nội dung thông báo', position: { x: 300, y: 220 },
+        config: { template: '🚨 TIN NHẮN QUAN TRỌNG\n\n👤 Từ: {{ $trigger.fromName }}\n💬 Nội dung: {{ $trigger.content }}\n⏰ Lúc: {{ $trigger.timestamp }}' } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi thông báo', position: { x: 300, y: 380 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], chatId: '', message: '{{ $node.n2.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+    ],
+  },
+
+  // TG-5. Phân loại tin nhắn bằng AI (Telegram)
+  {
+    id: 'tpl-tg-ai-classify',
+    name: 'Phân loại tin nhắn Telegram bằng AI',
+    description: 'Dùng AI phân loại tin nhắn Telegram thành các nhóm (hỏi giá, đặt hàng, khiếu nại...) rồi trả lời tự động.',
+    category: 'ai',
+    tags: ['telegram', 'AI', 'phân loại', 'tự động'],
+    icon: <BrainIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 350, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'ai.classify', label: 'AI phân loại', position: { x: 350, y: 200 },
+        config: { ...DEFAULT_CONFIGS['ai.classify'], input: '{{ $trigger.content }}', categories: 'hỏi giá,đặt hàng,khiếu nại,hỗ trợ,khác' } },
+      { id: 'n3', type: 'logic.switch', label: 'Xử lý theo loại', position: { x: 350, y: 380 },
+        config: { value: '{{ $node.n2.output.category }}', cases: ['hỏi giá', 'đặt hàng', 'khiếu nại'], defaultLabel: 'khác' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Trả lời hỏi giá', position: { x: 50, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '💰 Dạ đây là bảng giá của shop:\n• Sản phẩm A: 199k\n• Sản phẩm B: 299k\nBạn quan tâm sản phẩm nào ạ?' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Trả lời đặt hàng', position: { x: 250, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🛒 Dạ shop đã ghi nhận yêu cầu đặt hàng. Bạn vui lòng cung cấp:\n1. Tên sản phẩm\n2. Số lượng\n3. Địa chỉ giao hàng' } },
+      { id: 'n6', type: 'tg.sendMessage', label: 'Trả lời khiếu nại', position: { x: 450, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '😔 Dạ shop rất tiếc về trải nghiệm của bạn. Vui lòng mô tả chi tiết vấn đề để shop hỗ trợ kịp thời nhé!' } },
+      { id: 'n7', type: 'tg.sendMessage', label: 'Trả lời mặc định', position: { x: 650, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Cảm ơn bạn đã liên hệ! Shop sẽ phản hồi trong thời gian sớm nhất 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', sourceHandle: 'case_0', target: 'n4' },
+      { id: 'e4', source: 'n3', sourceHandle: 'case_1', target: 'n5' },
+      { id: 'e5', source: 'n3', sourceHandle: 'case_2', target: 'n6' },
+      { id: 'e6', source: 'n3', sourceHandle: 'default', target: 'n7' },
+    ],
+  },
+
+  // TG-6. Gửi file/catalog sản phẩm
+  {
+    id: 'tpl-tg-send-catalog',
+    name: 'Gửi catalog sản phẩm (Telegram)',
+    description: 'Khi khách nhắn "catalog" hoặc "menu", tự động gửi file PDF catalog sản phẩm qua Telegram.',
+    category: 'ban-hang',
+    tags: ['telegram', 'catalog', 'file', 'bán hàng'],
+    icon: <FileTextIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'catalog,menu,sản phẩm', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'tg.sendFile', label: 'Gửi catalog PDF', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.sendFile'], filePath: '', caption: '📦 Đây là catalog sản phẩm mới nhất của shop!' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-7. Poll bình chọn trong nhóm Telegram
+  {
+    id: 'tpl-tg-group-poll',
+    name: 'Tạo bình chọn trong nhóm (Telegram)',
+    description: 'Tạo cuộc bình chọn (poll) trong nhóm Telegram theo lịch hoặc khi nhận lệnh.',
+    category: 'quan-ly',
+    tags: ['telegram', 'poll', 'bình chọn', 'nhóm'],
+    icon: <TargetIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.schedule', label: 'Chạy theo lịch', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['trigger.schedule'], cronExpression: '0 9 * * 1' } },
+      { id: 'n2', type: 'tg.sendPoll', label: 'Tạo bình chọn', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.sendPoll'], chatId: '', question: 'Bạn thích sản phẩm nào nhất tuần này?', options: 'Sản phẩm A\nSản phẩm B\nSản phẩm C' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-8. Ghim tin nhắn quan trọng
+  {
+    id: 'tpl-tg-pin-important',
+    name: 'Tự động ghim tin nhắn quan trọng (Telegram)',
+    description: 'Khi nhận tin nhắn chứa từ khoá quan trọng ("thông báo", "quy định"...), tự động ghim trong hội thoại Telegram.',
+    category: 'quan-ly',
+    tags: ['telegram', 'ghim', 'quản lý', 'tự động'],
+    icon: <PinIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'thông báo,quy định,quan trọng', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'tg.pinMessage', label: 'Ghim tin nhắn', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.pinMessage'] } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-9. Báo cáo hàng ngày qua Telegram
+  {
+    id: 'tpl-tg-daily-report',
+    name: 'Báo cáo hàng ngày qua Telegram',
+    description: 'Mỗi ngày gửi báo cáo tóm tắt qua Telegram. Có thể kết nối với Google Sheets để lấy dữ liệu.',
+    category: 'thong-bao',
+    tags: ['telegram', 'báo cáo', 'lịch', 'hàng ngày'],
+    icon: <ChartIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.schedule', label: 'Chạy hàng ngày', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['trigger.schedule'], cronExpression: '0 18 * * *' } },
+      { id: 'n2', type: 'data.textFormat', label: 'Soạn báo cáo', position: { x: 300, y: 250 },
+        config: { template: '📊 BÁO CÁO NGÀY {{ $trigger.date }}\n\n✅ Công việc hoàn thành: ...\n⏳ Đang xử lý: ...\n📌 Kế hoạch ngày mai: ...' } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi báo cáo', position: { x: 300, y: 420 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], chatId: '', message: '{{ $node.n2.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+    ],
+  },
+
+  // TG-10. AI trợ lý bán hàng Telegram
+  {
+    id: 'tpl-tg-ai-sales',
+    name: 'AI trợ lý bán hàng (Telegram)',
+    description: 'Dùng AI trả lời câu hỏi khách hàng trên Telegram. AI sẽ tư vấn sản phẩm dựa trên nội dung tin nhắn.',
+    category: 'ai',
+    tags: ['telegram', 'AI', 'tư vấn', 'bán hàng'],
+    icon: <BotIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 350, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'ai.generateText', label: 'AI tư vấn', position: { x: 350, y: 200 },
+        config: { ...DEFAULT_CONFIGS['ai.generateText'], systemPrompt: 'Bạn là trợ lý tư vấn bán hàng chuyên nghiệp. Trả lời ngắn gọn, thân thiện, bằng tiếng Việt. Nếu khách hỏi giá, gợi ý sản phẩm phù hợp.', prompt: '{{ $trigger.content }}' } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi trả lời AI', position: { x: 350, y: 380 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '{{ $node.n2.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+    ],
+  },
+
+  // TG-11. Chặn spam trong nhóm Telegram
+  {
+    id: 'tpl-tg-block-spam',
+    name: 'Chặn spam trong nhóm (Telegram)',
+    description: 'Tự động ban thành viên gửi tin nhắn chứa từ khoá spam ("casino", "crypto", "kiếm tiền online"...).',
+    category: 'quan-ly',
+    tags: ['telegram', 'spam', 'ban', 'nhóm', 'an toàn'],
+    icon: <ShieldIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn nhóm', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'casino,crypto,kiếm tiền online,đầu tư', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'tg.deleteMessage', label: 'Xóa tin nhắn spam', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.deleteMessage'] } },
+      { id: 'n3', type: 'tg.banMember', label: 'Ban thành viên', position: { x: 300, y: 420 },
+        config: { ...DEFAULT_CONFIGS['tg.banMember'] } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Thông báo nhóm', position: { x: 300, y: 590 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🚫 Đã xóa tin nhắn spam và ban thành viên vi phạm.' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-12. Webhook → Gửi tin Telegram
+  {
+    id: 'tpl-tg-webhook-send',
+    name: 'Webhook → Gửi tin nhắn Telegram',
+    description: 'Nhận dữ liệu từ webhook bên ngoài (POS, CRM...) rồi gửi tin nhắn Telegram đến người nhận được chỉ định.',
+    category: 'webhook',
+    tags: ['telegram', 'webhook', 'API', 'tích hợp'],
+    icon: <LinkIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.webhook', label: 'Webhook bên ngoài', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['trigger.webhook'] } },
+      { id: 'n2', type: 'logic.if', label: 'Có chatId không?', position: { x: 300, y: 220 },
+        config: { left: '{{ $trigger.body.chatId }}', operator: 'equals', right: '' } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi tin Telegram', position: { x: 150, y: 400 },
+        config: { chatId: '{{ $trigger.body.chatId }}', message: '{{ $trigger.body.message }}' } },
+      { id: 'n4', type: 'output.log', label: 'Ghi log lỗi', position: { x: 500, y: 400 },
+        config: { message: 'Webhook thiếu chatId', level: 'error' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', sourceHandle: 'false', target: 'n3' },
+      { id: 'e3', source: 'n2', sourceHandle: 'true', target: 'n4' },
+    ],
+  },
+
+  // TG-13. Ghi đơn hàng vào Google Sheets (Telegram)
+  {
+    id: 'tpl-tg-order-to-sheets',
+    name: 'TG: Ghi đơn hàng vào Google Sheets',
+    description: 'Khi nhận tin nhắn Telegram chứa "đặt hàng", tự động ghi thông tin vào Google Sheets và xác nhận đơn.',
+    category: 'quan-ly',
+    tags: ['telegram', 'Google Sheets', 'đơn hàng', 'CRM'],
+    icon: <ChartIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận "đặt hàng"', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'đặt hàng,mua hàng,order', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'data.textFormat', label: 'Chuẩn bị dữ liệu', position: { x: 300, y: 200 },
+        config: { template: '{{ $trigger.fromName }}\t{{ $trigger.content }}\t{{ $trigger.chatId }}\t{{ $trigger.timestamp }}' } },
+      { id: 'n3', type: 'sheets.appendRow', label: 'Ghi vào Google Sheets', position: { x: 300, y: 360 },
+        config: { spreadsheetId: '', sheetName: 'Đơn hàng', values: '{{ $node.n2.output }}', serviceAccountPath: '' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Xác nhận đơn hàng', position: { x: 300, y: 520 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '✅ Đã nhận đơn hàng của bạn!\n\nMình sẽ xác nhận và liên hệ lại trong 15 phút nhé. Cảm ơn bạn! 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-14. Auto Reaction + Cảm ơn khi được react (Telegram)
+  {
+    id: 'tpl-tg-reaction-thanks',
+    name: 'TG: Tự động cảm ơn khi được react',
+    description: 'Khi ai đó react tin nhắn Telegram của bạn, tự động gửi lời cảm ơn ngẫu nhiên.',
+    category: 'marketing',
+    tags: ['telegram', 'react', 'cảm ơn', 'tương tác'],
+    icon: '❤️',
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 80 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'tg.addReaction', label: 'Thả ❤️ reaction', position: { x: 300, y: 230 },
+        config: { ...DEFAULT_CONFIGS['tg.addReaction'], emoji: '❤️' } },
+      { id: 'n3', type: 'data.randomPick', label: 'Chọn câu cảm ơn', position: { x: 300, y: 380 },
+        config: { options: 'Cảm ơn bạn nhé! 😊\nThank you! 🙏\nVui quá, cảm ơn bạn! ❤️\nCảm ơn bạn đã quan tâm! 🌟' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Gửi lời cảm ơn', position: { x: 300, y: 530 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '{{ $node.n3.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-15. Gửi tin hàng loạt từ Google Sheets (Telegram)
+  {
+    id: 'tpl-tg-bulk-sheets',
+    name: 'TG: Gửi tin hàng loạt từ Google Sheets',
+    description: 'Đọc danh sách khách hàng từ Google Sheets, lặp qua từng dòng để gửi tin nhắn Telegram cá nhân hoá.',
+    category: 'marketing',
+    tags: ['telegram', 'hàng loạt', 'Google Sheets', 'marketing'],
+    icon: <SendIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.manual', label: 'Chạy thủ công', position: { x: 300, y: 50 },
+        config: {} },
+      { id: 'n2', type: 'sheets.readValues', label: 'Đọc danh sách KH', position: { x: 300, y: 200 },
+        config: { spreadsheetId: '', range: 'KhachHang!A2:C100', serviceAccountPath: '' } },
+      { id: 'n3', type: 'logic.forEach', label: 'Lặp từng khách', position: { x: 300, y: 360 },
+        config: { array: '{{ $node.n2.output }}', itemVariable: 'customer' } },
+      { id: 'n4', type: 'data.textFormat', label: 'Soạn tin cá nhân', position: { x: 300, y: 520 },
+        config: { template: 'Xin chào {{ $item.customer[0] }}! 👋\n\n🎁 Chúng tôi có chương trình ưu đãi đặc biệt dành riêng cho bạn. Nhắn "ưu đãi" để biết thêm chi tiết nhé!' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Gửi tin nhắn', position: { x: 300, y: 680 },
+        config: { chatId: '{{ $item.customer[1] }}', message: '{{ $node.n4.output }}' } },
+      { id: 'n6', type: 'logic.wait', label: 'Chờ 5s (tránh spam)', position: { x: 300, y: 830 },
+        config: { delaySeconds: 5 } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+      { id: 'e5', source: 'n5', target: 'n6' },
+    ],
+  },
+
+  // TG-16. Thông báo đa kênh: Telegram → Discord + Email
+  {
+    id: 'tpl-tg-multi-notify',
+    name: 'TG: Thông báo đa kênh (Discord + Email)',
+    description: 'Nhận tin nhắn Telegram quan trọng, đồng thời gửi thông báo vào Discord Webhook và Email.',
+    category: 'thong-bao',
+    tags: ['telegram', 'discord', 'email', 'đa kênh'],
+    icon: <BellIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'quan trọng,gấp,khiếu nại', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'data.textFormat', label: 'Soạn nội dung', position: { x: 300, y: 200 },
+        config: { template: '📩 Tin nhắn quan trọng từ {{ $trigger.fromName }}:\n{{ $trigger.content }}' } },
+      { id: 'n3', type: 'notify.discord', label: 'Gửi vào Discord', position: { x: 100, y: 380 },
+        config: { webhookUrl: '', message: '{{ $node.n2.output }}', username: 'Telegram Alert' } },
+      { id: 'n4', type: 'notify.email', label: 'Gửi Email', position: { x: 500, y: 380 },
+        config: { ...DEFAULT_CONFIGS['notify.email'], subject: '🚨 Tin nhắn khẩn từ Telegram', body: '{{ $node.n2.output }}' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Phản hồi khách', position: { x: 300, y: 560 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Cảm ơn bạn! Mình đã nhận tin và sẽ phản hồi sớm nhất 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n2', target: 'n4' },
+      { id: 'e4', source: 'n2', target: 'n5' },
+    ],
+  },
+
+  // TG-17. Trả lời tự động ngoài giờ (Telegram)
+  {
+    id: 'tpl-tg-off-hours',
+    name: 'TG: Trả lời tự động ngoài giờ',
+    description: 'Tự động phát hiện tin nhắn Telegram ngoài giờ hành chính (sau 18h) và gửi thông báo sẽ phản hồi ngày hôm sau.',
+    category: 'ban-hang',
+    tags: ['telegram', 'ngoài giờ', 'CSKH', 'tự động'],
+    icon: <MinimizeIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], ignoreOwn: true } },
+      { id: 'n2', type: 'data.dateFormat', label: 'Lấy giờ hiện tại', position: { x: 300, y: 200 },
+        config: { format: 'time' } },
+      { id: 'n3', type: 'logic.if', label: 'Ngoài giờ làm việc?', position: { x: 300, y: 350 },
+        config: { left: '{{ $node.n2.output }}', operator: 'greater_than', right: '18:00' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Thông báo ngoài giờ', position: { x: 100, y: 520 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🌙 Xin chào! Hiện tại đã ngoài giờ làm việc.\n\n⏰ Giờ hỗ trợ: 8h - 18h (T2 - T7)\n\nMình sẽ phản hồi bạn sớm nhất vào ngày làm việc tiếp theo nhé! 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', sourceHandle: 'true', target: 'n4' },
+    ],
+  },
+
+  // TG-18. Chăm sóc sau mua hàng (Telegram)
+  {
+    id: 'tpl-tg-post-purchase',
+    name: 'TG: Chăm sóc sau mua hàng (2 ngày)',
+    description: 'Khi gắn nhãn "Đã mua" cho khách Telegram, chờ 2 ngày rồi gửi tin nhắn hỏi thăm trải nghiệm sản phẩm.',
+    category: 'ban-hang',
+    tags: ['telegram', 'chăm sóc', 'sau mua', 'follow-up'],
+    icon: <GiftIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.labelAssigned', label: 'Khi gắn nhãn "Đã mua"', position: { x: 300, y: 60 },
+        config: { action: 'assigned', labelSource: 'any', labelIds: [] } },
+      { id: 'n2', type: 'logic.wait', label: 'Chờ 2 ngày', position: { x: 300, y: 210 },
+        config: { delaySeconds: 172800 } },
+      { id: 'n3', type: 'tg.sendMessage', label: 'Gửi tin hỏi thăm', position: { x: 300, y: 370 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Xin chào! 😊\n\nMình muốn hỏi thăm bạn đã nhận được hàng chưa ạ? Sản phẩm dùng có ổn không?\n\nNếu cần hỗ trợ gì, cứ nhắn mình nhé! 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+    ],
+  },
+
+  // TG-19. Follow-up sau 4 giờ chưa phản hồi (Telegram)
+  {
+    id: 'tpl-tg-followup-4h',
+    name: 'TG: Follow-up sau 4 giờ chưa phản hồi',
+    description: 'Khi gắn nhãn "Chờ phản hồi" trên Telegram, chờ 4 giờ rồi tự động gửi tin nhắc nhở nhẹ nhàng.',
+    category: 'ban-hang',
+    tags: ['telegram', 'follow-up', 'nhắc nhở', '4 giờ'],
+    icon: '⏳',
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.labelAssigned', label: 'Khi gắn nhãn "Chờ phản hồi"', position: { x: 300, y: 60 },
+        config: { action: 'assigned', labelSource: 'any', labelIds: [] } },
+      { id: 'n2', type: 'logic.wait', label: 'Chờ 4 giờ', position: { x: 300, y: 210 },
+        config: { delaySeconds: 14400 } },
+      { id: 'n3', type: 'data.randomPick', label: 'Chọn câu nhắc', position: { x: 300, y: 360 },
+        config: { options: 'Chào bạn! Mình gửi tin nhắn trước đó, không biết bạn đã xem chưa ạ? 😊\nHi bạn! Mình muốn hỏi thăm, bạn có cần tư vấn thêm không ạ? 🙏\nBạn ơi, mình vẫn sẵn sàng hỗ trợ bạn nếu cần nhé! 💪' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Gửi tin follow-up', position: { x: 300, y: 510 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '{{ $node.n3.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-20. Chuỗi chăm sóc 3 bước (Telegram)
+  {
+    id: 'tpl-tg-nurture-3step',
+    name: 'TG: Chuỗi chăm sóc 3 bước (1h → 1 ngày → 3 ngày)',
+    description: 'Khi gắn nhãn "Khách mới" trên Telegram, tự động gửi 3 tin nhắn chăm sóc theo lịch.',
+    category: 'ban-hang',
+    tags: ['telegram', 'chuỗi', 'nurturing', '3 bước', 'drip'],
+    icon: <InboxIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.labelAssigned', label: 'Khi gắn nhãn "Khách mới"', position: { x: 300, y: 50 },
+        config: { action: 'assigned', labelSource: 'any', labelIds: [] } },
+      { id: 'n2', type: 'logic.wait', label: 'Chờ 1 giờ', position: { x: 300, y: 180 },
+        config: { delaySeconds: 3600 } },
+      { id: 'n3', type: 'tg.sendMessage', label: '📩 Bước 1: Chào & giới thiệu', position: { x: 300, y: 310 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Chào bạn! 👋\n\nCảm ơn bạn đã quan tâm đến sản phẩm của mình. Mình xin giới thiệu nhanh:\n\n✅ Sản phẩm chất lượng cao\n✅ Giá cả hợp lý\n✅ Hỗ trợ 24/7\n\nBạn muốn tìm hiểu thêm về sản phẩm nào ạ?' } },
+      { id: 'n4', type: 'logic.wait', label: 'Chờ 1 ngày', position: { x: 300, y: 450 },
+        config: { delaySeconds: 86400 } },
+      { id: 'n5', type: 'tg.sendMessage', label: '📩 Bước 2: Chia sẻ giá trị', position: { x: 300, y: 580 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Hi bạn! 😊\n\n📖 Mình muốn chia sẻ thêm:\n\n🔹 Hơn 1000+ khách hàng hài lòng\n🔹 Đánh giá 5⭐ trên các nền tảng\n🔹 Chính sách đổi trả 30 ngày\n\nBạn có câu hỏi gì không?' } },
+      { id: 'n6', type: 'logic.wait', label: 'Chờ 3 ngày', position: { x: 300, y: 720 },
+        config: { delaySeconds: 259200 } },
+      { id: 'n7', type: 'tg.sendMessage', label: '📩 Bước 3: Ưu đãi đặc biệt', position: { x: 300, y: 860 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🎉 Tin vui dành riêng cho bạn!\n\n🎁 Ưu đãi GIẢM 20% cho đơn hàng đầu tiên!\n⏰ Chỉ áp dụng trong 48 giờ tới\n\n👉 Nhắn "ĐẶT HÀNG" để mình hỗ trợ ngay nhé!' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+      { id: 'e5', source: 'n5', target: 'n6' },
+      { id: 'e6', source: 'n6', target: 'n7' },
+    ],
+  },
+
+  // TG-21. Tư vấn bán hàng đa nhánh (Telegram)
+  {
+    id: 'tpl-tg-sales-consultant',
+    name: 'TG: Tư vấn bán hàng đa nhánh',
+    description: 'Phân loại tin nhắn Telegram: hỏi giá → bảng giá, muốn đặt → form đặt hàng, cần hỗ trợ → chuyển tiếp CSKH.',
+    category: 'ban-hang',
+    tags: ['telegram', 'bán hàng', 'tư vấn', 'phân luồng', 'CSKH'],
+    icon: <ShoppingCartIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 350, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'tg.addReaction', label: 'Thả 👀 reaction', position: { x: 350, y: 200 },
+        config: { ...DEFAULT_CONFIGS['tg.addReaction'], emoji: '👀' } },
+      { id: 'n3', type: 'logic.switch', label: 'Phân loại ý định', position: { x: 350, y: 350 },
+        config: { value: '{{ $trigger.content }}', cases: [['giá, bảng giá, bao nhiêu', 'GIÁ'], ['đặt, mua, order, ship', 'ĐẶT'], ['hỗ trợ, lỗi, không được', 'HỖ TRỢ']], defaultLabel: 'KHÁC' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Gửi bảng giá', position: { x: 30, y: 530 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '📋 Bảng giá sản phẩm:\n\n🥇 Gói Cơ bản: 199k/tháng\n🥈 Gói Nâng cao: 399k/tháng\n🥉 Gói Pro: 799k/tháng\n\n💝 Đặt ngay hôm nay giảm thêm 10%!' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Xác nhận đặt hàng', position: { x: 350, y: 530 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🎉 Cảm ơn bạn đã quan tâm!\n\nĐể đặt hàng, vui lòng cho mình biết:\n1️⃣ Sản phẩm muốn mua\n2️⃣ Số lượng\n3️⃣ Địa chỉ nhận hàng\n4️⃣ SĐT liên hệ' } },
+      { id: 'n6', type: 'tg.sendMessage', label: 'Trả lời mặc định', position: { x: 670, y: 530 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: 'Xin chào! 👋\n\nMình có thể giúp gì cho bạn?\n\n💬 Nhắn "GIÁ" để xem bảng giá\n📦 Nhắn "ĐẶT" để đặt hàng\n🆘 Nhắn "HỖ TRỢ" nếu cần giúp đỡ' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', sourceHandle: 'case_0', target: 'n4' },
+      { id: 'e4', source: 'n3', sourceHandle: 'case_1', target: 'n5' },
+      { id: 'e5', source: 'n3', sourceHandle: 'default', target: 'n6' },
+    ],
+  },
+
+  // TG-22. Khảo sát + AI phân tích cảm xúc (Telegram)
+  {
+    id: 'tpl-tg-survey-ai',
+    name: 'TG: Khảo sát ý kiến + AI phân tích',
+    description: 'Gửi khảo sát NPS qua Telegram, dùng AI phân tích cảm xúc (tích cực/tiêu cực) và phản hồi phù hợp.',
+    category: 'marketing',
+    tags: ['telegram', 'khảo sát', 'AI', 'phân tích', 'NPS'],
+    icon: <ClipboardListIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Tin nhắn phản hồi', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'ai.classify', label: 'Phân loại cảm xúc', position: { x: 300, y: 200 },
+        config: { ...DEFAULT_CONFIGS['ai.classify'], categories: 'tích cực,tiêu cực,trung lập', input: '{{ $trigger.content }}' } },
+      { id: 'n3', type: 'logic.switch', label: 'Theo cảm xúc', position: { x: 300, y: 370 },
+        config: { value: '{{ $node.n2.output }}', cases: [['tích cực', 'VUI'], ['tiêu cực', 'BUỒN']], defaultLabel: 'THƯỜNG' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Cảm ơn (tích cực)', position: { x: 30, y: 540 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '🥰 Cảm ơn bạn rất nhiều vì phản hồi tích cực!\n\nChúng tôi rất vui khi được phục vụ bạn! ❤️' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Xin lỗi (tiêu cực)', position: { x: 300, y: 540 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '😔 Chúng tôi rất tiếc vì trải nghiệm chưa tốt.\n\nCho mình thêm thông tin chi tiết để cải thiện nhé? Hoặc gọi hotline 1900xxxx.' } },
+      { id: 'n6', type: 'tg.addReaction', label: 'Reaction 💙', position: { x: 570, y: 540 },
+        config: { ...DEFAULT_CONFIGS['tg.addReaction'], emoji: '💙' } },
+      { id: 'n7', type: 'output.log', label: 'Ghi log', position: { x: 300, y: 700 },
+        config: { message: 'Feedback từ {{ $trigger.fromName }}: {{ $trigger.content }} — cảm xúc: {{ $node.n2.output }}', level: 'info' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', sourceHandle: 'case_0', target: 'n4' },
+      { id: 'e4', source: 'n3', sourceHandle: 'case_1', target: 'n5' },
+      { id: 'e5', source: 'n3', sourceHandle: 'default', target: 'n6' },
+      { id: 'e6', source: 'n6', target: 'n7' },
+    ],
+  },
+
+  // TG-23. Xử lý đơn hàng với biến (Telegram)
+  {
+    id: 'tpl-tg-order-processor',
+    name: 'TG: Xử lý đơn hàng tự động',
+    description: 'Khi khách gửi mã đơn hàng qua Telegram, lưu vào biến, tạo nội dung xác nhận động và ghim để theo dõi.',
+    category: 'quan-ly',
+    tags: ['telegram', 'đơn hàng', 'xử lý', 'biến', 'tự động'],
+    icon: <PackageIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'logic.if', label: 'Có mã đơn?', position: { x: 300, y: 200 },
+        config: { left: '{{ $trigger.content }}', operator: 'matches', right: '#DH[0-9]+' } },
+      { id: 'n3', type: 'logic.setVariable', label: 'Lưu mã đơn', position: { x: 300, y: 360 },
+        config: { name: 'orderCode', value: '{{ $trigger.content }}' } },
+      { id: 'n4', type: 'data.textFormat', label: 'Soạn xác nhận', position: { x: 300, y: 520 },
+        config: { template: '✅ Xác nhận đã nhận đơn hàng\n\nMã đơn: {{ $node.n3.output }}\nKhách hàng: {{ $trigger.fromName }}\n\n📌 Đơn hàng đang được xử lý!' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Gửi xác nhận', position: { x: 300, y: 680 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '{{ $node.n4.output }}' } },
+      { id: 'n6', type: 'tg.pinMessage', label: 'Ghim tin nhắn', position: { x: 300, y: 840 },
+        config: { ...DEFAULT_CONFIGS['tg.pinMessage'] } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', sourceHandle: 'true', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+      { id: 'e5', source: 'n5', target: 'n6' },
+    ],
+  },
+
+  // TG-24. Broadcast theo lịch từ Google Sheets (Telegram)
+  {
+    id: 'tpl-tg-scheduled-broadcast',
+    name: 'TG: Gửi broadcast theo lịch từ Sheets',
+    description: 'Đọc danh sách người nhận từ Google Sheets và gửi tin nhắn Telegram hàng loạt vào khung giờ cố định.',
+    category: 'marketing',
+    tags: ['telegram', 'broadcast', 'lập lịch', 'marketing', 'sheets'],
+    icon: <CalendarIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.schedule', label: '08:00 mỗi ngày', position: { x: 300, y: 50 },
+        config: { cronExpression: '0 8 * * *', timezone: 'Asia/Ho_Chi_Minh' } },
+      { id: 'n2', type: 'sheets.readValues', label: 'Đọc DS từ Sheets', position: { x: 300, y: 200 },
+        config: { spreadsheetId: '', range: 'DSGui!A2:C100', serviceAccountPath: '' } },
+      { id: 'n3', type: 'data.textFormat', label: 'Soạn nội dung', position: { x: 300, y: 360 },
+        config: { template: '🌞 Chào bạn!\n\nChương trình khuyến mãi hôm nay:\n• Giảm 20% tất cả sản phẩm\n• Miễn phí giao hàng\n\nLH: 0123.456.789 để đặt ngay!' } },
+      { id: 'n4', type: 'logic.forEach', label: 'Gửi từng người', position: { x: 300, y: 520 },
+        config: { array: '{{ $node.n2.output }}', itemVariable: 'kh' } },
+      { id: 'n5', type: 'tg.sendMessage', label: 'Gửi tin', position: { x: 300, y: 680 },
+        config: { chatId: '{{ $item.kh[1] }}', message: '{{ $node.n3.output }}' } },
+      { id: 'n6', type: 'logic.wait', label: 'Chờ 10s', position: { x: 300, y: 830 },
+        config: { delaySeconds: 10 } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+      { id: 'e5', source: 'n5', target: 'n6' },
+    ],
+  },
+
+  // TG-25. Chuyển tiếp vào nhóm nội bộ (Telegram)
+  {
+    id: 'tpl-tg-forward-internal',
+    name: 'TG: Chuyển tiếp tin vào nhóm nội bộ',
+    description: 'Khi khách Telegram gửi tin chứa "hỗ trợ" hoặc "khiếu nại", tự động chuyển tiếp vào nhóm nội bộ để xử lý.',
+    category: 'ban-hang',
+    tags: ['telegram', 'chuyển tiếp', 'nội bộ', 'CSKH'],
+    icon: <SendIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'logic.if', label: 'Cần hỗ trợ?', position: { x: 300, y: 200 },
+        config: { left: '{{ $trigger.content }}', operator: 'matches_any', right: 'hỗ trợ, khiếu nại, complaint, support' } },
+      { id: 'n3', type: 'tg.forwardMessage', label: 'Forward vào nhóm', position: { x: 300, y: 360 },
+        config: { ...DEFAULT_CONFIGS['tg.forwardMessage'], fromChatId: '{{ $trigger.chatId }}', toChatId: '' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Gửi xác nhận', position: { x: 300, y: 520 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '📩 Yêu cầu của bạn đã được chuyển đến đội ngũ hỗ trợ. Chúng tôi sẽ phản hồi sớm nhất!\n\nThời gian xử lý dự kiến: 30 phút.' } },
+      { id: 'n5', type: 'tg.addReaction', label: 'Reaction ✅', position: { x: 300, y: 680 },
+        config: { ...DEFAULT_CONFIGS['tg.addReaction'], emoji: '✅' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', sourceHandle: 'true', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+      { id: 'e4', source: 'n4', target: 'n5' },
+    ],
+  },
+
+  // TG-26. AI đánh dấu đã đọc + trả lời thông minh (Telegram)
+  {
+    id: 'tpl-tg-mark-read-ai',
+    name: 'TG: Đánh dấu đã đọc + AI trả lời',
+    description: 'Đánh dấu đã đọc tin nhắn Telegram, thả reaction, sau đó dùng AI tạo câu trả lời thông minh.',
+    category: 'ai',
+    tags: ['telegram', 'AI', 'đã đọc', 'reaction', 'thông minh'],
+    icon: <BotIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'tg.addReaction', label: 'Reaction 👍', position: { x: 300, y: 200 },
+        config: { ...DEFAULT_CONFIGS['tg.addReaction'], emoji: '👍' } },
+      { id: 'n3', type: 'ai.generateText', label: 'AI sinh câu trả lời', position: { x: 300, y: 360 },
+        config: { ...DEFAULT_CONFIGS['ai.generateText'], prompt: 'Khách hàng vừa gửi tin nhắn: "{{ $trigger.content }}"\n\nHãy trả lời một cách thân thiện, chuyên nghiệp bằng tiếng Việt.' } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Gửi câu trả lời', position: { x: 300, y: 530 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '{{ $node.n3.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-27. Gọi API bên ngoài khi nhận tin (Telegram)
+  {
+    id: 'tpl-tg-api-integration',
+    name: 'TG: Gọi API bên ngoài khi nhận tin',
+    description: 'Khi nhận tin nhắn Telegram, gọi API/CRM bên ngoài để đồng bộ dữ liệu rồi trả kết quả cho khách.',
+    category: 'nang-cao',
+    tags: ['telegram', 'API', 'webhook', 'tích hợp', 'HTTP'],
+    icon: <LinkIcon className="w-4 h-4" />,
+    difficulty: 'advanced',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'] } },
+      { id: 'n2', type: 'data.textFormat', label: 'Tạo request body', position: { x: 300, y: 200 },
+        config: { template: '{"from": "{{ $trigger.fromName }}", "chatId": "{{ $trigger.chatId }}", "message": "{{ $trigger.content }}"}' } },
+      { id: 'n3', type: 'output.httpRequest', label: 'Gọi API', position: { x: 300, y: 370 },
+        config: { method: 'POST', url: 'https://your-api.com/webhook', headers: '{"Content-Type": "application/json"}', body: '{{ $node.n2.output }}', timeout: 10000 } },
+      { id: 'n4', type: 'tg.sendMessage', label: 'Phản hồi khách', position: { x: 300, y: 540 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], message: '✅ Đã xử lý yêu cầu của bạn!\n\nKết quả: {{ $node.n3.output }}' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+
+  // TG-28. Gửi ảnh sản phẩm khi khách hỏi (Telegram)
+  {
+    id: 'tpl-tg-send-product-image',
+    name: 'TG: Gửi ảnh sản phẩm theo từ khoá',
+    description: 'Khi khách nhắn tên sản phẩm trên Telegram, tự động gửi ảnh kèm mô tả và giá.',
+    category: 'ban-hang',
+    tags: ['telegram', 'ảnh', 'sản phẩm', 'bán hàng'],
+    icon: <ImageIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'sản phẩm,sp,product', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'tg.sendPhoto', label: 'Gửi ảnh sản phẩm', position: { x: 300, y: 220 },
+        config: { ...DEFAULT_CONFIGS['tg.sendPhoto'], filePath: '', caption: '📦 Sản phẩm hot nhất tuần!\n\n💰 Giá: 299.000đ\n⭐ Đánh giá: 4.8/5\n\nNhắn "ĐẶT" để mua ngay!' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-29. Nhắc nhở họp hàng tuần (Telegram)
+  {
+    id: 'tpl-tg-weekly-meeting',
+    name: 'TG: Nhắc nhở họp hàng tuần',
+    description: 'Gửi tin nhắn nhắc nhở họp vào nhóm Telegram mỗi thứ Hai lúc 8:30 sáng.',
+    category: 'quan-ly',
+    tags: ['telegram', 'nhắc nhở', 'họp', 'hàng tuần'],
+    icon: <CalendarIcon className="w-4 h-4" />,
+    difficulty: 'easy',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'trigger.schedule', label: 'T2 8:30 sáng', position: { x: 300, y: 80 },
+        config: { cronExpression: '30 8 * * 1', timezone: 'Asia/Ho_Chi_Minh' } },
+      { id: 'n2', type: 'tg.sendMessage', label: 'Nhắc họp', position: { x: 300, y: 250 },
+        config: { ...DEFAULT_CONFIGS['tg.sendMessage'], chatId: '', message: '📋 NHẮC NHỞ HỌP\n\n⏰ Thời gian: 9:00 sáng nay\n📍 Địa điểm: Phòng họp A\n📌 Chủ đề: Báo cáo tuần\n\nMọi người vui lòng đúng giờ nhé! 🙏' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+    ],
+  },
+
+  // TG-30. Tự động xoá tin nhắn spam sau 1 phút (Telegram)
+  {
+    id: 'tpl-tg-auto-delete-spam',
+    name: 'TG: Tự động xoá tin nhắn spam',
+    description: 'Phát hiện tin nhắn spam trong nhóm Telegram (quảng cáo, link lạ) và tự động xoá sau 1 phút.',
+    category: 'quan-ly',
+    tags: ['telegram', 'spam', 'xoá', 'nhóm', 'an toàn'],
+    icon: <ShieldIcon className="w-4 h-4" />,
+    difficulty: 'medium',
+    channel: 'telegram_user' as Channel,
+    nodes: [
+      { id: 'n1', type: 'tg.trigger.message', label: 'Khi nhận tin nhắn nhóm', position: { x: 300, y: 50 },
+        config: { ...DEFAULT_CONFIGS['tg.trigger.message'], keyword: 'http://,https://,bit.ly,t.me/,quảng cáo', keywordMode: 'contains_any' } },
+      { id: 'n2', type: 'logic.wait', label: 'Chờ 1 phút', position: { x: 300, y: 200 },
+        config: { delaySeconds: 60 } },
+      { id: 'n3', type: 'tg.deleteMessage', label: 'Xoá tin nhắn spam', position: { x: 300, y: 360 },
+        config: { ...DEFAULT_CONFIGS['tg.deleteMessage'] } },
+      { id: 'n4', type: 'output.log', label: 'Ghi log', position: { x: 300, y: 520 },
+        config: { message: 'Đã xoá spam từ {{ $trigger.fromName }}: {{ $trigger.content }}', level: 'warning' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  },
+];

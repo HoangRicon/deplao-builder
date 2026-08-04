@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import ipc from '@/lib/ipc';
 import { toLocalMediaUrl } from '@/lib/localMedia';
-import type { ChannelCapability } from '@/../configs/channelConfig';import { ClipboardListIcon, ReplyIcon } from '@/components/common/icons';
+import type { ChannelCapability } from '@/../configs/channelConfig';
+import { ClipboardListIcon, ReplyIcon } from '@/components/common/icons';
 
 
 interface MessageContextMenuProps {
@@ -20,6 +21,7 @@ interface MessageContextMenuProps {
   onDeleteFromDb?: (msg: any) => void;
   onReact: (msg: any, reaction: string) => void;
   onPin?: (msg: any) => void;
+  onEdit?: (msg: any) => void;
   showNotification?: (msg: string, type: 'success' | 'error' | 'info') => void;
 }
 
@@ -84,7 +86,7 @@ function getDefaultFilename(msg: any): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function MessageContextMenu({
-  x, y, msg, isSent, isGroupAdmin, channelCap, onClose, onReply, onForward, onSelectMessages, onUndo, onDelete, onDeleteFromDb, onReact, onPin, showNotification,
+  x, y, msg, isSent, isGroupAdmin, channelCap, onClose, onReply, onForward, onSelectMessages, onUndo, onDelete, onDeleteFromDb, onReact, onPin, onEdit, showNotification,
 }: MessageContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -335,6 +337,20 @@ export default function MessageContextMenu({
           }
           label="Ghim tin nhắn"
           onClick={() => { onPin(msg); onClose(); }}
+        />
+      )}
+
+      {/* Sửa tin nhắn — chỉ cho tin nhắn text đã gửi, channel hỗ trợ */}
+      {isSent && onEdit && (channelCap?.supportsEdit ?? false) && (msg.msg_type === 'text' || msg.msg_type === 'chat.text') && !isFile && !isMedia && !isVideo && (
+        <MenuItem
+          icon={
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          }
+          label="Sửa tin nhắn"
+          onClick={() => { onEdit(msg); onClose(); }}
         />
       )}
 

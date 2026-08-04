@@ -5,6 +5,7 @@ import { useEmployeeStore } from '@/store/employeeStore';
 import GroupAvatar from '../common/GroupAvatar';
 import AddFriendModal from '../common/AddFriendModal';
 import { channelSupports } from '@/../configs/channelConfig';
+import { CHANNEL, isFacebook, isTelegram } from '@/lib/channelHelper';
 import { Spinner } from '@/components/common/PageLoading';
 import { ChatIcon, CloseIcon, LinkIcon } from '@/components/common/icons';
 
@@ -34,6 +35,12 @@ function matchQuery(haystack: string, needle: string): boolean {
 
 function isPhoneNumber(s: string): boolean {
   return /^(\+84|0)\d{8,10}$/.test(s.trim().replace(/\s/g, ''));
+}
+
+/** Detect Telegram @username pattern: starts with @ or is a valid username (5-32 chars, alphanumeric + underscore) */
+function isTelegramUsername(s: string): boolean {
+  const cleaned = s.trim().replace(/^@/, '');
+  return /^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(cleaned);
 }
 
 // ─── Highlight matching text ──────────────────────────────────────────────────
@@ -182,7 +189,13 @@ function ContactResultItem({ contact, query, onClick, groupInfoCache }: {
             ? <img src={contact.avatar_url} alt={name} className="w-11 h-11 rounded-full object-cover" onError={() => {
                 setAvatarFailed(true);
                 const ownerId = contact.owner_zalo_id;
-                if (ownerId && (contact.channel === 'facebook' || /^\d+$/.test(ownerId))) {
+                if (ownerId && isFacebook(contact.channel)) {
+                  ipc.fb.refreshContactAvatar({ accountId: ownerId, userId: contact.contact_id })
+                    .then(res => { if (res.success && res.avatarUrl) setAvatarFailed(false); })
+                    .catch(() => {});
+                } else if (ownerId && isTelegram(contact.channel)) {
+                  // Telegram: avatar comes from MTProto, no retry needed
+                } else if (ownerId && /^\d+$/.test(ownerId)) {
                   ipc.fb.refreshContactAvatar({ accountId: ownerId, userId: contact.contact_id })
                     .then(res => { if (res.success && res.avatarUrl) setAvatarFailed(false); })
                     .catch(() => {});
@@ -293,6 +306,43 @@ function PhoneResultCard({ result, searching, onOpen, onAddFriend }: {
   );
 }
 
+// ─── UsernameResultCard ───────────────────────────────────────────────────────
+function UsernameResultCard({ result, searching, onOpen }: {
+  result: any | null; searching: boolean;
+  onOpen: () => void;
+}) {
+  if (searching) return (
+    <div className="mx-3 my-2 p-3 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-400 flex items-center gap-2">
+      <Spinner size={4} />
+      Đang tìm @{typeof result === 'string' ? result : '...'}...
+    </div>
+  );
+  if (!result) return null;
+  if (result._notFound) return (
+    <div className="mx-3 my-2 p-3 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-400">
+      Không tìm thấy người dùng @{result._query || '...'}
+    </div>
+  );
+  const name = result.displayName || result.username || result.id;
+  return (
+    <div className="mx-3 my-2 p-3 bg-gray-800 rounded-xl border border-cyan-500/30 flex items-center gap-3">
+      {result.avatar
+        ? <img src={result.avatar} alt={name} className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
+        : <div className="w-10 h-10 rounded-full bg-cyan-600 flex items-center justify-center text-white font-bold flex-shrink-0">{(name || 'U').charAt(0).toUpperCase()}</div>}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-gray-100 truncate font-medium">{name}</p>
+        {result.username && <p className="text-xs text-cyan-400">@{result.username}</p>}
+        {result.id && <p className="text-[11px] text-gray-500">ID: {result.id}</p>}
+      </div>
+      <div className="flex gap-1.5 flex-shrink-0">
+        <button onClick={onOpen} className="bg-cyan-600 hover:bg-cyan-700 text-white text-xs px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
+          <ChatIcon className="w-3.5 h-3.5" /> Nhắn tin
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Types & constants ────────────────────────────────────────────────────────
 type SearchTab = 'all' | 'contacts' | 'messages';
 const ALL_CONTACT_LIMIT = 10;
@@ -307,7 +357,7 @@ export interface GlobalSearchPanelProps {
   mergedInboxMode: boolean;
   mergedInboxAccounts: string[];
   groupInfoCache?: { [zaloId: string]: { [groupId: string]: any } };
-  onSelectConversation: (contactId: string, threadType: number, overrideZaloId?: string, userInfo?: { display_name: string; avatar_url: string }) => void;
+  onSelectConversation: (contactId: string, threadType: number, overrideZaloId?: string, userInfo?: { display_name: string; avatar_url: string; channel?: string }) => void;
   onSelectMessage: (msg: any) => void;
 }
 
@@ -326,6 +376,11 @@ export default function GlobalSearchPanel({
   const [phoneResult, setPhoneResult] = useState<any>(null);
   const [phoneSearching, setPhoneSearching] = useState(false);
   const [phonePendingAccounts, setPhonePendingAccounts] = useState(false); // merged mode: need to pick account
+
+  // Telegram username search state
+  const [usernameResult, setUsernameResult] = useState<any>(null);
+  const [usernameSearching, setUsernameSearching] = useState(false);
+  const [usernamePendingAccounts, setUsernamePendingAccounts] = useState(false);
 
   // Server-side contact search for employee mode (boss API has full DB)
   const isEmployeeMode = useEmployeeStore(s => s.mode === 'employee');
@@ -479,7 +534,7 @@ export default function GlobalSearchPanel({
 
   // ── Phone number search ──────────────────────────────────────────────────────
   const doPhoneSearch = async (acc: any, phone: string) => {
-    if (!channelSupports(acc.channel || 'zalo', 'supportsFriendRequest')) {
+    if (!channelSupports(acc.channel || CHANNEL.ZALO, 'supportsFriendRequest')) {
       setPhoneResult({ _notFound: true }); setPhoneSearching(false); return;
     }
     setPhoneSearching(true); setPhoneResult(null); setPhonePendingAccounts(false);
@@ -512,11 +567,74 @@ export default function GlobalSearchPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, activeAccountId]);
 
+  // ── Telegram username search ─────────────────────────────────────────────────
+  const doUsernameSearch = async (acc: any, rawQuery: string) => {
+    const username = rawQuery.trim().replace(/^@/, '');
+    if (!username) return;
+    setUsernameSearching(true);
+    setUsernameResult(null);
+    setUsernamePendingAccounts(false);
+    try {
+      const res = await ipc.telegramUser?.resolveUsername({ accountId: acc.zalo_id, username });
+      if (res?.success && res.peer) {
+        const peer = res.peer;
+        const userId = String(peer.peerId || '');
+        // Try to get avatar from getUserProfile
+        let avatar = '';
+        try {
+          const profileRes = await ipc.telegramUser?.getUserProfile({ accountId: acc.zalo_id, userId });
+          if (profileRes?.success && profileRes.profile?.avatar) {
+            avatar = profileRes.profile.avatar;
+          }
+        } catch {}
+        setUsernameResult({
+          id: userId,
+          displayName: peer.displayName || peer.username || username,
+          username: peer.username || username,
+          phone: peer.phone || '',
+          avatar,
+          _searchAccountId: acc.zalo_id,
+        });
+      } else {
+        setUsernameResult({ _notFound: true, _query: username });
+      }
+    } catch {
+      setUsernameResult({ _notFound: true, _query: username });
+    } finally {
+      setUsernameSearching(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isTelegramUsername(query) || !query.trim()) {
+      setUsernameResult(null);
+      setUsernameSearching(false);
+      setUsernamePendingAccounts(false);
+      return;
+    }
+    // Only search Telegram accounts
+    const telegramAccounts = (mergedInboxMode ? mergedInboxAccounts : [activeAccountId])
+      .map(id => allAccounts.find(a => a.zalo_id === id))
+      .filter(a => a && isTelegram(a.channel));
+    if (telegramAccounts.length === 0) {
+      setUsernameResult({ _notFound: true, _query: query.replace(/^@/, '') });
+      return;
+    }
+    if (telegramAccounts.length > 1) {
+      setUsernamePendingAccounts(true);
+      setUsernameResult(null);
+      return;
+    }
+    doUsernameSearch(telegramAccounts[0], query);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, activeAccountId]);
+
   // ── Derived display data ─────────────────────────────────────────────────────
   const isPhone = isPhoneNumber(query);
-  const showContactsSection = (tab === 'all' || tab === 'contacts') && contactResults.length > 0 && !isPhone;
-  const showMessagesSection = (tab === 'all' || tab === 'messages') && msgResults.length > 0 && !isPhone;
-  const isEmpty = !searching && !isPhone && !phoneSearching && query.trim()
+  const isUsername = isTelegramUsername(query);
+  const showContactsSection = (tab === 'all' || tab === 'contacts') && contactResults.length > 0 && !isPhone && !isUsername;
+  const showMessagesSection = (tab === 'all' || tab === 'messages') && msgResults.length > 0 && !isPhone && !isUsername;
+  const isEmpty = !searching && !isPhone && !isUsername && !phoneSearching && !usernameSearching && query.trim()
     && contactResults.length === 0 && msgResults.length === 0;
 
   // Paginated slices
@@ -538,6 +656,16 @@ export default function GlobalSearchPanel({
       avatar_url: result.avatar || '',
     };
     onSelectConversation(result.uid, 0, overrideZaloId, userInfo);
+  };
+
+  const handleOpenUsername = (result: any) => {
+    const overrideZaloId = result._searchAccountId || undefined;
+    const userInfo = {
+      display_name: result.displayName || result.username || result.id,
+      avatar_url: result.avatar || '',
+      channel: 'telegram_user' as Channel,
+    };
+    onSelectConversation(String(result.id), 0, overrideZaloId, userInfo);
   };
 
   /** Mở hội thoại từ kết quả tìm kiếm liên hệ (bao gồm bạn bè chưa có hội thoại) */
@@ -629,8 +757,43 @@ export default function GlobalSearchPanel({
           />
         )}
 
+        {/* ── Telegram username: account picker (merged mode) ── */}
+        {isUsername && !usernameSearching && usernamePendingAccounts && !usernameResult && (
+          <div className="px-3 py-3">
+            <p className="text-xs text-yellow-400 mb-2 flex items-center gap-1">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              Chọn tài khoản Telegram để tìm <span className="text-white font-medium">{query}</span>:
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {mergedInboxAccounts
+                .map(id => allAccounts.find(a => a.zalo_id === id))
+                .filter(a => a && isTelegram(a.channel))
+                .map(acc => acc!)  // TypeScript narrowing
+                .map(acc => (
+                  <button key={acc.zalo_id}
+                    onClick={() => doUsernameSearch(acc, query)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 transition-colors">
+                    {acc.avatar_url
+                      ? <img src={acc.avatar_url} alt="" className="w-5 h-5 rounded-full object-cover flex-shrink-0" />
+                      : <div className="w-5 h-5 rounded-full bg-cyan-600 flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">{(acc.full_name || acc.zalo_id).charAt(0).toUpperCase()}</div>}
+                    <span className="truncate max-w-[90px]">{acc.full_name || acc.zalo_id}</span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Username result card ── */}
+        {isUsername && !usernamePendingAccounts && (usernameSearching || usernameResult) && (
+          <UsernameResultCard
+            result={usernameResult}
+            searching={usernameSearching}
+            onOpen={() => usernameResult && !usernameResult._notFound && handleOpenUsername(usernameResult)}
+          />
+        )}
+
         {/* ── TAB: Tất cả ── */}
-        {tab === 'all' && !searching && !isPhone && (
+        {tab === 'all' && !searching && !isPhone && !isUsername && (
           <>
             {/* Contacts section */}
             {showContactsSection && (

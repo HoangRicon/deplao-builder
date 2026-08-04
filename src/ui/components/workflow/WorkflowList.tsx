@@ -7,10 +7,11 @@ import { useAccountStore } from '@/store/accountStore';
 import { v4 as uuidv4 } from 'uuid';
 import { showConfirm } from '../common/ConfirmDialog';
 import PageLoading from '../common/PageLoading';
-import { FacebookIcon, ZaloIcon } from '../common/ChannelBadge';
+import { FacebookIcon, ZaloIcon, TelegramIcon } from '../common/ChannelBadge';
 import type { Channel } from '../../../configs/channelConfig';
-import { getChannelColor } from '../../../configs/channelConfig';
+import { getChannelColor, normalizeChannel, getChannelLabel } from '../../../configs/channelConfig';
 import { ChatIcon, HomeIcon, LightningIcon, PackageIcon, PlayIcon, SearchIcon, SmartphoneIcon, TagIcon, UsersIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 interface PageAccount {
   zalo_id: string;
@@ -25,7 +26,11 @@ interface Props {
   onOpenStore?: () => void;
 }
 
-const normalizeWorkflowChannel = (channel?: string): Channel => channel === 'facebook' ? 'facebook' : 'zalo';
+const normalizeWorkflowChannel = (ch?: string): Channel => {
+  // Legacy 'telegram' → default to 'telegram_user'
+  if (ch === 'telegram') return 'telegram_user' as Channel;
+  return normalizeChannel(ch);
+};
 
 function CreateWorkflowChannelModal({
   onClose,
@@ -75,6 +80,32 @@ function CreateWorkflowChannelModal({
               <div className="text-center">
                 <p className="text-white font-semibold text-sm">Facebook</p>
                 <p className="text-gray-400 text-xs mt-0.5">Tạo workflow cho Facebook</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => onSelect('telegram_user')}
+              className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl border-2 border-gray-600 hover:border-cyan-500 hover:bg-cyan-500/10 bg-gray-800/60 transition-all group"
+            >
+              <div className="w-14 h-14 rounded-full bg-[#0088CC]/20 flex items-center justify-center group-hover:bg-[#0088CC]/30 transition-colors">
+                <TelegramIcon size={32} />
+              </div>
+              <div className="text-center">
+                <p className="text-white font-semibold text-sm">Telegram (Cá nhân)</p>
+                <p className="text-gray-400 text-xs mt-0.5">MTProto — tài khoản cá nhân</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => onSelect('telegram_bot')}
+              className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl border-2 border-gray-600 hover:border-cyan-500 hover:bg-cyan-500/10 bg-gray-800/60 transition-all group"
+            >
+              <div className="w-14 h-14 rounded-full bg-[#0088CC]/20 flex items-center justify-center group-hover:bg-[#0088CC]/30 transition-colors">
+                <TelegramIcon size={32} />
+              </div>
+              <div className="text-center">
+                <p className="text-white font-semibold text-sm">Telegram (Bot)</p>
+                <p className="text-gray-400 text-xs mt-0.5">Bot API — tài khoản bot</p>
               </div>
             </button>
           </div>
@@ -630,8 +661,10 @@ function ChannelFilterButton({ value, onChange }: {
 
   const options: { key: 'all' | Channel; label: string }[] = [
     { key: 'all', label: 'Tất cả kênh' },
-    { key: 'zalo', label: 'Zalo' },
-    { key: 'facebook', label: 'Facebook' },
+    { key: CHANNEL.ZALO, label: 'Zalo' },
+    { key: CHANNEL.FACEBOOK, label: 'Facebook' },
+    { key: CHANNEL.TELEGRAM_USER, label: 'Telegram (Cá nhân)' },
+    { key: CHANNEL.TELEGRAM_BOT, label: 'Telegram (Bot)' },
   ];
 
   const selectedLabel = options.find(o => o.key === value)?.label || 'Tất cả kênh';
@@ -666,8 +699,8 @@ function ChannelFilterButton({ value, onChange }: {
                 value === opt.key ? 'bg-gray-800/40 text-white' : 'text-gray-400'
               }`}
             >
-              {opt.key === 'zalo' && <span className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0" />}
-              {opt.key === 'facebook' && <span className="w-2 h-2 rounded-full bg-[#1877F2] flex-shrink-0" />}
+              {opt.key === CHANNEL.ZALO && <span className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0" />}
+              {opt.key === CHANNEL.FACEBOOK && <span className="w-2 h-2 rounded-full bg-[#1877F2] flex-shrink-0" />}
               {opt.key === 'all' && (
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0">
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
@@ -730,7 +763,7 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
           full_name: a.full_name || '',
           avatar_url: a.avatar_url || '',
           phone: a.phone || '',
-          channel: a.channel || 'zalo',
+          channel: a.channel || CHANNEL.ZALO,
         })));
       }
       // Subscribe to account changes
@@ -742,7 +775,7 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
             full_name: a.full_name || '',
             avatar_url: a.avatar_url || '',
             phone: a.phone || '',
-            channel: a.channel || 'zalo',
+            channel: a.channel || CHANNEL.ZALO,
           })));
         }
       });
@@ -755,7 +788,7 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
           full_name: a.full_name || '',
           avatar_url: a.avatar_url || '',
           phone: a.phone || '',
-          channel: a.channel || 'zalo',
+          channel: a.channel || CHANNEL.ZALO,
         })));
       }).catch(() => {});
     }
@@ -869,7 +902,7 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
           return;
         }
         // File cũ không có channel → mặc định Zalo
-        const importChannel = data.channel === 'facebook' ? 'facebook' : 'zalo';
+        const importChannel = normalizeWorkflowChannel(data.channel);
         // Create new IDs for all nodes/edges
         const idMap: Record<string, string> = {};
         const importedNodes = (data.nodes || []).map((n: any) => {
@@ -919,7 +952,15 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
     let result = workflows;
     // Filter by channel
     if (channelFilter !== 'all') {
-      result = result.filter(wf => normalizeWorkflowChannel(wf.channel) === channelFilter);
+      result = result.filter(wf => {
+        const wfCh = normalizeWorkflowChannel(wf.channel);
+        if (wfCh === channelFilter) return true;
+        // Telegram: show both telegram_user and telegram_bot when either is selected
+        const isTelegramFilter = channelFilter === CHANNEL.TELEGRAM_USER || channelFilter === CHANNEL.TELEGRAM_BOT;
+        const isTelegramWf = wfCh === CHANNEL.TELEGRAM_USER || wfCh === CHANNEL.TELEGRAM_BOT;
+        if (isTelegramFilter && isTelegramWf) return true;
+        return false;
+      });
     }
     // Filter by pages
     if (filterPages.length > 0) {
@@ -988,14 +1029,13 @@ export default function WorkflowList({ onEdit, onOpenStore }: Props) {
 
   const renderChannelBadge = (wf: any) => {
     const channel = normalizeWorkflowChannel(wf.channel);
-    const isZalo = channel === 'zalo';
+    const color = getChannelColor(channel as Channel);
+    const label = getChannelLabel(channel as Channel);
     return (
-      <span className={`inline-flex items-center text-[11px] px-2 py-0.5 rounded-full border ${
-        isZalo
-          ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
-          : 'bg-[#1877F2]/10 border-[#1877F2]/30 text-[#1877F2]'
-      }`}>
-        {isZalo ? 'Zalo' : 'Facebook'}
+      <span className={`inline-flex items-center text-[11px] px-2 py-0.5 rounded-full border`}
+        style={{ backgroundColor: `${color}15`, borderColor: `${color}4D`, color }}
+      >
+        {label}
       </span>
     );
   };

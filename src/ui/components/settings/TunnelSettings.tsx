@@ -334,7 +334,7 @@ export default function TunnelSettings() {
           <p className="font-semibold text-white">{svc.guideTitle}</p>
           <ol className="space-y-1.5 pl-4 list-decimal text-gray-400 leading-relaxed">
             {svc.guideSteps.map((step, i) => (
-              <li key={i}>{step}</li>
+              <li className={'text-xs'} key={i}>{step}</li>
             ))}
           </ol>
           {svc.guideExtra}

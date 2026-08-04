@@ -2,9 +2,10 @@
  * TrackingService - Gửi dữ liệu tracking page lên API deplaoapp.com.
  *
  * - Chỉ hoạt động khi build production (GitHub Actions / NODE_ENV=production).
- * - Cache local: mỗi ngày chỉ push 1 lần.
- * - Gửi pageId (zalo_id), machineId, lastTrackedAt lên Google Sheets.
+ * - Cache local: mỗi ngày push 1 lần. Nếu có page mới tích hợp → track lại ngay trong ngày.
+ * - Gửi pageId (zalo_id / facebook_id / telegram:xxx), machineId, lastTrackedAt lên Google Sheets.
  * - Không gửi các field nhạy cảm khác (name, phone,...).
+ * - Tính năng phục vụ gia hạn tính năng premium, không thu thập thông tin cá nhân.
  *
  * API: POST https://deplaoapp.com/api/tracking/page
  * Rate limit: 10 req/giờ/IP - trả về 429 nếu vượt quá.
@@ -31,6 +32,7 @@ interface TrackingCache {
   machineId: string;
   lastTrackedDate: string;       // ISO date string "YYYY-MM-DD"
   lastTrackedAt: string;         // ISO datetime string
+  trackedPageIds: string[];      // Danh sách pageId đã track lần gần nhất
 }
 
 interface TrackingApiResponse {
@@ -111,15 +113,69 @@ class TrackingService {
 
   // ── Core logic ──────────────────────────────────────────────────────────
 
+  /**
+   * Thu thập danh sách pageId hiện tại (Zalo + Facebook + Telegram).
+   * Dùng để so sánh với cache, phát hiện page mới tích hợp.
+   */
+  private collectCurrentPageIds(): string[] {
+    const ids: string[] = [];
+
+    try {
+      const allAccounts = DatabaseService.getInstance().getAccounts() || [];
+      for (const acc of allAccounts) {
+        const ch = acc.channel || 'zalo';
+        if (ch === 'telegram') {
+          ids.push(`telegram:${acc.zalo_id}`);
+        } else {
+          ids.push(acc.zalo_id);
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+    try {
+      const allFb = DatabaseService.getInstance().getFBAccounts() || [];
+      for (const fb of allFb) {
+        if (fb.facebook_id && fb.status !== 'disconnected') {
+          ids.push(fb.facebook_id);
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+    if (ids.length === 0) {
+      const machineId = this.cache?.machineId || this.generateMachineId();
+      ids.push(`machine:${machineId.slice(0, 12)}`);
+    }
+
+    return ids.sort();
+  }
+
+  /**
+   * So sánh 2 danh sách pageId (thứ tự đã sort).
+   */
+  private areSameIds(a: string[] | undefined, b: string[]): boolean {
+    if (!a || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
   private async tick(): Promise<void> {
     try {
-      // Kiểm tra xem hôm nay đã gửi chưa
       const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+      const currentIds = this.collectCurrentPageIds();
+
+      // Nếu đã track hôm nay và danh sách page không đổi → bỏ qua
       if (this.cache?.lastTrackedDate === today) {
-        return; // Hôm nay đã gửi rồi
+        const sameIds = this.areSameIds(this.cache.trackedPageIds, currentIds);
+        if (sameIds) {
+          return; // Đã track rồi, không có page mới
+        }
+        Logger.log('[TrackingService] 🔄 Phát hiện page mới tích hợp - track lại ngay');
+      } else {
+        Logger.log('[TrackingService] 📡 Bắt đầu gửi tracking hôm nay...');
       }
 
-      Logger.log('[TrackingService] 📡 Bắt đầu gửi tracking hôm nay...');
       await this.sendTracking();
 
       // Cập nhật cache sau khi gửi thành công
@@ -127,10 +183,11 @@ class TrackingService {
         machineId: this.cache?.machineId || this.generateMachineId(),
         lastTrackedDate: today,
         lastTrackedAt: new Date().toISOString(),
+        trackedPageIds: currentIds,
       };
       this.saveCache();
 
-      Logger.log('[TrackingService] ✅ Tracking hôm nay đã gửi thành công');
+      Logger.log('[TrackingService] ✅ Tracking đã gửi thành công');
     } catch (err: any) {
       Logger.warn(`[TrackingService] ⚠️ Gửi tracking thất bại: ${err.message}`);
       // Không crash app - thử lại vào lần tick sau (60 phút)
@@ -138,20 +195,20 @@ class TrackingService {
   }
 
   /**
-   * Thu thập dữ liệu accounts (Zalo + Facebook) và gửi lên API.
+   * Thu thập dữ liệu accounts (Zalo + Facebook + Telegram) và gửi lên API.
    */
   private async sendTracking(): Promise<void> {
     const machineId = this.cache?.machineId || this.generateMachineId();
 
-    // ── Lấy Zalo accounts ──────────────────────────────────────────────
-    let zaloAccounts: Array<{ zalo_id: string }> = [];
+    // ── Lấy tất cả accounts ────────────────────────────────────────────
+    let allAccounts: Array<{ zalo_id: string; channel?: string }> = [];
     try {
-      zaloAccounts = DatabaseService.getInstance().getAccounts();
+      allAccounts = DatabaseService.getInstance().getAccounts() || [];
     } catch (dbErr: any) {
-      Logger.warn(`[TrackingService] ⚠️ Không thể đọc Zalo accounts từ DB: ${dbErr.message}`);
+      Logger.warn(`[TrackingService] ⚠️ Không thể đọc accounts từ DB: ${dbErr.message}`);
     }
 
-    // ── Lấy Facebook accounts ──────────────────────────────────────────
+    // ── Lấy Facebook accounts (bảng riêng) ────────────────────────────
     let fbAccounts: Array<{ facebook_id: string }> = [];
     try {
       const allFb = DatabaseService.getInstance().getFBAccounts() || [];
@@ -162,8 +219,12 @@ class TrackingService {
       Logger.warn(`[TrackingService] ⚠️ Không thể đọc Facebook accounts từ DB: ${dbErr.message}`);
     }
 
+    // ── Phân loại theo channel ─────────────────────────────────────────
+    const zaloAccounts = allAccounts.filter(a => (a.channel || 'zalo') === 'zalo');
+    const telegramAccounts = allAccounts.filter(a => a.channel === 'telegram');
+
     // ── Không có account nào ───────────────────────────────────────────
-    if (zaloAccounts.length === 0 && fbAccounts.length === 0) {
+    if (zaloAccounts.length === 0 && fbAccounts.length === 0 && telegramAccounts.length === 0) {
       Logger.log('[TrackingService] ℹ️ Không có account nào - gửi machineId không');
       const payload: TrackingPayload[] = [
         {
@@ -176,7 +237,7 @@ class TrackingService {
       return;
     }
 
-    // ── Build payload: mỗi account 1 entry (Zalo + Facebook) ──────────
+    // ── Build payload: mỗi account 1 entry ────────────────────────────
     const now = new Date();
     const lastTrackedAt = this.formatDate(now);
     const payload: TrackingPayload[] = [];
@@ -191,7 +252,12 @@ class TrackingService {
       payload.push({ pageId: acc.facebook_id, machineId, lastTrackedAt });
     }
 
-    Logger.log(`[TrackingService] 📤 Gửi ${payload.length} page(s) lên API (Zalo=${zaloAccounts.length}, FB=${fbAccounts.length})...`);
+    // Telegram accounts → pageId = telegram:{zalo_id}
+    for (const acc of telegramAccounts) {
+      payload.push({ pageId: `telegram:${acc.zalo_id}`, machineId, lastTrackedAt });
+    }
+
+    Logger.log(`[TrackingService] 📤 Gửi ${payload.length} page(s) lên API (Zalo=${zaloAccounts.length}, FB=${fbAccounts.length}, Tele=${telegramAccounts.length})...`);
 
     await this.postTracking(payload);
   }
@@ -229,8 +295,13 @@ class TrackingService {
     try {
       if (fs.existsSync(this.cachePath)) {
         const raw = fs.readFileSync(this.cachePath, 'utf-8');
-        this.cache = JSON.parse(raw) as TrackingCache;
-        Logger.log(`[TrackingService] 📂 Đã load cache: lastTrackedDate=${this.cache.lastTrackedDate}`);
+        const parsed = JSON.parse(raw);
+        // Migrate: cache cũ không có trackedPageIds → reset để track lại
+        if (!Array.isArray(parsed.trackedPageIds)) {
+          parsed.trackedPageIds = [];
+        }
+        this.cache = parsed as TrackingCache;
+        Logger.log(`[TrackingService] 📂 Đã load cache: lastTrackedDate=${this.cache.lastTrackedDate}, trackedPages=${this.cache.trackedPageIds.length}`);
       }
     } catch (err: any) {
       Logger.warn(`[TrackingService] ⚠️ Lỗi đọc cache: ${err.message} - sẽ tạo mới`);

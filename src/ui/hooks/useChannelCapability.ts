@@ -7,6 +7,7 @@
 import { useChatStore } from '@/store/chatStore';
 import { useAccountStore } from '@/store/accountStore';
 import { getCapability, type ChannelCapability, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 /**
  * Lấy ChannelCapability cho thread đang active.
@@ -22,7 +23,7 @@ export function useChannelCapability(): ChannelCapability {
     ? (contacts[activeAccountId] || []).find(c => c.contact_id === activeThreadId)
     : undefined;
   const account = accounts.find(a => a.zalo_id === activeAccountId);
-  const channel = (contact?.channel || account?.channel || 'zalo') as Channel;
+  const channel = (contact?.channel || account?.channel || CHANNEL.ZALO) as Channel;
 
   return getCapability(channel);
 }
@@ -35,6 +36,6 @@ export function getChannelCapabilityForContact(
   contact?: { channel?: string },
   account?: { channel?: string },
 ): ChannelCapability {
-  const channel = (contact?.channel || account?.channel || 'zalo') as Channel;
+  const channel = (contact?.channel || account?.channel || CHANNEL.ZALO) as Channel;
   return getCapability(channel);
 }

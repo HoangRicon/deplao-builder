@@ -58,7 +58,9 @@ export default function EmployeeLoginScreen({ onBossMode, onEmployeeConnected }:
             useAccountStore.getState().setActiveAccount(accounts[0].zalo_id);
         }
 
-        useChatStore.getState().setConversationsLoading(true);
+        for (const account of accounts) {
+            useChatStore.getState().setConversationsLoading(account.zalo_id, true);
+        }
         try {
             for (const account of accounts) {
                 const existing = useChatStore.getState().contacts[account.zalo_id];
@@ -75,7 +77,9 @@ export default function EmployeeLoginScreen({ onBossMode, onEmployeeConnected }:
                 }
             }
         } finally {
-            useChatStore.getState().setConversationsLoading(false);
+            for (const account of accounts) {
+                useChatStore.getState().setConversationsLoading(account.zalo_id, false);
+            }
         }
     };
 

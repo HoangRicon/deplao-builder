@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, useReactFlow, BaseEdge, EdgeLabelRenderer,
 import { GROUP_COLORS, getNodeLabel } from '../workflowConfig';
 import { useAppStore } from '@/store/appStore';
 import { BellIcon, BellOffIcon, BotIcon, ChartIcon, EditIcon, ImageIcon, LightningIcon, PaperclipIcon, PlayIcon, SearchIcon, StarIcon, TagIcon, TargetIcon, UserIcon, UsersIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 
 // ─── Custom deletable edge ────────────────────────────────────────────────────
@@ -20,10 +21,10 @@ export const CustomDeletableEdge = memo((props: EdgeProps) => {
         id={id}
         path={edgePath}
         markerEnd={markerEnd}
-        style={{ 
-          stroke: selected ? '#3b82f6' : (isLight ? '#9ca3af' : '#4b5563'), 
-          strokeWidth: selected ? 2 : 1.5, 
-          transition: 'stroke 0.15s' 
+        style={{
+          stroke: selected ? '#3b82f6' : (isLight ? '#9ca3af' : '#4b5563'),
+          strokeWidth: selected ? 2 : 1.5,
+          transition: 'stroke 0.15s'
         }}
         interactionWidth={12}
       />
@@ -296,11 +297,11 @@ function getActionSummary(data: any): string {
     case 'zalo.addReaction':         return 'React tin nhắn';
     case 'zalo.assignLabel': {
       const cnt = Array.isArray(cfg.labelIds) && cfg.labelIds.length;
-      return `Gắn ${cnt ? `${cnt} nhãn` : 'nhãn'} (${cfg.labelSource === 'zalo' ? 'Zalo' : 'Local'})`;
+      return `Gắn ${cnt ? `${cnt} nhãn` : 'nhãn'} (${cfg.labelSource === CHANNEL.ZALO ? 'Zalo' : 'Local'})`;
     }
     case 'zalo.removeLabel': {
       const cnt = Array.isArray(cfg.labelIds) && cfg.labelIds.length;
-      return `Gỡ ${cnt ? `${cnt} nhãn` : 'nhãn'} (${cfg.labelSource === 'zalo' ? 'Zalo' : 'Local'})`;
+      return `Gỡ ${cnt ? `${cnt} nhãn` : 'nhãn'} (${cfg.labelSource === CHANNEL.ZALO ? 'Zalo' : 'Local'})`;
     }
     default: return '';
   }

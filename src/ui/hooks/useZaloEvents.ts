@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { useAccountStore } from '@/store/accountStore';
-import {MessageItem, useChatStore} from '@/store/chatStore';
+import { getMessageCacheKey, MessageItem, useChatStore } from '@/store/chatStore';
 import { useAppStore, CachedGroupInfo } from '@/store/appStore';
 import { useCRMStore } from '@/store/crmStore';
 import { useEmployeeStore } from '@/store/employeeStore';
@@ -8,7 +8,10 @@ import ipc from '../lib/ipc'
 import DataAccessor from '../lib/data/DataAccessor';;
 import { messageQueue } from '@/lib/MessageQueue';
 import { fetchAllAliases } from '../lib/zaloAliasUtils';
+import { channelSupports, type Channel } from '@/../configs/channelConfig';
 import { sendSeenForThread } from '@/lib/sendSeenHelper';
+import * as channelIpc from '@/lib/channelIpc';
+import { CHANNEL, isZalo, isFacebook, isTelegram, isTelegramForumGeneral } from '@/lib/channelHelper';
 import { playNotificationSound, showDesktopNotification, requestNotificationPermission } from '../utils/NotificationService';
 import { getFilteredUnreadCount } from '@/lib/badgeUtils';
 import Logger from "../../utils/Logger";
@@ -56,6 +59,10 @@ const aliasLoadLastAttemptAt = new Map<string, number>();
 const ALIAS_LOAD_RETRY_COOLDOWN_MS = 5000;
 
 async function loadAliases(zaloId: string) {
+  // Only load aliases for Zalo accounts
+  const account = useAccountStore.getState().accounts.find((a) => a.zalo_id === zaloId);
+  if (!account || !isZalo(account.channel)) return;
+
   const now = Date.now();
   const lastAttemptAt = aliasLoadLastAttemptAt.get(zaloId) || 0;
   const existing = aliasLoadInFlight.get(zaloId);
@@ -209,8 +216,13 @@ function buildMessagePreview(
   // ── Todo ───────────────────────────────────────────────────────────────
   if (mt === 'chat.todo') return '📝 Công việc';
 
-  // ── Image (from type detection) ──────────────────────────────────────────
+  // ── Image (from type detection - Zalo) ──────────────────────────────────
   if (isImage) return '🖼 Hình ảnh';
+
+  // ── Telegram-specific msgTypes ─────────────────────────────────────────
+  if (mt === 'photo') return '🖼 Hình ảnh';
+  if (mt === 'video_note') return '🎬 Video message';
+  if (mt === 'audio') return '🎵 Audio';
 
   // ── File (explicit type) ─────────────────────────────────────────────────
   if (mt.includes('file') || mt === 'share.file') {
@@ -375,8 +387,8 @@ export async function fetchContactInfo(zaloId: string, contactId: string): Promi
   try {
     const account = useAccountStore.getState().accounts.find((a) => a.zalo_id === zaloId);
     if (!account) return;
-    // Guard: fetchContactInfo chỉ dành cho Zalo contacts. FB contacts dùng getUserInfoFacebookHtml.
-    if ((account.channel || 'zalo') !== 'zalo') return;
+    // Guard: chỉ Zalo mới dùng ipc.zalo.getUserInfo. FB dùng getUserInfoFacebookHtml, Telegram dùng adapter.
+    if (!isZalo(account.channel)) return;
     const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
     const res = await ipc.zalo?.getUserInfo({ auth, userId: contactId });
 
@@ -427,8 +439,8 @@ export async function refreshContactAlias(zaloId: string, contactId: string): Pr
   try {
     const account = useAccountStore.getState().accounts.find((a) => a.zalo_id === zaloId);
     if (!account) return;
-    // Guard: chỉ Zalo contacts mới có alias từ Zalo API
-    if ((account.channel || 'zalo') !== 'zalo') return;
+    // Guard: chỉ Zalo mới dùng ipc.zalo.getUserInfo
+    if (!isZalo(account.channel)) return;
     const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
     const res = await ipc.zalo?.getUserInfo({ auth, userId: contactId });
     const rawProfile = res?.response?.changed_profiles?.[contactId]
@@ -475,7 +487,7 @@ async function fetchGroupMemberInfo(zaloId: string, memberId: string, groupId: s
 
   try {
     const account = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
-    if (!account || (account.channel || 'zalo') !== 'zalo') return;
+    if (!account || !channelSupports((account.channel || CHANNEL.ZALO) as Channel, 'supportsGroupManage')) return;
 
     const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
     const res = await ipc.zalo?.getUserInfo({ auth, userId: memberId });
@@ -563,6 +575,10 @@ async function fetchGroupMemberInfo(zaloId: string, memberId: string, groupId: s
  */
 async function fetchGroupInfoAndMembers(zaloId: string, groupId: string, forceNotifUpdate = false): Promise<void> {
   const key = `${zaloId}__${groupId}`;
+
+  // Guard: chỉ fetch group info cho Zalo accounts
+  const _acc = useAccountStore.getState().accounts.find((a) => a.zalo_id === zaloId);
+  if (!_acc || !isZalo(_acc.channel)) return;
 
   // Kiểm tra nhanh in-memory trước để tránh IPC round-trip không cần thiết
   const inMemory = useChatStore.getState().contacts[zaloId]?.find(c => c.contact_id === groupId);
@@ -707,7 +723,7 @@ async function fetchGroupInfoAndMembers(zaloId: string, groupId: string, forceNo
 
 export function useZaloEvents() {
   const { updateAccountStatus, updateListenerActive } = useAccountStore();
-  const { addMessage, updateContact, incrementUnread, updateMessageReaction, updateMessageLocalPath, setTyping, setSeen, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
+  const { addMessage, updateContact, incrementUnread, updateMessageReaction, replaceMessageReactions, updateMessageLocalPath, setTyping, setSeen, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
   const { showNotification, setGroupInfo } = useAppStore();
 
   // Track window focus state from main process (reliable, unlike document.hasFocus())
@@ -777,13 +793,16 @@ export function useZaloEvents() {
       // 7. Clear unread, mark as read, update badge
       DataAccessor.markAsRead({ zaloId, contactId: threadId }).catch(() => {});
       clearUnread(zaloId, threadId);
+      // Clear @mention flag when messages are read
+      DataAccessor.setContactFlags?.({ zaloId, contactId: threadId, flags: { has_mention: 0 } }).catch(() => {});
+      useChatStore.getState().updateContact(zaloId, { contact_id: threadId, has_mention: 0 } as any);
       sendSeenForThread(zaloId, threadId, threadType);
       ipc.app?.setBadge(Math.max(0, getFilteredUnreadCount()));
 
       // 8. Auto-fetch user info cho thread nếu thiếu (sau khi contacts kịp load)
       if (threadType !== 1) { // Không áp dụng cho group
         const accountInfo = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
-        const channel = accountInfo?.channel || 'zalo';
+        const channel = accountInfo?.channel || CHANNEL.ZALO;
         setTimeout(() => {
           const updatedContacts = useChatStore.getState().contacts[zaloId] || [];
           const ct = updatedContacts.find((c: any) => c.contact_id === threadId);
@@ -793,9 +812,9 @@ export function useZaloEvents() {
           const hasAvatar = !!ct.avatar_url;
           if (hasRealName && hasAvatar) return;
 
-          if (channel === 'zalo') {
+          if (isZalo(channel)) {
             fetchContactInfo(zaloId, threadId).catch(() => {});
-          } else if (channel === 'facebook') {
+          } else if (isFacebook(channel)) {
             ipc.fb?.getUserInfoFacebookHtml({ accountId: zaloId, userId: threadId })
               .then((res: any) => {
                 if (res?.success && (res.name || res.avatarUrl)) {
@@ -808,6 +827,8 @@ export function useZaloEvents() {
             if (/^\d+$/.test(threadId)) {
               ipc.fb?.refreshContactAvatar({ accountId: zaloId, userId: threadId }).catch(() => {});
             }
+          } else if (isTelegram(channel)) {
+            // Telegram: contact info comes from MTProto/Bot API during message sync
           }
         }, 500); // Chờ contacts load từ DB
       }
@@ -939,7 +960,12 @@ export function useZaloEvents() {
       // Gửi sự kiện đã đọc khi cửa sổ được focus lại
       const activeContact = (useChatStore.getState().contacts[activeAccountId] || []).find(c => c.contact_id === tid);
       const focusThreadType = activeContact?.contact_type === 'group' ? 1 : 0;
+      const focusChannel = ((activeContact?.channel as any) || CHANNEL.ZALO) as string;
       sendSeenForThread(activeAccountId, tid, focusThreadType);
+      // Đánh dấu đã đọc trên server (Telegram, Facebook, etc.)
+      if (!isZalo(focusChannel)) {
+        channelIpc.markAsRead(focusChannel as any, { accountId: activeAccountId, threadId: tid }).catch(() => {});
+      }
       ipc.app?.setBadge(getFilteredUnreadCount());
     };
     const handleBlur = () => { windowFocusedRef.current = false; };
@@ -954,6 +980,7 @@ export function useZaloEvents() {
   useEffect(() => {
     // ─── Pending employee sender map (must be before event:message handler) ───
     const pendingEmployeeSenders = new Map<string, { employee_id: string; employee_name: string; employee_avatar: string }>();
+    const contactRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
     const applyPendingEmployeeSender = (zaloId: string, threadId: string, msgId: string) => {
       if (!msgId) return;
@@ -981,8 +1008,16 @@ export function useZaloEvents() {
       const isGroup = message.type === 1;
       const isSelf: boolean = message.isSelf === true;
       const isSilent: boolean = message._silent === true; // Old messages - no sound/notification
+      const suppressNotification: boolean = message._silentNotification === true; // Telegram difference/reconnect recovery
       const threadId: string = message.threadId || '';
       if (!threadId || threadId === 'undefined' || threadId === 'null') return;
+      const incomingTopicId = message.data?.topicId ? String(message.data.topicId) : '';
+      const chatState = useChatStore.getState();
+      const cacheTopicId = incomingTopicId || (
+        chatState.activeThreadId === threadId && isTelegramForumGeneral(chatState.activeTopicId)
+          ? '1'
+          : ''
+      );
 
       const uidFrom: string = message.data?.uidFrom || '';
       const contentRaw = message.data?.content;
@@ -1000,13 +1035,20 @@ export function useZaloEvents() {
       // Ưu tiên rawMsgType (share.file, photo, etc.); fall back to image detection
       const msgType = rawMsgType ? String(rawMsgType) : (isImage ? 'image' : 'text');
       const timestamp = parseInt(message.data?.ts) || Date.now();
+      const liveAttachments = Array.isArray(message.data?.attachments)
+        ? message.data.attachments
+        : [];
 
       // Trích dẫn (quote)
-      let quote_data: string | undefined;
+      let quote_data: string | undefined = typeof message.data?.quoteData === 'string'
+        ? message.data.quoteData
+        : undefined;
       const rawQuote = message.data?.quote;
       if (rawQuote && rawQuote.globalMsgId) {
         // Tìm tin nhắn gốc trong store để lấy đầy đủ thông tin (vì rawQuote thường rỗng)
-        const allMessages = useChatStore.getState().messages[`${zaloId}_${threadId}`] || [];
+        const allMessages = useChatStore.getState().messages[
+          getMessageCacheKey(zaloId, threadId, cacheTopicId)
+        ] || [];
         const origMsg = allMessages.find(m => m.msg_id === String(rawQuote.globalMsgId));
 
         let quotedMsg = rawQuote.msg ?? '';
@@ -1078,22 +1120,28 @@ export function useZaloEvents() {
         console.log(`[useZaloEvents] 📩 isSelf message: msgId="${message.data?.msgId}", _employeeInfo=${empInfo ? JSON.stringify(empInfo) : 'NULL'}, threadId="${threadId}"`);
       }
 
+      // A forum's topics share one Telegram chat ID. chatStore routes a
+      // message with topic_id to an isolated topic-root cache, so a live
+      // message from another topic no longer overwrites the selected timeline.
       addMessage(zaloId, threadId, {
         msg_id: String(message.data?.msgId || Date.now()),
         cli_msg_id: message.data?.cliMsgId || '',
         owner_zalo_id: zaloId,
         thread_id: threadId,
         thread_type: isGroup ? 1 : 0,
+        ...(incomingTopicId ? { topic_id: incomingTopicId } : {}),
+        ...(message.data?.replyToId ? { reply_to_id: String(message.data.replyToId) } : {}),
         sender_id: uidFrom,
         content,
         msg_type: msgType,
         timestamp,
         is_sent: isSelf ? 1 : 0,
         status: 'received',
+        ...(liveAttachments.length ? { attachments: JSON.stringify(liveAttachments) } : {}),
         ...(isSelf ? { send_status: 'received' as const } : {}),
         ...(quote_data ? { quote_data } : {}),
         ...(empInfo?.employee_id ? { handled_by_employee: empInfo.employee_id } : {}),
-      } as any);
+      } as any, cacheTopicId || undefined);
 
       // Nếu là self-image → báo cho MessageQueue để đếm batch
       if (isSelf && (msgType === 'image' || msgType === 'photo')) {
@@ -1123,6 +1171,26 @@ export function useZaloEvents() {
 
       const senderInfo = (message.data as any)?.senderInfo;
       const dName: string = (message.data as any)?.dName || '';
+      if (isGroup && uidFrom && dName && dName !== uidFrom) {
+        const appState = useAppStore.getState();
+        const contact = (useChatStore.getState().contacts[zaloId] || []).find(item => item.contact_id === threadId);
+        const cached = appState.groupInfoCache?.[zaloId]?.[threadId];
+        const members = [...(cached?.members || [])];
+        const index = members.findIndex(member => String(member.userId) === uidFrom);
+        const nextMember = { ...(index >= 0 ? members[index] : { userId: uidFrom, avatar: '', role: 0 }), displayName: dName };
+        if (index >= 0) members[index] = nextMember;
+        else members.push(nextMember);
+        appState.setGroupInfo(zaloId, threadId, {
+          ...(cached || {
+            groupId: threadId,
+            name: contact?.display_name || threadId,
+            avatar: contact?.avatar_url || '',
+            memberCount: members.length,
+          }),
+          members,
+          fetchedAt: Date.now(),
+        });
+      }
       const alias = aliasMap.get(`${zaloId}__${threadId}`);
       // display_name = tên thật từ Zalo (không dùng alias). Alias lưu vào field riêng.
       const realName =
@@ -1136,18 +1204,29 @@ export function useZaloEvents() {
         }).catch(() => {});
       }
 
+      // Update contact in store — updateContact handles both existing and new contacts
+      // (new contacts get safe defaults, then DB full load will enrich them)
+      const lastMsgPreview = buildMessagePreview(contentRaw, rawMsgType, isImage, content);
+      const msgAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+      const msgChannel = (msgAccount?.channel || CHANNEL.ZALO) as string;
+      const existingContact = (useChatStore.getState().contacts[zaloId] || []).find(c => c.contact_id === threadId);
+      console.log(`[useZaloEvents] event:message zaloId=${zaloId} threadId=${threadId} isSelf=${isSelf} msgType=${rawMsgType} channel=${msgChannel} lastMsg="${lastMsgPreview}" contactExists=${!!existingContact} currentLastMsg="${existingContact?.last_message || ''}"`);
       updateContact(zaloId, {
         contact_id: threadId,
         ...(isSelf ? {} : {
           ...(realName ? { display_name: realName } : {}),
           ...(senderAvatar ? { avatar_url: senderAvatar } : {}),
           ...(alias ? { alias } : {}),
-          is_replied: 0,  // tin nhắn đến → chưa trả lời
+          is_replied: 0,
         }),
         contact_type: isGroup ? 'group' : 'user',
-        last_message: buildMessagePreview(contentRaw, rawMsgType, isImage, content),
+        channel: msgChannel as any,
+        last_message: lastMsgPreview,
         last_message_time: timestamp,
       });
+      // Verify update
+      const updatedContact = (useChatStore.getState().contacts[zaloId] || []).find(c => c.contact_id === threadId);
+      console.log(`[useZaloEvents] event:message AFTER update: last_message="${updatedContact?.last_message || ''}" last_message_time=${updatedContact?.last_message_time}`);
 
       if (isSelf) {
         // Tin nhắn từ chính mình gửi (từ nền tảng khác đồng bộ sang)
@@ -1157,10 +1236,27 @@ export function useZaloEvents() {
       } else if (isSilent) {
         // Tin nhắn cũ (old_messages / getGroupChatHistory) - KHÔNG cộng unread, KHÔNG bắn sound/notification
         // Chỉ lưu message + update contact (đã xử lý ở trên)
-      } else if (threadId !== useChatStore.getState().activeThreadId || !windowFocusedRef.current) {
-        // Thread khác, HOẶC thread đang active nhưng cửa sổ bị thu nhỏ/ẩn/mất focus
+      } else {
+        const { activeThreadId: currentActiveThread, activeThreadId } = useChatStore.getState();
+        const { activeAccountId: currentActiveAccount } = useAccountStore.getState();
+        const isActiveThread = threadId === currentActiveThread && zaloId === currentActiveAccount;
+        const isWindowFocused = windowFocusedRef.current;
+
+        if (!isActiveThread || !isWindowFocused) {
+        // Thread khác (hoặc account khác), HOẶC thread đang active nhưng cửa sổ bị thu nhỏ/ẩn/mất focus
         // → vẫn tính là chưa đọc
         incrementUnread(zaloId, threadId);
+
+        // ─── Check for @mentions in unread messages ──────────────────────
+        const msgText = String(content || '');
+        const currentAccountId = useAccountStore.getState().activeAccountId;
+        const hasMention = msgText.includes('@all') || msgText.includes('@All')
+          || (currentAccountId && msgText.includes(`@${currentAccountId}`));
+        if (hasMention) {
+          DataAccessor.setContactFlags?.({ zaloId, contactId: threadId, flags: { has_mention: 1 } }).catch(() => {});
+          // Update store immediately
+          useChatStore.getState().updateContact(zaloId, { contact_id: threadId, has_mention: 1 } as any);
+        }
 
         // ─── Badge taskbar - đọc sau khi incrementUnread đã cập nhật store ──
         ipc.app?.setBadge(getFilteredUnreadCount());
@@ -1172,7 +1268,7 @@ export function useZaloEvents() {
         // Notification.permission đồng bộ với macOS system notification authorization (Electron 20+)
         // Khi user tắt notification trên macOS → permission = 'denied' → không phát âm thanh/hiện popup
         const notifAllowed = !('Notification' in window) || Notification.permission === 'granted';
-        if (!isMuted(zaloId, threadId) && !isInOthers(zaloId, threadId)) {
+        if (!suppressNotification && !isMuted(zaloId, threadId) && !isInOthers(zaloId, threadId)) {
           if (notifSettings.soundEnabled && notifAllowed) {
             playNotificationSound(notifSettings.volume);
           }
@@ -1182,7 +1278,12 @@ export function useZaloEvents() {
               const ctact = contacts.find(c => c.contact_id === threadId);
               const contactName = nameOverride || ctact?.alias || ctact?.display_name || alias || realName || threadId;
               const contactAvatar = avatarOverride || ctact?.avatar_url || undefined;
-              const msgText = buildMessagePreview(contentRaw, rawMsgType, isImage, content).slice(0, 120);
+              const msgPreview = buildMessagePreview(contentRaw, rawMsgType, isImage, content).slice(0, 120);
+              // For group messages, prepend sender name to message text
+              const senderDisplayName = alias || realName || '';
+              const msgText = isGroup && senderDisplayName
+                ? `${senderDisplayName}: ${msgPreview}`
+                : msgPreview;
               const notifTitle = `[${getAccountDisplayName(zaloId)}] ${contactName}`;
               showDesktopNotification(
                 notifTitle,
@@ -1213,12 +1314,22 @@ export function useZaloEvents() {
           }
         }
         // ────────────────────────────────────────────────────────────────
-      } else {
-        // Tin nhắn từ người khác gửi vào thread đang mở VÀ cửa sổ đang focus → mark read ngay
-        DataAccessor.markAsRead({ zaloId, contactId: threadId }).catch(() => {});
-        clearUnread(zaloId, threadId);
-        // Gửi sự kiện đã đọc cho Zalo vì đang xem thread này
-        sendSeenForThread(zaloId, threadId, isGroup ? 1 : 0);
+        } else {
+          // Tin nhắn từ người khác gửi vào thread đang mở VÀ cùng account VÀ cửa sổ đang focus → mark read ngay
+          DataAccessor.markAsRead({ zaloId, contactId: threadId }).catch(() => {});
+          clearUnread(zaloId, threadId);
+          // Clear @mention flag when messages are read
+          DataAccessor.setContactFlags?.({ zaloId, contactId: threadId, flags: { has_mention: 0 } }).catch(() => {});
+          useChatStore.getState().updateContact(zaloId, { contact_id: threadId, has_mention: 0 } as any);
+          // Gửi sự kiện đã đọc cho Zalo vì đang xem thread này
+          sendSeenForThread(zaloId, threadId, isGroup ? 1 : 0);
+          // Đánh dấu đã đọc trên server (Telegram, Facebook, etc.)
+          const msgAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+          const msgChannel = ((msgAccount?.channel as any) || CHANNEL.ZALO) as string;
+          if (!isZalo(msgChannel)) {
+            channelIpc.markAsRead(msgChannel as any, { accountId: zaloId, threadId }).catch(() => {});
+          }
+        }
       }
 
       if (!isGroup) {
@@ -1297,6 +1408,13 @@ export function useZaloEvents() {
       }
     });
 
+    // Telegram User reactions are aggregate updates. They cannot be mapped to
+    // the Zalo per-user webhook shape, so keep their projection isolated.
+    const unsubTelegramReaction = ipc.on('event:telegramReaction', (data: any) => {
+      if (!data?.zaloId || !data?.threadId || !data?.msgId || !data?.reactions) return;
+      replaceMessageReactions(data.zaloId, data.threadId, data.msgId, data.reactions);
+    });
+
     // ─── Delete message events (chat.delete) ─────────────────────────────
     // Đánh dấu recalled thay vì xoá - giữ lịch sử, hiển thị "Tin nhắn đã bị thu hồi"
     const unsubDelete = ipc.on('event:delete', (data: any) => {
@@ -1343,6 +1461,67 @@ export function useZaloEvents() {
       }
     });
 
+    // ─── Telegram message edited ──────────────────────────────────────────
+    const unsubMessageEdited = ipc.on('event:messageEdited', (data: any) => {
+      const { zaloId, msgId, newText, threadId } = data;
+      if (!zaloId || !msgId || !threadId) return;
+      // Use existing updateMessageEdit action (preserves edit_history)
+      useChatStore.getState().updateMessageEdit(zaloId, threadId, String(msgId), newText, 0, Date.now());
+    });
+
+    // ─── Telegram messages deleted (distinct from recall/undo) ────────────
+    const unsubMessagesDeleted = ipc.on('event:messagesDeleted', (data: any) => {
+      const { zaloId, messageIds, threadId } = data;
+      if (!zaloId || !Array.isArray(messageIds) || !messageIds.length) return;
+      for (const msgId of messageIds) {
+        useChatStore.getState().recallMessage(zaloId, String(msgId), threadId);
+      }
+    });
+
+    // ─── Telegram user presence ───────────────────────────────────────────
+    const unsubUserPresence = ipc.on('event:userPresence', (data: any) => {
+      const { zaloId, userId, status, wasOnline } = data;
+      if (!zaloId || !userId) return;
+      useChatStore.getState().setPresence(zaloId, String(userId), status, wasOnline);
+    });
+
+    const unsubTelegramEntityHydrated = ipc.on('event:telegramEntityHydrated', (data: any) => {
+      const { zaloId, threadId, userId, displayName, username, avatar, status, statusText, lastSeenAt, onlineUntil } = data || {};
+      if (!zaloId || !userId || !displayName) return;
+      if (!threadId || String(threadId) === String(userId)) {
+        useChatStore.getState().updateContact(zaloId, {
+          contact_id: String(userId), display_name: displayName,
+          ...(avatar ? { avatar_url: avatar } : {}),
+        });
+        return;
+      }
+      const appState = useAppStore.getState();
+      const contact = (useChatStore.getState().contacts[zaloId] || []).find(item => item.contact_id === threadId);
+      const cached = appState.groupInfoCache?.[zaloId]?.[threadId];
+      const members = [...(cached?.members || [])];
+      const index = members.findIndex(member => String(member.userId) === String(userId));
+      const nextMember = {
+        ...(index >= 0 ? members[index] : { userId: String(userId), avatar: '', role: 0 }),
+        displayName, ...(avatar ? { avatar } : {}), ...(username ? { username } : {}), status, statusText, lastSeenAt, onlineUntil,
+      };
+      if (index >= 0) members[index] = nextMember;
+      else members.push(nextMember);
+      appState.setGroupInfo(zaloId, threadId, {
+        ...(cached || {
+          groupId: threadId,
+          name: contact?.display_name || threadId,
+          avatar: contact?.avatar_url || '',
+          memberCount: members.length,
+        }),
+        members,
+        fetchedAt: Date.now(),
+      });
+      // console.log('[TG_MEMBER_IDENTITY_APPLIED]', {
+      //   zaloId, groupId: threadId, memberId: String(userId), displayName,
+      //   hasAvatar: !!nextMember.avatar,
+      // });
+    });
+
     const unsubConnected = ipc.on('event:connected', (data: any) => {
       updateAccountStatus(data.zaloId, true, true);
       updateListenerActive(data.zaloId, true);
@@ -1386,6 +1565,7 @@ export function useZaloEvents() {
               displayName: m.display_name || m.member_id,
               avatar: m.avatar || '',
               role: m.role || 0,
+              username: m.username || '',
             })),
             creatorId: '',
             adminIds: [],
@@ -1397,6 +1577,31 @@ export function useZaloEvents() {
     });
 
     // ─── Local path update (after image download) ─────────────────────────
+    const unsubUnreadChanged = ipc.on('db:unreadChanged', (data: any) => {
+      const zaloId = data?.zaloId;
+      const account = useAccountStore.getState().accounts.find((item) => item.zalo_id === zaloId);
+      const telegramRefreshSources = new Set([
+        'telegram_sync', 'telegram_dialog_state', 'telegram_folder_update', 'telegram_notify_update',
+        'telegram_read_outbox', 'telegram_read_inbox',
+        'telegram_avatar', 'bot_avatar_user', 'bot_avatar_group',
+      ]);
+      if (!zaloId || !telegramRefreshSources.has(data?.source) || !isTelegram(account?.channel)) return;
+
+      const pending = contactRefreshTimers.get(zaloId);
+      if (pending) clearTimeout(pending);
+      contactRefreshTimers.set(zaloId, setTimeout(() => {
+        contactRefreshTimers.delete(zaloId);
+        DataAccessor.getConversations(zaloId, 500, 0)
+          .then((result) => {
+            if (Array.isArray(result?.items)) {
+              useChatStore.getState().setContacts(zaloId, result.items);
+              useAppStore.getState().loadFlags(zaloId).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }, 300));
+    });
+
     const unsubLocalPath = ipc.on('event:localPath', (data: any) => {
       const { zaloId, msgId, threadId, localPaths } = data;
       if (zaloId && msgId && threadId && localPaths) {
@@ -1474,6 +1679,50 @@ export function useZaloEvents() {
         };
         setGroupInfo(zaloId, groupId, info);
       }
+    });
+
+    // Telegram forum: invalidate topic cache when topics are created/edited/closed/reopened
+    const unsubForumTopicsChanged = ipc.on('event:forumTopicsChanged', (data: any) => {
+      const { zaloId, threadId } = data || {};
+      if (!zaloId || !threadId) return;
+      const store = useChatStore.getState();
+      const cacheKey = `${zaloId}_${threadId}`;
+      if (store.forumTopics[cacheKey]) {
+        const newTopics = { ...store.forumTopics };
+        delete newTopics[cacheKey];
+        useChatStore.setState({ forumTopics: newTopics });
+        // Also clear persisted cache
+        try { localStorage.removeItem(`deplao_forum_topics_${cacheKey}`); } catch {}
+      }
+    });
+
+    // Telegram member avatars are hydrated slowly in the main process to keep
+    // MTProto stable. Patch the shared cache as each image becomes available.
+    const unsubGroupMemberAvatar = ipc.on('event:groupMemberAvatar', (data: any) => {
+      const { zaloId, groupId, memberId, displayName, avatar } = data || {};
+      if (!zaloId || !groupId || !memberId || !avatar) return;
+      const appState = useAppStore.getState();
+      const cached = appState.groupInfoCache?.[zaloId]?.[groupId];
+      const contact = (useChatStore.getState().contacts[zaloId] || []).find(item => String(item.contact_id) === String(groupId));
+      const members = [...(cached?.members || [])];
+      const index = members.findIndex(member => String(member.userId) === String(memberId));
+      const nextMember = {
+        ...(index >= 0 ? members[index] : { userId: String(memberId), role: 0 }),
+        displayName: displayName || members[index]?.displayName || String(memberId),
+        avatar,
+      };
+      if (index >= 0) members[index] = nextMember;
+      else members.push(nextMember);
+      appState.setGroupInfo(zaloId, groupId, {
+        ...(cached || {
+          groupId, name: contact?.display_name || groupId,
+          avatar: contact?.avatar_url || '', memberCount: members.length,
+        }),
+        members,
+        memberCount: Math.max(Number(cached?.memberCount || 0), members.length),
+        fetchedAt: Date.now(),
+      });
+      console.log('[TG_MEMBER_AVATAR_APPLIED]', { zaloId, groupId, memberId, displayName: nextMember.displayName });
     });
 
     // ─── Group events (member join/leave etc.) ────────────────────────────
@@ -1683,18 +1932,27 @@ export function useZaloEvents() {
     });
 
     return () => {
+      for (const timer of contactRefreshTimers.values()) clearTimeout(timer);
       unsubMessage();
       unsubReaction();
+      unsubTelegramReaction();
       unsubDelete();
       unsubReminder();
       unsubUndo();
+      unsubMessageEdited();
+      unsubMessagesDeleted();
+      unsubUserPresence();
+      unsubTelegramEntityHydrated();
       unsubLocalPath();
       unsubConnected();
+      unsubUnreadChanged();
       unsubDisconnected();
       unsubListenerDead();
       unsubTyping();
       unsubSeen();
       unsubGroupInfoUpdate();
+      unsubForumTopicsChanged();
+      unsubGroupMemberAvatar();
       unsubGroupEvent();
       unsubEmpSender();
     };

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { getCapability, type Channel } from '../../../../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 interface BulkActionBarProps {
   channel: string;
@@ -24,7 +25,7 @@ export default function BulkActionBar({
 }: BulkActionBarProps) {
   const [showMore, setShowMore] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
-  const channelCap = getCapability((channel || 'zalo') as Channel);
+  const channelCap = getCapability((channel || CHANNEL.ZALO) as Channel);
 
   useEffect(() => {
     if (!showMore) return;

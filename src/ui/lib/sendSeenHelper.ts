@@ -1,6 +1,8 @@
 import ipc from '@/lib/ipc'
 import DataAccessor from '@/lib/data/DataAccessor';;
 import { useAccountStore } from '@/store/accountStore';
+import { channelSupports, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 /**
  * Gửi sự kiện đã đọc (sendSeenEvent) cho Zalo.
@@ -20,9 +22,13 @@ export function sendSeenForThread(
   lastMsg?: { msg_id: string; cli_msg_id?: string; sender_id?: string; msg_type?: string; status?: string; timestamp?: number } | null,
 ): void {
   try {
-    // Skip for non-Zalo channels
+    // Skip for channels that don't support seen status
     const accObj = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
-    if (!accObj || (accObj.channel || 'zalo') !== 'zalo') return;
+    if (!accObj) return;
+    const accChannel = (accObj.channel || CHANNEL.ZALO) as Channel;
+    if (!channelSupports(accChannel, 'supportsSeenStatus')) return;
+    // Chỉ gọi Zalo IPC cho Zalo accounts — các channel khác dùng adapter riêng
+    if (accChannel !== CHANNEL.ZALO) return;
 
     // Resolve auth
     let auth = authOverride;

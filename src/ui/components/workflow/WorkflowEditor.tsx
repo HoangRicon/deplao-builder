@@ -8,15 +8,16 @@ import 'reactflow/dist/style.css';
 import { v4 as uuidv4 } from 'uuid';
 import { CustomDeletableEdge } from './nodes/WorkflowNodes';
 import { reactFlowNodeTypes } from './nodeRegistry';
+import { CHANNEL } from '@/lib/channelHelper';
 import NodePalette from './NodePalette';
 import NodeConfigPanel from './NodeConfigPanel';
 import RunHistoryPanel from './RunHistoryPanel';
 import WorkflowAIDialog from './WorkflowAIDialog';
 import { DEFAULT_CONFIGS, nodeTypeGroup, getNodeLabel } from './workflowConfig';
+import { Channel, normalizeChannel, getChannelLabel } from '../../../configs/channelConfig';
 import ipc from '../../lib/ipc'
 import DataAccessor from '@/lib/data/DataAccessor';;
 import { useAppStore } from '@/store/appStore';
-import type { Channel } from '../../../configs/channelConfig';
 import PageLoading from '../common/PageLoading';
 import { SearchIcon, SmartphoneIcon, PlayIcon, SparklesIcon } from '@/components/common/icons';
 
@@ -32,7 +33,11 @@ interface Props {
   onBack: () => void;
 }
 
-const normalizeWorkflowChannel = (channel?: string): Channel => channel === 'facebook' ? 'facebook' : 'zalo';
+const normalizeWorkflowChannel = (ch?: string): Channel => {
+  // Legacy 'telegram' → default to 'telegram_user'
+  if (ch === 'telegram') return 'telegram_user' as Channel;
+  return normalizeChannel(ch);
+};
 
 // ── Test-run recipient picker modal ──────────────────────────────────────────
 function TestRunModal({ accounts, workflowPageIds, triggerType, onRun, onClose }: {
@@ -458,7 +463,7 @@ export default function WorkflowEditor({ workflowId, onBack }: Props) {
           return;
         }
         // File cũ không có channel → mặc định Zalo
-        const importChannel = data.channel === 'facebook' ? 'facebook' : 'zalo';
+        const importChannel = normalizeWorkflowChannel(data.channel);
 
         // Assign new IDs to avoid conflicts
         // Assign new IDs to avoid conflicts
@@ -516,11 +521,11 @@ export default function WorkflowEditor({ workflowId, onBack }: Props) {
     e.target.value = '';
   };
 
-  const channelLabel = workflowMeta.channel === 'zalo' ? 'Zalo' : 'Facebook';
+  const channelLabel = getChannelLabel(workflowMeta.channel as Channel);
 
   // Filter accounts by workflow channel - only show matching accounts
   const filteredAccounts = accounts.filter(a => {
-    const accChannel = a.channel || 'zalo';
+    const accChannel = a.channel || CHANNEL.ZALO;
     return accChannel === workflowMeta.channel;
   });
 
@@ -561,9 +566,11 @@ export default function WorkflowEditor({ workflowId, onBack }: Props) {
         />
 
         <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs ${
-          workflowMeta.channel === 'zalo'
+          workflowMeta.channel === CHANNEL.ZALO
             ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
-            : 'bg-[#1877F2]/10 border-[#1877F2]/30 text-[#1877F2]'
+            : workflowMeta.channel === CHANNEL.FACEBOOK
+              ? 'bg-[#1877F2]/10 border-[#1877F2]/30 text-[#1877F2]'
+              : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
         }`}>
           <span>Kênh: {channelLabel}</span>
         </div>

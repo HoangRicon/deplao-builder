@@ -3,13 +3,14 @@ import { v4 as uuidv4 } from 'uuid';
 import DataAccessor from '../../lib/data/DataAccessor';
 import ipc from '../../lib/ipc';
 import { NODE_GROUPS, DEFAULT_CONFIGS, getNodeLabel } from './workflowConfig';
+import { Channel, getChannelLabel } from '../../../configs/channelConfig';
 import { useAppStore } from '@/store/appStore';
 import { BotIcon, CheckIcon, SparklesIcon, UserIcon } from '@/components/common/icons';
 
 interface WorkflowAIDialogProps {
   currentNodes: any[];
   currentEdges: any[];
-  channel: 'zalo' | 'facebook';
+  channel: Channel;
   onApply: (nodes: any[], edges: any[]) => void;
   onClose: () => void;
 }
@@ -38,7 +39,7 @@ function buildNodeCatalog(channel: string): string {
 function buildSystemPrompt(currentNodes: any[], currentEdges: any[], channel: string): string {
   const catalog = buildNodeCatalog(channel);
   const currentWf = JSON.stringify({ nodes: currentNodes, edges: currentEdges }, null, 2);
-  const channelName = channel === 'facebook' ? 'Facebook Messenger' : 'Zalo';
+  const channelName = getChannelLabel(channel as Channel);
 
   return `Bạn là trợ lý AI chuyên xây dựng Workflow tự động cho phần mềm Deplao (quản lý ${channelName}).
 Nhiệm vụ: Dựa trên yêu cầu của người dùng, trả về JSON chứa danh sách nodes và edges cần THÊM vào workflow hiện tại.

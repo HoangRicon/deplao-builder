@@ -455,6 +455,9 @@ export default function GroupMembersTab() {
       if (errCode === 178 || res?.response?.msg?.includes('already')) {
         setLinkJoinStatus('already');
         setLinkJoinMsg('Bạn đã là thành viên của nhóm này.');
+      } if (errCode === 172 || res?.response?.msg?.includes('vượt quá số thành viên cho phép')) {
+        setLinkJoinStatus('error');
+        setLinkJoinMsg('Group đã vượt quá số thành viên cho phép. Bạn không thể tham gia nhóm này.');
       } else if (errCode === 240 || res?.response?.msg?.includes('pending') || res?.response?.msg?.includes('approval')) {
         setLinkJoinStatus('pending');
         setLinkJoinMsg('Nhóm bật chế độ duyệt thành viên. Yêu cầu của bạn đã được gửi, chờ admin duyệt.');
@@ -630,6 +633,9 @@ export default function GroupMembersTab() {
       if (errCode === 178 || res?.response?.msg?.includes('already')) {
         setScanJoinType('already');
         setScanJoinMsg('Bạn đã là thành viên của nhóm này.');
+      } if (errCode === 172 || res?.response?.msg?.includes('vượt quá số thành viên cho phép')) {
+        setLinkJoinStatus('error');
+        setLinkJoinMsg('Group đã vượt quá số thành viên cho phép. Bạn không thể tham gia nhóm này.');
       } else if (errCode === 240 || res?.response?.msg?.includes('pending') || res?.response?.msg?.includes('approval')) {
         setScanJoinType('pending');
         setScanJoinMsg('Nhóm bật chế độ duyệt thành viên. Yêu cầu đã được gửi, chờ admin duyệt. Bạn có thể quét thành viên nhóm được rồi!');
@@ -869,7 +875,7 @@ export default function GroupMembersTab() {
                 { icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-purple-400"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>, title: 'Nhóm ẩn thành viên', desc: 'Bạn đã tham gia nhưng admin ẩn danh sách - quét vẫn lấy được hết' },
                 { icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-400"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>, title: 'Nhóm chờ duyệt', desc: 'Chưa được duyệt vào nhóm vẫn quét được thành viên - không cần chờ admin phê duyệt' },
                 { icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>, title: 'Nhanh chóng', desc: '1000+ thành viên chỉ trong vài giây' },
-                { icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-yellow-400"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>, title: 'Kết quả chi tiết', desc: 'Tên, ảnh đại diện, SĐT - thêm vào chiến dịch kết bạn, nhắn tin ngay' },
+                { icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-yellow-400"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>, title: 'Kết quả chi tiết', desc: 'Tên, ảnh đại diện, UID - thêm vào chiến dịch kết bạn, nhắn tin, mời vào nhóm ngay' },
               ].map((f, i) => (
                 <div key={i} className="bg-gray-800 border border-gray-700 rounded-xl p-3.5 flex gap-3">
                   <div className="w-9 h-9 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">{f.icon}</div>
@@ -1081,7 +1087,7 @@ export default function GroupMembersTab() {
         <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2 flex-shrink-0">
           <div className="flex-1 min-w-0">
             <h3 className="text-sm font-semibold text-white">
-              Nhóm Zalo
+              Danh sách nhóm
               {groups.length > 0 && <span className="ml-1.5 text-xs font-normal text-gray-400">({groups.length})</span>}
             </h3>
             <p className="text-[11px] text-gray-400 mt-0.5">Từ danh sách hội thoại</p>

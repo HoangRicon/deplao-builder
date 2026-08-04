@@ -17,6 +17,7 @@
  */
 
 import { useChatStore, type MessageItem } from '@/store/chatStore';
+import { CHANNEL, isFacebook } from '@/lib/channelHelper';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ export interface QueueItem {
   zaloId: string;
   threadId: string;
   threadType: number;
-  channel: 'zalo' | 'facebook';
+  channel: 'zalo' | 'facebook' | 'telegram_bot' | 'telegram_user';
 
   /** Hàm gọi API gửi tin nhắn (ipc.zalo.sendMessage, ipc.fb.sendMessage, etc.) */
   sendFn: () => Promise<SendResult>;
@@ -397,10 +398,10 @@ export const messageQueue = new MessageQueue();
  *
  * @returns { msgId?, msgIds? } — msgId cho single, msgIds cho multi-attachment
  */
-export function extractMsgIdFromResponse(res: any, channel: string = 'zalo'): { msgId?: string; msgIds?: string[] } {
+export function extractMsgIdFromResponse(res: any, channel: string = CHANNEL.ZALO): { msgId?: string; msgIds?: string[] } {
   if (!res) return {};
 
-  if (channel === 'facebook') {
+  if (isFacebook(channel)) {
     const id = res.messageId || res.msgId;
     return id ? { msgId: String(id) } : {};
   }

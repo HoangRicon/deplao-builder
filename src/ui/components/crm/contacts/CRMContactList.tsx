@@ -10,6 +10,7 @@ import PhoneDisplay from '@/components/common/PhoneDisplay';
 import GroupAvatar from '@/components/common/GroupAvatar';
 import PageLoading from '@/components/common/PageLoading';
 import { CalendarIcon, ClockIcon, CloseIcon, CloudIcon, EditIcon, FolderIcon, GhostIcon, GiftIcon, HardDriveIcon, PhoneIcon, StarIcon, TagIcon, UserCheckIcon, UserIcon, UsersIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 
 
@@ -184,7 +185,7 @@ function LabelFilterDropdown({ allLabels, filterLabelIds, filterLocalLabelIds, o
                 }`}><HardDriveIcon className="w-4 h-4 inline" /> Local</button>
               <button onClick={() => setTab('zalo')}
                 className={`flex-1 px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                  tab === 'zalo' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+                  tab === CHANNEL.ZALO ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
                 }`}><CloudIcon className="w-4 h-4 inline" /> Zalo</button>
             </div>
           </div>

@@ -17,11 +17,13 @@ import { ensureMediaLocal } from '@/lib/employeeMediaSync';
 import { formatPhone } from '@/utils/phoneUtils';
 import PhoneDisplay from '../common/PhoneDisplay';
 import { ZALO_CODE_TO_EMOJI, convertZaloEmojis } from '@/lib/chat/emojiUtils';
-import { parseTxt } from '@/lib/chat/messageParser';
+import { parseTxt, linkifyText } from '@/lib/chat/messageParser';
+import { getFileMetadata, getLocalMediaPath, getStatusDisplay, extractAttachments, getFirstAttachment, getTelegramStickerMedia } from '@/lib/mediaResolver';
 import {
   isCardType, isEcardType, isFileType, isStickerType, isRtfMsg,
   isBankCardType, isMediaType, isVideoType, isVoiceType, isLocationType,
 } from '@/lib/chat/messageTypeUtils';
+import { isFacebook, isNonZalo, isTelegram, isTelegramUser } from '@/lib/channelHelper';
 
 // ── RTF style constants ───────────────────────────────────────────────────────
 const RTF_COLOR_MAP: Record<string, string> = {
@@ -49,7 +51,7 @@ function StickerBubble({ msg }: { msg: any }) {
     let cancelled = false;
 
     // ── Facebook sticker: check local_paths trước (giống MediaBubble) ─
-    if (msg.channel === 'facebook') {
+    if (isFacebook(msg.channel)) {
       // Kiểm tra local file trước (đã được download từ main process)
       try {
         const lp: Record<string, string> = typeof msg.local_paths === 'string'
@@ -85,6 +87,64 @@ function StickerBubble({ msg }: { msg: any }) {
       // Khi main process download xong, event:localPath sẽ cập nhật store
       // → component re-render → tìm thấy local_paths → hiển thị sticker.
       if (!cancelled && !stickerUrl) setFailed(true);
+      return;
+    }
+
+    // ── Telegram sticker: từ local_paths (đã download) ───────────────
+    if (isTelegram(msg.channel)) {
+      const media = getTelegramStickerMedia(msg);
+      if (media?.localPath) {
+        if (media.format === 'tgs') {
+          if (!cancelled) {
+            setFailed(false);
+            setStickerUrl('tgs:' + media.localPath);
+          }
+          return;
+        }
+        const localUrl = toLocalMediaUrl(media.localPath);
+        if (localUrl) {
+          if (!cancelled) {
+            setFailed(false);
+            setStickerUrl(localUrl);
+          }
+          return;
+        }
+      }
+      if (media?.remoteUrl) {
+        if (!cancelled) {
+          setFailed(false);
+          setStickerUrl(media.remoteUrl);
+        }
+        return;
+      }
+      // The listener has identified a sticker, but its background download has
+      // not completed yet. Keep the loading state so event:localPath can render it.
+      if (media) return;
+      try {
+        const lp: Record<string, string> = typeof msg.local_paths === 'string'
+          ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
+        const localFile = lp.main || lp.sticker || (Object.values(lp)[0] as string) || '';
+        if (localFile) {
+          // TGS file → sẽ được xử lý bởi TgsBubble component
+          if (localFile.endsWith('.tgs')) {
+            if (!cancelled) setStickerUrl('tgs:' + localFile); // prefix để TgsBubble detect
+            return;
+          }
+          const localUrl = toLocalMediaUrl(localFile);
+          if (localUrl) { setStickerUrl(localUrl); return; }
+        }
+      } catch {}
+      // Fallback: check attachments
+      try {
+        const atts = JSON.parse(msg.attachments || '[]');
+        if (atts[0]?.localPath) {
+          const lp = atts[0].localPath;
+          if (lp.endsWith('.tgs')) { if (!cancelled) setStickerUrl('tgs:' + lp); return; }
+          setStickerUrl(toLocalMediaUrl(lp));
+          return;
+        }
+      } catch {}
+      if (!cancelled) setFailed(true);
       return;
     }
 
@@ -169,9 +229,179 @@ function StickerBubble({ msg }: { msg: any }) {
       </div>
     );
   }
+  // TGS (Lottie animated sticker) → render with lottie-web
+  if (stickerUrl.startsWith('tgs:')) {
+    const tgsPath = stickerUrl.slice(4); // Remove 'tgs:' prefix
+    return <TgsBubble filePath={tgsPath} />;
+  }
+  const telegramSticker = getTelegramStickerMedia(msg);
+  if (isTelegram(msg.channel) && (telegramSticker?.format === 'mp4' || telegramSticker?.format === 'webm')) {
+    return (
+      <video
+        src={stickerUrl}
+        autoPlay
+        loop
+        muted
+        playsInline
+        aria-label="Telegram animated sticker"
+        className="w-28 h-28 object-contain rounded-xl"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
   return (
     <img src={stickerUrl} alt="sticker" className="w-28 h-28 object-contain rounded-xl"
       onError={() => setFailed(true)} />
+  );
+}
+
+// ── TgsBubble (Telegram animated sticker - Lottie JSON via gzip) ────────────
+export function TgsBubble({ filePath }: { filePath: string }) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    let anim: any = null;
+
+    const load = async () => {
+      try {
+        // Fetch the .tgs file (gzip compressed Lottie JSON)
+        const localUrl = toLocalMediaUrl(filePath);
+        const response = await fetch(localUrl);
+        if (!response.ok) throw new Error('Failed to fetch TGS');
+
+        const compressed = await response.arrayBuffer();
+
+        // Decompress gzip using DecompressionStream (supported in modern browsers)
+        let lottieData: any;
+        try {
+          const ds = new DecompressionStream('gzip');
+          const writer = ds.writable.getWriter();
+          writer.write(new Uint8Array(compressed));
+          writer.close();
+          const reader = ds.readable.getReader();
+          const chunks: Uint8Array[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+          const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+          const result = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
+          }
+          lottieData = JSON.parse(new TextDecoder().decode(result));
+        } catch {
+          // Fallback: try as raw JSON (some TGS files might be plain JSON)
+          lottieData = JSON.parse(new TextDecoder().decode(new Uint8Array(compressed)));
+        }
+
+        if (cancelled || !containerRef.current) return;
+
+        // Render with lottie-web
+        const lottie = (await import('lottie-web')).default;
+        anim = lottie.loadAnimation({
+          container: containerRef.current,
+          renderer: 'svg',
+          loop: true,
+          autoplay: true,
+          animationData: lottieData,
+        });
+      } catch (err) {
+        console.warn('[TgsBubble] Failed to load TGS:', err);
+        if (!cancelled) setFailed(true);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+      if (anim) anim.destroy();
+    };
+  }, [filePath]);
+
+  if (failed) {
+    return (
+      <div className="w-28 h-28 rounded-xl bg-gray-700/30 border border-gray-600/30 flex flex-col items-center justify-center gap-1">
+        <span className="text-2xl opacity-40">🎭</span>
+        <span className="text-[10px] text-gray-400 text-center px-1 leading-tight">Animated sticker</span>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="w-28 h-28" />
+  );
+}
+
+// ── GifBubble (Telegram inline GIF - autoplay, loop, no controls) ────────────
+function GifBubble({ msg, onView }: { msg: any; onView?: (src: string) => void }) {
+  const [mediaUrl, setMediaUrl] = React.useState<string | null>(null);
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    // Get from local_paths
+    try {
+      const lp: Record<string, string> = typeof msg.local_paths === 'string'
+        ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
+      const localFile = lp.main || (Object.values(lp)[0] as string) || '';
+      if (localFile) { setMediaUrl(toLocalMediaUrl(localFile)); return; }
+    } catch {}
+    // Fallback: attachments
+    try {
+      const atts = JSON.parse(msg.attachments || '[]');
+      if (atts[0]?.localPath) { setMediaUrl(toLocalMediaUrl(atts[0].localPath)); return; }
+    } catch {}
+    setFailed(true);
+  }, [msg.local_paths, msg.attachments]);
+
+  if (failed || !mediaUrl) {
+    return <span className="text-xs text-gray-400 px-2 py-1">🎞️ [GIF]</span>;
+  }
+  return (
+    <div className="max-w-[280px] max-h-[280px] rounded-xl overflow-hidden cursor-pointer"
+      onClick={() => onView?.(mediaUrl)}>
+      <video src={mediaUrl} autoPlay loop muted playsInline
+        className="w-full h-full object-contain rounded-xl"
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
+
+// ── VideoNoteBubble (Telegram round video message) ──────────────────────────
+function VideoNoteBubble({ msg }: { msg: any }) {
+  const [mediaUrl, setMediaUrl] = React.useState<string | null>(null);
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    try {
+      const lp: Record<string, string> = typeof msg.local_paths === 'string'
+        ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
+      const localFile = lp.main || (Object.values(lp)[0] as string) || '';
+      if (localFile) { setMediaUrl(toLocalMediaUrl(localFile)); return; }
+    } catch {}
+    setFailed(true);
+  }, [msg.local_paths]);
+
+  if (failed || !mediaUrl) {
+    return (
+      <div className="w-20 h-20 rounded-full bg-gray-700/50 flex items-center justify-center">
+        <span className="text-xl">🎬</span>
+      </div>
+    );
+  }
+  return (
+    <div className="w-20 h-20 rounded-full overflow-hidden">
+      <video src={mediaUrl} autoPlay loop muted playsInline
+        className="w-full h-full object-cover rounded-full"
+        onError={() => setFailed(true)}
+      />
+    </div>
   );
 }
 
@@ -194,14 +424,12 @@ function MediaBubble({ msg, isSelf, onView }: { msg: any; isSelf: boolean; onVie
     if (localFilePath) localUrl = toLocalMediaUrl(localFilePath);
   } catch {}
 
-  // FB: use localPath from attachments for immediate preview while CDN not yet available
+  // FB/Telegram: use localPath from attachments for immediate preview via MediaResolver
   let fbLocalUrls: string[] = [];
-  if (msg.channel === 'facebook') {
-    try {
-      const atts = JSON.parse(msg.attachments || '[]');
-      fbLocalUrls = atts.map((a: any) => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
-      if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
-    } catch {}
+  if (isNonZalo(msg.channel)) {
+    const atts = extractAttachments(msg);
+    fbLocalUrls = atts.map(a => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
+    if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
   }
 
   let remoteUrl = '';
@@ -318,8 +546,8 @@ function MediaBubble({ msg, isSelf, onView }: { msg: any; isSelf: boolean; onVie
   return (
     <div className={`flex flex-col rounded-2xl overflow-hidden ring-1 ring-black/[0.12] max-w-xs${isSelf ? ' rounded-br-sm' : ' rounded-bl-sm'}`}>
       {imgNode}
-      <div className={`px-3 py-2 text-sm break-words${isSelf ? ' bg-blue-600 text-white' : ' bg-gray-700 text-gray-200'}`}>
-        {convertZaloEmojis(caption)}
+      <div className={`px-3 py-2 text-sm break-words${isSelf ? ' bg-blue-400/40 text-white' : ' bg-gray-700 text-gray-200'}`}>
+        {linkifyText(caption)}
       </div>
     </div>
   );
@@ -483,7 +711,7 @@ function FacebookVideoBubble({ msg }: { msg: any }) {
 // ── VideoBubble (router) ─────────────────────────────────────────────────────
 // Routes to correct implementation based on channel
 function VideoBubble({ msg }: { msg: any }) {
-  if (msg.channel === 'facebook') return <FacebookVideoBubble msg={msg} />;
+  if (isFacebook(msg.channel)) return <FacebookVideoBubble msg={msg} />;
   return <ZaloVideoBubble msg={msg} />;
 }
 
@@ -517,12 +745,9 @@ function VoiceBubble({ msg, isSelf }: { msg: any; isSelf: boolean }) {
       const lp = typeof msg.local_paths === 'string' ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
       _localPath = lp.file || lp.voice || lp.main || '';
 
-      // Facebook: read audio path from attachments when local_paths not populated
-      if (!_localPath && msg.channel === 'facebook') {
-        try {
-          const atts = JSON.parse(msg.attachments || '[]');
-          if (atts[0]?.localPath) _localPath = atts[0].localPath;
-        } catch {}
+      // Facebook: read audio path from attachments via MediaResolver
+      if (!_localPath && isFacebook(msg.channel)) {
+        _localPath = getLocalMediaPath(msg, 'audio') || getLocalMediaPath(msg);
       }
     } catch {}
 
@@ -710,25 +935,29 @@ function FileBubble({ msg, isSelf }: { msg: any; isSelf: boolean }) {
     fileExt = (params.fileExt || fileTitle.split('.').pop() || '').toLowerCase();
   } catch {}
 
-  // Facebook: extract metadata from attachments column
-  if (msg.channel === 'facebook' && (!fileTitle || fileTitle === 'File')) {
+  // Facebook: extract metadata from attachments via MediaResolver
+  if (isFacebook(msg.channel) && (!fileTitle || fileTitle === 'File')) {
+    const fbMeta = getFileMetadata(msg);
+    if (fbMeta.title && fbMeta.title !== 'File') fileTitle = fbMeta.title;
+    if (fbMeta.href && !fileHref) fileHref = fbMeta.href;
+    if (fbMeta.fileSize && !fileSize) fileSize = String(fbMeta.fileSize);
+    if (fbMeta.ext && !fileExt) fileExt = fbMeta.ext;
+  }
+
+  // Telegram: lấy tên file từ attachments
+  if (isTelegramUser(msg.channel) && (!fileTitle || fileTitle === 'File')) {
     try {
-      const atts = JSON.parse(msg.attachments || '[]');
-      if (atts.length > 0) {
-        const a = atts[0];
-        if (a.name) fileTitle = a.name;
-        if (a.url && !fileHref) fileHref = a.url;
-        if (a.fileSize != null && !fileSize) fileSize = String(a.fileSize);
-        if (!fileExt && fileTitle) fileExt = fileTitle.split('.').pop()?.toLowerCase() || '';
+      const atts = typeof msg.attachments === 'string' ? JSON.parse(msg.attachments || '[]') : (msg.attachments || []);
+      const fileAtt = Array.isArray(atts) ? atts.find((a: any) => a?.type === 'file') : null;
+      if (fileAtt) {
+        if (fileAtt.file_name || fileAtt.name) fileTitle = fileAtt.file_name || fileAtt.name;
+        if (fileAtt.file_size || fileAtt.fileSize) fileSize = String(fileAtt.file_size || fileAtt.fileSize);
+        if (fileAtt.mime_type) {
+          const ext = fileAtt.mime_type.split('/').pop();
+          if (ext && !fileExt) fileExt = ext;
+        }
       }
     } catch {}
-    if (!fileTitle || fileTitle === 'File') {
-      const m = (msg.content || '').match(/📎\s*(.+)/);
-      if (m) {
-        fileTitle = m[1].trim();
-        if (!fileExt) fileExt = fileTitle.split('.').pop()?.toLowerCase() || '';
-      }
-    }
   }
 
   let localFilePath = '';
@@ -737,12 +966,9 @@ function FileBubble({ msg, isSelf }: { msg: any; isSelf: boolean }) {
     localFilePath = lp.file || lp.main || '';
   } catch {}
 
-  // Facebook: also check localPath inside attachments (temp sending state)
-  if (msg.channel === 'facebook' && !localFilePath) {
-    try {
-      const atts = JSON.parse(msg.attachments || '[]');
-      if (atts.length > 0 && atts[0].localPath) localFilePath = atts[0].localPath;
-    } catch {}
+  // Facebook: also check localPath inside attachments via MediaResolver
+  if (isFacebook(msg.channel) && !localFilePath) {
+    localFilePath = getLocalMediaPath(msg, 'file');
   }
 
   const handleOpen = async () => {
@@ -804,8 +1030,7 @@ function FileBubble({ msg, isSelf }: { msg: any; isSelf: boolean }) {
           {opening ? 'Đang mở...'
             : localFilePath ? '✓ Đã có trên máy'
             : fileHref ? 'Nhấn để tải'
-            : (msg.channel === 'facebook' && (msg.is_sent === 1 || isSelf)) ? '✓ Đã gửi'
-            : 'Đang tải về...'}
+            : getStatusDisplay(msg, isSelf).text || 'Đang tải về...'}
         </p>
       </button>
       <button onClick={handleOpen} disabled={opening || !canOpen}
@@ -917,8 +1142,8 @@ function EcardBubble({ msg, onManage }: { msg: any; onManage?: () => void }) {
           </div>
         )}
         <div className="px-4 py-3 space-y-1">
-          {title && <p className="text-white font-semibold text-sm leading-snug">{title}</p>}
-          {description && <p className="text-gray-400 text-xs leading-relaxed">{description}</p>}
+          {title && <p className="text-white font-semibold text-sm leading-snug">{linkifyText(title)}</p>}
+          {description && <p className="text-gray-400 text-xs leading-relaxed">{linkifyText(description)}</p>}
         </div>
         {actions.length > 0 && onManage && (
           <div className="border-t border-gray-700">
@@ -1103,10 +1328,15 @@ function ContactCardBubble({ parsed, isSelf, onOpenProfile }: { parsed: any; isS
   const handleAddFriend = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!resolvedUserId || sendingReq) return;
+    const account = getActiveAccount();
+    if (!account) return;
+    // Only supported for Zalo
+    if (isNonZalo(account.channel)) {
+      useAppStore.getState().showNotification('Tính năng chưa hỗ trợ cho kênh này', 'error');
+      return;
+    }
     setSendingReq(true);
     try {
-      const account = getActiveAccount();
-      if (!account) return;
       const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
       const res = await ipc.zalo?.sendFriendRequest({ auth, userId: resolvedUserId, msg: 'Làm quen qua danh thiếp Zalo' });
       if (res?.success || res?.response?.success) {
@@ -1217,7 +1447,7 @@ function RtfBubble({ msg }: { msg: any }) {
   } catch {}
 
   if (!title) return <span className="text-xs opacity-60">[Tin nhắn định dạng]</span>;
-  if (!styles.length) return <span className="whitespace-pre-wrap">{convertZaloEmojis(title)}</span>;
+  if (!styles.length) return <span className="whitespace-pre-wrap">{linkifyText(title)}</span>;
 
   type CharStyle = { bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; color?: string; small?: boolean; big?: boolean };
   const charStyles: CharStyle[] = Array.from({ length: title.length }, () => ({}));
@@ -1245,7 +1475,7 @@ function RtfBubble({ msg }: { msg: any }) {
     const cs = charStyles[i];
     let j = i + 1;
     while (j < title.length && JSON.stringify(charStyles[j]) === JSON.stringify(cs)) j++;
-    const chunk = convertZaloEmojis(title.slice(i, j));
+    const chunk = linkifyText(convertZaloEmojis(title.slice(i, j)));
     const cls: string[] = [];
     const inlineStyle: React.CSSProperties = {};
     if (cs.bold) cls.push('font-bold');
@@ -1586,7 +1816,7 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
     return (
       <div className="flex justify-center my-2 px-4">
         <span className="text-xs text-gray-400 bg-gray-700/60 px-3 py-1.5 rounded-full text-center max-w-sm leading-relaxed">
-          {msg.content}
+          {msg.content ? linkifyText(msg.content) : ''}
         </span>
       </div>
     );
@@ -1602,6 +1832,24 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
     return (
       <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
         <StickerBubble msg={msg} />
+      </div>
+    );
+  }
+
+  // ── GIF (Telegram inline animated) ──
+  if (mt === 'gif') {
+    return (
+      <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
+        <GifBubble msg={msg} onView={onView} />
+      </div>
+    );
+  }
+
+  // ── Video Note (Telegram round video) ──
+  if (mt === 'video_note') {
+    return (
+      <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
+        <VideoNoteBubble msg={msg} />
       </div>
     );
   }
@@ -1645,7 +1893,7 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
   }
 
   // ── Image / Media ──
-  if (isMediaType(mt, mc)) {
+  if (isMediaType(mt, mc, msg.attachments)) {
     return (
       <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
         <MediaBubble msg={msg} isSelf={isSelf} onView={onView} />
@@ -1654,7 +1902,7 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
   }
 
   // ── File ──
-  if (isFileType(mt, mc)) {
+  if (isFileType(mt, mc, msg.attachments)) {
     return (
       <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
         <FileBubble msg={msg} isSelf={isSelf} />
@@ -1690,8 +1938,8 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
   }
   return (
     <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
-      <div className={`px-3 py-2 rounded-2xl text-sm max-w-[280px] break-words whitespace-pre-wrap ${cls}`}>
-        {text || '(Không có nội dung)'}
+      <div className={`px-3 py-2 rounded-2xl text-sm max-w-[280px] break-words whitespace-pre-wrap ${cls}`} style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}>
+        {text ? linkifyText(text) : '(Không có nội dung)'}
         {isEdited && (
           <>
             <span className="ml-1.5 text-[10px] opacity-60 select-none font-normal">
@@ -1700,7 +1948,7 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
             {editHistoryEntries.length > 0 && (
               <button
                 onClick={() => setShowEditHistory(p => !p)}
-                className="ml-1.5 text-[10px] font-medium text-blue-300/70 hover:text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
+                className="ml-1.5 text-[10px] font-medium text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
               >
                 {showEditHistory ? 'Ẩn' : 'Xem nội dung cũ'}
               </button>
@@ -1719,7 +1967,7 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
                 {new Date(entry.editedAt).toLocaleString('vi-VN')}
               </div>
               <div className="break-words whitespace-pre-wrap italic">
-                {parseTxt(entry.oldBody) || '(Không có nội dung)'}
+                {parseTxt(entry.oldBody) ? linkifyText(parseTxt(entry.oldBody)) : '(Không có nội dung)'}
               </div>
             </div>
           ))}

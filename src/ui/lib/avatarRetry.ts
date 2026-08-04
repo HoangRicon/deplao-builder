@@ -7,6 +7,7 @@
  */
 
 import ipc from './ipc';
+import { CHANNEL, isFacebook, isTelegram } from '@/lib/channelHelper';
 import { useAccountStore } from '@/store/accountStore';
 
 // ─── Module-level debounce: tránh gọi refresh trùng lặp ─────────────────────
@@ -28,7 +29,7 @@ export async function handleAvatarError(opts: {
   channel?: string;       // 'zalo' | 'facebook' | ...
   signal?: AbortSignal;   // optional abort
 }): Promise<string | null> {
-  const { ownerId, contactId, channel = 'zalo' } = opts;
+  const { ownerId, contactId, channel = CHANNEL.ZALO } = opts;
   if (!ownerId || !contactId) return null;
 
   const cacheKey = `${ownerId}_${contactId}`;
@@ -52,12 +53,24 @@ async function _doRefresh(ownerId: string, contactId: string, channel: string): 
   try {
     let newUrl: string | undefined;
 
-    if (channel === 'facebook') {
+    if (isFacebook(channel)) {
       // Facebook: dùng refreshContactAvatar (GraphQL re-fetch)
       const res = await ipc.fb?.refreshContactAvatar({ accountId: ownerId, userId: contactId });
       if (res?.success && res.avatarUrl) {
         newUrl = res.avatarUrl;
       }
+    } else if (isTelegram(channel)) {
+      // Telegram User: gọi fetchSelfAvatar nếu là chính account
+      // Nếu là contact khác → skip (avatar được fetch khi nhận tin nhắn)
+      if (contactId === ownerId) {
+        try {
+          const res = await (ipc as any).telegramUser?.fetchSelfAvatar?.(ownerId);
+          if (res?.success && res.avatarUrl) {
+            newUrl = res.avatarUrl;
+          }
+        } catch {}
+      }
+      if (!newUrl) return null;
     } else {
       // Zalo: nếu là chính account mình → checkAndRefreshAvatar
       // Nếu là contact khác → getUserInfo để lấy avatar mới

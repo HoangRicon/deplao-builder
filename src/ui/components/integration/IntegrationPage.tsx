@@ -21,21 +21,23 @@ interface CatalogItem {
   settingFields?: { key: string; label: string; type?: string; options?: { value: string; label: string }[] }[];
 }
 
-type TabKey = 'all' | 'pos' | 'payment' | 'shipping' | 'ai';
+type TabKey = 'all' | 'pos' | 'payment' | 'shipping' | 'ai' | 'messaging';
 
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
-  { key: 'all',      label: 'Tất cả',            icon: <PinIcon className="w-4 h-4" /> },
-  { key: 'pos',      label: 'POS / Bán hàng',    icon: <ShoppingCartIcon className="w-4 h-4" /> },
-  { key: 'payment',  label: 'Thanh toán',        icon: <CreditCardIcon className="w-4 h-4" /> },
-  { key: 'shipping', label: 'Vận chuyển',        icon: <PackageIcon className="w-4 h-4" /> },
-  { key: 'ai',       label: 'Trợ lý AI',         icon: <BotIcon className="w-4 h-4" /> },
+  { key: 'all',       label: 'Tất cả',            icon: <PinIcon className="w-4 h-4" /> },
+  { key: 'pos',       label: 'POS / Bán hàng',    icon: <ShoppingCartIcon className="w-4 h-4" /> },
+  { key: 'payment',   label: 'Thanh toán',        icon: <CreditCardIcon className="w-4 h-4" /> },
+  { key: 'shipping',  label: 'Vận chuyển',        icon: <PackageIcon className="w-4 h-4" /> },
+  { key: 'messaging', label: 'Tin nhắn',          icon: <ChatIcon className="w-4 h-4" /> },
+  { key: 'ai',        label: 'Trợ lý AI',         icon: <BotIcon className="w-4 h-4" /> },
 ];
 
 const SECTION_META: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
-  ai:       { label: 'Trợ lý AI',      icon: <BotIcon className="w-4 h-4" />, color: 'bg-amber-600' },
-  pos:      { label: 'POS / Bán hàng', icon: <ShoppingCartIcon className="w-4 h-4" />, color: 'bg-orange-500' },
-  payment:  { label: 'Thanh toán',     icon: <CreditCardIcon className="w-4 h-4" />, color: 'bg-green-600' },
-  shipping: { label: 'Vận chuyển',     icon: <PackageIcon className="w-4 h-4" />, color: 'bg-red-500' },
+  ai:        { label: 'Trợ lý AI',      icon: <BotIcon className="w-4 h-4" />, color: 'bg-amber-600' },
+  pos:       { label: 'POS / Bán hàng', icon: <ShoppingCartIcon className="w-4 h-4" />, color: 'bg-orange-500' },
+  payment:   { label: 'Thanh toán',     icon: <CreditCardIcon className="w-4 h-4" />, color: 'bg-green-600' },
+  shipping:  { label: 'Vận chuyển',     icon: <PackageIcon className="w-4 h-4" />, color: 'bg-red-500' },
+  messaging: { label: 'Tin nhắn',       icon: <ChatIcon className="w-4 h-4" />, color: 'bg-blue-500' },
 };
 
 const AI_PLATFORMS: { key: string; label: string; icon: React.ReactNode; color: string; desc: string }[] = [
@@ -153,6 +155,19 @@ const CATALOG: Record<string, CatalogItem[]> = {
       desc: 'Tạo đơn, tra cứu vận đơn GHTK. Tự động gửi cập nhật trạng thái đơn.',
       credentialFields: [
         { key: 'token', label: 'Token GHTK', secret: true, placeholder: 'GHTK API Token' },
+      ],
+    },
+  ],
+  messaging: [
+    {
+      type: 'telegram_bot', name: 'Telegram Bot', priority: 'p0',
+      icon: <ChatIcon className="w-4 h-4" />, color: 'bg-blue-500',
+      desc: 'Kết nối Bot Telegram để gửi thông báo từ Workflow và nhận lệnh từ khách hàng. Tạo bot miễn phí qua @BotFather trên Telegram.',
+      credentialFields: [
+        { key: 'botToken', label: 'Bot Token', secret: true, placeholder: '7123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw' },
+      ],
+      settingFields: [
+        { key: 'defaultChatId', label: 'Chat ID mặc định (tùy chọn)' },
       ],
     },
   ],

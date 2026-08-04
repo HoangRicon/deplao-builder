@@ -43,6 +43,7 @@ import { useEmployeeStore } from './store/employeeStore';
 import LockScreen from './components/auth/LockScreen';
 import { Spinner } from '@/components/common/PageLoading';
 import { GlobeIcon } from '@/components/common/icons';
+import { CHANNEL, isZalo, isNonZalo, isFacebook } from '@/lib/channelHelper';
 
 const HEALTH_CHECK_INTERVAL_MS = 60 * 1000; // 1 phút
 const NETWORK_RECONNECT_COOLDOWN_MS = 15 * 1000; // 15 giây
@@ -117,7 +118,9 @@ function ensureActiveAccount(accounts: Array<{ zalo_id: string }>) {
 async function loadEmployeeConversationsForAccounts(accounts: Array<{ zalo_id: string }>, limit = 200) {
   if (!accounts.length) return;
   const chatStore = useChatStore.getState();
-  chatStore.setConversationsLoading(true);
+  for (const account of accounts) {
+    chatStore.setConversationsLoading(account.zalo_id, true);
+  }
   try {
     for (const account of accounts) {
       const existing = useChatStore.getState().contacts[account.zalo_id];
@@ -142,7 +145,9 @@ async function loadEmployeeConversationsForAccounts(accounts: Array<{ zalo_id: s
       }
     }
   } finally {
-    useChatStore.getState().setConversationsLoading(false);
+    for (const account of accounts) {
+      useChatStore.getState().setConversationsLoading(account.zalo_id, false);
+    }
   }
 }
 
@@ -399,7 +404,7 @@ export default function App() {
     const netActiveWs = await ipc.workspace?.getActive?.().then((r: any) => r?.workspace).catch(() => null);
     if (netActiveWs?.type === 'remote') return;
 
-    const currentAccounts = useAccountStore.getState().accounts.filter(a => (a.channel || 'zalo') === 'zalo');
+    const currentAccounts = useAccountStore.getState().accounts.filter(a => isZalo(a.channel));
     if (!currentAccounts.length) return;
 
     const connectedIds = currentAccounts
@@ -500,14 +505,14 @@ export default function App() {
   useEffect(() => {
     if (!activeAccountId || view !== 'chat') return;
     const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
-    const channel = acc?.channel || 'zalo';
+    const channel = acc?.channel || CHANNEL.ZALO;
     // Already checked this account this session
     if (initCheckedRef.current.has(activeAccountId)) return;
     initCheckedRef.current.add(activeAccountId);
 
     // Each account is checked at most once per app session.
     const accountId = activeAccountId;
-    if (channel === 'facebook') {
+    if (isFacebook(channel)) {
       // FB init: simpler flow - just sync threads
       import('@/lib/fbInitUtils').then(({ checkFBAccountInitNeeds }) => {
         checkFBAccountInitNeeds(accountId).then(needs => {
@@ -751,7 +756,9 @@ export default function App() {
         const existingContacts = useChatStore.getState().contacts;
         const needsLoad = cachedAccounts.some((acc: any) => !existingContacts[acc.zalo_id]?.length);
         if (needsLoad) {
-          useChatStore.getState().setConversationsLoading(true);
+          for (const acc of cachedAccounts) {
+            useChatStore.getState().setConversationsLoading(acc.zalo_id, true);
+          }
           (async () => {
             for (const acc of cachedAccounts) {
               try {
@@ -766,7 +773,9 @@ export default function App() {
                 console.warn(`[App] Failed to load conversations from REST for ${acc.zalo_id}:`, err);
               }
             }
-            useChatStore.getState().setConversationsLoading(false);
+            for (const acc of cachedAccounts) {
+              useChatStore.getState().setConversationsLoading(acc.zalo_id, false);
+            }
           })();
         }
       } else {
@@ -978,8 +987,9 @@ export default function App() {
         const zaloId = data?.zaloId || '';
         const threadId = data?.message?.threadId || '';
         const isSelf = !!data?.message?.isSelf;
+        const suppressNotification = data?.message?._silentNotification === true;
         // Không flash cho tin nhắn của chính mình, hội thoại muted hoặc trong thư mục "Khác"
-        if (isSelf) return;
+        if (isSelf || suppressNotification) return;
         const { isMuted, isInOthers } = useAppStore.getState();
         if (isMuted(zaloId, threadId) || isInOthers(zaloId, threadId)) return;
         window.electronAPI?.app?.flashFrame?.(true);
@@ -1132,18 +1142,48 @@ export default function App() {
           const isEmployeeMode = initActiveWs?.type === 'remote';
           if (!isEmployeeMode) {
             for (const acc of accountsRes.accounts) {
-              if ((acc.channel || 'zalo') !== 'zalo') continue; // Skip FB accounts
+              if (isNonZalo(acc.channel)) continue; // Skip non-Zalo accounts
               if (!acc.isConnected) {
                 const auth = buildZaloAuth(acc);
                 ipc.login?.connectAccount(auth).catch(() => {});
               }
+            }
+
+            // 3b. Auto-reconnect Telegram accounts (main process handles actual reconnect,
+            //     here we just sync status and mark as connected in UI)
+            const telegramAccounts = accountsRes.accounts.filter((a: any) => {
+              const ch = a.channel || CHANNEL.ZALO;
+              return ch === 'telegram_bot' || ch === 'telegram_user';
+            });
+            for (const tgAcc of telegramAccounts) {
+              (async () => {
+                try {
+                  const ch = tgAcc.channel || 'telegram_user';
+                  // Đợi 2s để main process reconnect xong
+                  await new Promise(r => setTimeout(r, 2000));
+                  if (ch === 'telegram_user') {
+                    const health = await ipc.telegramUser?.isConnected(tgAcc.zalo_id);
+                    if (health?.connected) {
+                      useAccountStore.getState().updateAccountStatus(tgAcc.zalo_id, true, true);
+                      useAccountStore.getState().updateListenerActive(tgAcc.zalo_id, true);
+                    }
+                  } else if (ch === 'telegram_bot') {
+                    const health = await (ipc as any).telegram?.getActiveBots?.();
+                    const isActive = health?.bots?.some((b: any) => b.accountId === tgAcc.zalo_id) ?? false;
+                    if (isActive) {
+                      useAccountStore.getState().updateAccountStatus(tgAcc.zalo_id, true, true);
+                      useAccountStore.getState().updateListenerActive(tgAcc.zalo_id, true);
+                    }
+                  }
+                } catch {}
+              })();
             }
           }
 
           // 4. Check + refresh avatar URLs for connected Zalo accounts
           //    Avatar CDN URLs expire over time - verify validity and refresh if needed.
           for (const acc of accountsRes.accounts) {
-            if ((acc.channel || 'zalo') !== 'zalo') continue;
+            if (isNonZalo(acc.channel)) continue;
             if (!acc.isConnected) continue;
             (async () => {
               try {
@@ -1161,7 +1201,7 @@ export default function App() {
           // 4b. Sync FB account connection status from main process
           //     (reconnectAllFBAccounts runs in main process before renderer is ready,
           //      so the fb:onConnectionStatus event may have been missed)
-          const fbAccounts = accountsRes.accounts.filter((a: any) => (a.channel || 'zalo') === 'facebook');
+          const fbAccounts = accountsRes.accounts.filter((a: any) => (a.channel || CHANNEL.ZALO) === 'facebook');
           if (fbAccounts.length > 0) {
             setTimeout(async () => {
               for (const fbAcc of fbAccounts) {
@@ -1250,27 +1290,57 @@ export default function App() {
       const currentAccounts = useAccountStore.getState().accounts;
       if (!currentAccounts.length) return;
 
+      // ── Zalo health check ──
       const connectedIds = currentAccounts
-        .filter((a) => a.isConnected && (a.channel || 'zalo') === 'zalo')
+        .filter((a) => a.isConnected && isZalo(a.channel))
         .map((a) => a.zalo_id);
 
-      if (!connectedIds.length) return;
-
-      const results = await checkListenerHealth(connectedIds);
-      if (!results.length) return;
-
-      for (const r of results) {
-        if (!r.healthy) {
-          console.warn(`[HealthCheck] ${r.zaloId} unhealthy: readyState=${r.readyState} reason=${r.reason}`);
-          updateListenerActive(r.zaloId, false);
-
-          const acc = currentAccounts.find((a) => a.zalo_id === r.zaloId);
-          if (acc) {
-            void reconnectAccountNow(acc, 'healthcheck');
+      if (connectedIds.length) {
+        const results = await checkListenerHealth(connectedIds);
+        for (const r of results) {
+          if (!r.healthy) {
+            console.warn(`[HealthCheck] ${r.zaloId} unhealthy: readyState=${r.readyState} reason=${r.reason}`);
+            updateListenerActive(r.zaloId, false);
+            const acc = currentAccounts.find((a) => a.zalo_id === r.zaloId);
+            if (acc) void reconnectAccountNow(acc, 'healthcheck');
+          } else {
+            updateListenerActive(r.zaloId, true);
           }
-        } else {
-          updateListenerActive(r.zaloId, true);
         }
+      }
+
+      // ── Telegram Bot health check ──
+      const botAccounts = currentAccounts.filter(a => a.channel === 'telegram_bot');
+      if (botAccounts.length) {
+        try {
+          const activeBots = await (ipc as any).telegram?.getActiveBots?.();
+          const activeBotIds = new Set<string>(
+            (activeBots?.bots || []).map((b: any) => String(b.accountId))
+          );
+          for (const acc of botAccounts) {
+            const isActive = activeBotIds.has(acc.zalo_id);
+            if (!isActive && acc.isConnected) {
+              console.warn(`[HealthCheck] Telegram Bot ${acc.zalo_id} disconnected, reconnecting...`);
+              useAccountStore.getState().updateAccountStatus(acc.zalo_id, false, false);
+              // Reconnect: start bot again
+              (ipc as any).telegram?.startBot?.({
+                accountId: acc.zalo_id,
+                botToken: acc.cookies || '',
+                botUsername: (acc as any).username || '',
+                botFirstName: acc.full_name || '',
+              }).then((res: any) => {
+                if (res?.success) {
+                  useAccountStore.getState().updateAccountStatus(acc.zalo_id, true, true);
+                  useAccountStore.getState().updateListenerActive(acc.zalo_id, true);
+                  console.log(`[HealthCheck] Telegram Bot ${acc.zalo_id} reconnected`);
+                }
+              }).catch(() => {});
+            } else if (isActive) {
+              useAccountStore.getState().updateAccountStatus(acc.zalo_id, true, true);
+              useAccountStore.getState().updateListenerActive(acc.zalo_id, true);
+            }
+          }
+        } catch {}
       }
     };
 
@@ -1391,52 +1461,13 @@ export default function App() {
                             }}
                             onScrollToMsg={async (msgId) => {
                               setShowGroupBoard(false);
-
-                              const scrollAndHighlight = (el: HTMLElement) => {
-                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                el.classList.add('ring-2', 'ring-yellow-400', 'ring-opacity-75');
-                                setTimeout(() => el.classList.remove('ring-2', 'ring-yellow-400', 'ring-opacity-75'), 2000);
-                              };
-
-                              await new Promise(r => setTimeout(r, 100));
-                              const el = document.getElementById(`msg-${msgId}`);
-                              if (el) {
-                                scrollAndHighlight(el);
-                                return;
-                              }
-
-                              // Message not in DOM - load messages around its timestamp
-                              if (!activeAccountId || !activeThreadId) return;
-                              try {
-                                const msgRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, msgId });
-                                const targetMsg = msgRes?.message;
-                                if (!targetMsg?.timestamp) return;
-
-                                const { setMessages } = useChatStore.getState();
-                                const aroundRes = await DataAccessor.getMessagesAround({
-                                  zaloId: activeAccountId,
+                              window.dispatchEvent(new CustomEvent('chat:jumpToMessage', {
+                                detail: {
+                                  accountId: activeAccountId,
                                   threadId: activeThreadId,
-                                  msgId: String(targetMsg.msg_id || targetMsg.timestamp),
-                                  limit: 80,
-                                });
-                                const aroundMsgs = aroundRes?.messages;
-                                if (!aroundMsgs?.length) return;
-
-                                setMessages(activeAccountId, activeThreadId, aroundMsgs);
-
-                                await new Promise<void>(resolve => {
-                                  requestAnimationFrame(() => {
-                                    requestAnimationFrame(() => resolve());
-                                  });
-                                });
-
-                                const el2 = document.getElementById(`msg-${msgId}`);
-                                if (el2) {
-                                  scrollAndHighlight(el2);
-                                }
-                              } catch (err) {
-                                console.error('[GroupBoard:onScrollToMsg] Failed to load messages around target:', err);
-                              }
+                                  messageId: msgId,
+                                },
+                              }));
                             }}
                             onNoteClick={(note) => {
                               window.dispatchEvent(new CustomEvent('groupinfo:viewNote', { detail: note }));

@@ -4,6 +4,8 @@ import { useAppStore } from '@/store/appStore';
 import { useAccountStore } from '@/store/accountStore';
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc from '@/lib/ipc';
+import { channelSupports, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 type FriendStatus =
   | 'loading'
@@ -36,10 +38,15 @@ export default function FriendRequestBar({ zaloId, userId, contact, getAuth, onR
 
   // Check friendship + request status
   React.useEffect(() => {
-    // Skip for non-Zalo channels (FB doesn't have friend requests)
+    // Skip for channels that don't support friend requests
     const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
-    if (acc && (acc.channel || 'zalo') !== 'zalo') {
+    if (acc && !channelSupports((acc.channel || CHANNEL.ZALO) as Channel, 'supportsFriendRequest')) {
       setStatus('friend'); // FB contacts are always "accessible"
+      return;
+    }
+    // Chỉ dùng Zalo IPC cho Zalo accounts
+    if (acc && (acc.channel || CHANNEL.ZALO) !== CHANNEL.ZALO) {
+      setStatus('friend');
       return;
     }
 

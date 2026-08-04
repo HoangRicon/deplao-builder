@@ -18,9 +18,8 @@ function isEmployeeMode(): boolean {
 }
 
 /** Helper: row → Workflow shape (pageIds array) */
-function normalizeWorkflowChannel(channel?: string): WorkflowChannel {
-    return channel === 'facebook' ? 'facebook' : 'zalo';
-}
+import { normalizeChannel } from '../../src/configs/channelConfig';
+const normalizeWorkflowChannel = (channel?: string): WorkflowChannel => normalizeChannel(channel) as WorkflowChannel;
 
 function rowToWorkflow(r: any): Workflow {
     const pageIdsRaw: string = r.page_ids || r.page_id || '';

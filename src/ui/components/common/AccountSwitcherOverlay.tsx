@@ -3,6 +3,8 @@ import { useAppStore } from '@/store/appStore';
 import { useAccountStore } from '@/store/accountStore';
 import { toLocalMediaUrl } from '@/lib/localMedia';
 import { PhoneIcon } from './icons';
+import { Channel, getChannelLabel, getChannelColor } from '../../../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 /**
  * AccountSwitcherOverlay - Ctrl+Tab quick account switcher
@@ -76,9 +78,9 @@ export default function AccountSwitcherOverlay() {
     const acc = getAcc(virtualIdx);
     if (!acc) return null;
 
-    const channel = (acc.channel || 'zalo') as string;
-    const channelLabel = channel === 'zalo' ? 'Zalo' : 'Facebook';
-    const channelColor = channel === 'zalo' ? '#0068FF' : '#1877F2';
+    const channel = (acc.channel || CHANNEL.ZALO) as string;
+    const channelLabel = getChannelLabel(channel as Channel);
+    const channelColor = getChannelColor(channel as Channel);
 
     const cardBg = sel
       ? isLight

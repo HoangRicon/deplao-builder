@@ -23,6 +23,8 @@ import { showConfirm } from '../common/ConfirmDialog';
 import { extractApiError } from '@/utils/apiError';
 import type { ChannelCapability } from '../../../configs/channelConfig';
 import * as channelIpc from '@/lib/channelIpc';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
+import { getAdapter } from '@/lib/adapters/registry';
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 function useAuth() {
@@ -187,11 +189,13 @@ export function ReportAction({ targetId, targetName, targetType, onReported }: R
 interface LeaveGroupActionProps {
   groupId: string;
   groupName: string;
+  channel?: string;
   onLeft?: () => void;
 }
 
-export function LeaveGroupAction({ groupId, groupName, onLeft }: LeaveGroupActionProps) {
+export function LeaveGroupAction({ groupId, groupName, channel = CHANNEL.ZALO, onLeft }: LeaveGroupActionProps) {
   const getAuth = useAuth();
+  const { activeAccountId } = useAccountStore();
   const { showNotification } = useAppStore();
   const [loading, setLoading] = useState(false);
 
@@ -204,10 +208,13 @@ export function LeaveGroupAction({ groupId, groupName, onLeft }: LeaveGroupActio
     });
     if (!ok) return;
     const auth = getAuth();
-    if (!auth) return;
+    if (isZalo(channel) && !auth) return;
+    if (!activeAccountId) return;
     setLoading(true);
     try {
-      const res = await ipc.zalo?.leaveGroup({ auth, groupId });
+      const res = isZalo(channel)
+        ? await ipc.zalo?.leaveGroup({ auth, groupId })
+        : await (getAdapter(channel as any) as any).leaveGroup({ accountId: activeAccountId, threadId: groupId });
       if (res?.success) {
         showNotification('Đã rời khỏi nhóm', 'success');
         onLeft?.();
@@ -378,6 +385,8 @@ export function MutualGroupsRow({ userId, onOpen }: MutualGroupsRowProps) {
     if (!activeAccountId || !userId) return;
     const acc = useAccountStore.getState().getActiveAccount();
     if (!acc) return;
+    // Guard: only fetch mutual groups for Zalo accounts
+    if (!isZalo(acc.channel)) { setCount(0); return; }
     const auth = buildZaloAuth(acc, activeAccountId);
     ipc.zalo?.getRelatedFriendGroup({ auth, userId })
       .then((res: any) => {
@@ -437,7 +446,7 @@ export function GroupActionSection({ groupId, groupName, isOwner, onLeft, channe
       {supportsReport && <ReportAction targetId={groupId} targetName={groupName} targetType="group" />}
       <DeleteHistoryAction threadId={groupId} />
       {supportsLeave && !isOwner && (
-        <LeaveGroupAction groupId={groupId} groupName={groupName} onLeft={onLeft} />
+        <LeaveGroupAction groupId={groupId} groupName={groupName} channel={channelCap?.id} onLeft={onLeft} />
       )}
     </div>
   );
@@ -466,7 +475,7 @@ export function UserActionSection({
   return (
     <div className="border-t border-gray-700">
       {supportsMutualGroups && <MutualGroupsRow userId={userId} onOpen={onMutualGroupsOpen} />}
-      {supportsBlock && <BlockUserAction userId={userId} userName={userName} channel={channelCap?.id || 'zalo'} />}
+      {supportsBlock && <BlockUserAction userId={userId} userName={userName} channel={channelCap?.id || CHANNEL.ZALO} />}
       {supportsReport && <ReportAction targetId={userId} targetName={userName} targetType="user" />}
       <DeleteHistoryAction threadId={userId} />
       {supportsRemoveFriend && isFriend && (

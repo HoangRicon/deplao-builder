@@ -7,6 +7,7 @@ import ZaloLabelBadge from '../tags/ZaloLabelBadge';
 import type { LocalLabelItem } from '@/components/common/LocalLabelSelector';
 import { extractUserProfile } from '../../../../utils/profileUtils';
 import { CloudIcon, CloseIcon, HardDriveIcon, SearchIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
       }
 
       // 3. Assign Zalo labels if selected
-      if (tagTab === 'zalo' && selectedZaloLabelIds.length > 0) {
+      if (tagTab === CHANNEL.ZALO && selectedZaloLabelIds.length > 0) {
         try {
           const acc = getActiveAccount();
           if (acc) {
@@ -389,7 +390,7 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
                     className={`flex-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${tagTab === 'local' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}><HardDriveIcon className="w-4 h-4 inline" /> Nhãn Local
                   </button>
                   <button onClick={() => setTagTab('zalo')}
-                    className={`flex-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${tagTab === 'zalo' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                    className={`flex-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${tagTab === CHANNEL.ZALO ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
                     <CloudIcon className="w-4 h-4 inline" /> Nhãn Zalo
                   </button>
                 </div>
@@ -427,7 +428,7 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
               )}
 
               {/* Zalo labels list */}
-              {tagTab === 'zalo' && (
+              {tagTab === CHANNEL.ZALO && (
                 <div className="px-3 pb-3 max-h-36 overflow-y-auto">
                   <p className="text-[10px] text-gray-400 mb-1.5">Zalo chỉ cho phép 1 nhãn / hội thoại</p>
                   {zaloLabels.length === 0 ? (

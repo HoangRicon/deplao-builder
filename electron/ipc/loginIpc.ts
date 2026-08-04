@@ -7,6 +7,8 @@ import FacebookConnectionManager from '../../src/utils/FacebookConnectionManager
 import EventBroadcaster from '../../src/services/event/EventBroadcaster';
 import Logger from '../../src/utils/Logger';
 import ZaloLoginHelper from '../../src/utils/ZaloLoginHelper';
+import * as TelegramUserListener from '../../src/services/telegram/TelegramUserListener';
+import * as TelegramBotChannelService from '../../src/services/telegram/TelegramBotChannelService';
 function postLoginSetup(_zaloId: string, _mainWindow: BrowserWindow | null, _name?: string, _phone?: string) {
     // No-op in open-source build.
 }
@@ -186,7 +188,12 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
     // ─── Ngắt kết nối tài khoản ───────────────────────────────────────────
     ipcMain.handle('login:disconnect', async (_event, { zaloId }) => {
         try {
-            await loginService.disconnectUser(zaloId);
+            const account = DatabaseService.getInstance().getAccounts().find((item: any) => item.zalo_id === zaloId);
+            if (account?.channel === 'telegram_user') {
+                TelegramUserListener.stopListener(zaloId);
+            } else {
+                await loginService.disconnectUser(zaloId);
+            }
             return { success: true };
         } catch (error: any) {
             Logger.error(`[loginIpc] disconnect error: ${error.message}`);
@@ -201,6 +208,7 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
             for (const zaloId of connections.keys()) {
                 await loginService.disconnectUser(zaloId);
             }
+            TelegramUserListener.stopAllListeners();
             return { success: true };
         } catch (error: any) {
             return { success: false, error: error.message };
@@ -222,18 +230,30 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
             // Thêm trạng thái online/offline
             const accountsWithStatus = accounts.map((acc) => {
                 const isFB = (acc as any).channel === 'facebook';
+                const isTelegramUser = (acc as any).channel === 'telegram_user';
+                const isTelegramBot = (acc as any).channel === 'telegram_bot';
                 // For FB: zalo_id = fbId, need UUID for connection manager lookup
                 const fbUuid = isFB ? fbIdToUuid[acc.zalo_id] : undefined;
+                const isTelegramConnected = isTelegramUser && TelegramUserListener.isConnected(acc.zalo_id);
+                const isBotConnected = isTelegramBot && TelegramBotChannelService.isBotPolling(acc.zalo_id);
                 return {
                     ...acc,
                     proxy_id: (acc as any).proxy_id ?? null,
                     listenerActive: !!(acc as any).listener_active,
                     isOnline: isFB
                         ? !!(fbUuid && FacebookConnectionManager.get(fbUuid)?.isConnected())
-                        : ConnectionManager.isConnected(acc.zalo_id),
+                        : isTelegramUser
+                            ? isTelegramConnected
+                            : isTelegramBot
+                                ? isBotConnected
+                                : ConnectionManager.isConnected(acc.zalo_id),
                     isConnected: isFB
                         ? !!(fbUuid && FacebookConnectionManager.get(fbUuid)?.isConnected())
-                        : ConnectionManager.getConnection(acc.zalo_id) !== undefined,
+                        : isTelegramUser
+                            ? isTelegramConnected
+                            : isTelegramBot
+                                ? isBotConnected
+                                : ConnectionManager.getConnection(acc.zalo_id) !== undefined,
                     // For FB accounts, zalo_id IS the facebook_id now - expose for display
                     ...(isFB ? { facebook_id: acc.zalo_id } : {}),
                 };
@@ -251,6 +271,7 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
             const accounts = DatabaseService.getInstance().getAccounts();
             const account = accounts.find((a: any) => a.zalo_id === zaloId);
             const isFB = account?.channel === 'facebook';
+            const isTelegramUser = account?.channel === 'telegram_user';
 
             if (isFB) {
                 // Facebook cleanup: tìm fb_account UUID → disconnect + xóa cookie
@@ -262,6 +283,10 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
                     secureDelete(`fb_cookie_${fbAcc.id}`);
                     // Không gọi deleteFBAccount ở đây - deleteAccountData sẽ xử lý FB tables
                 }
+            } else if (isTelegramUser) {
+                // MTProto is independent from ConnectionManager. Stop the
+                // live GramJS client before removing its local session.
+                TelegramUserListener.stopListener(zaloId);
             } else {
                 // Zalo cleanup
                 const ZaloLoginHelper = require('../../src/utils/ZaloLoginHelper').default;
@@ -470,4 +495,3 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
         }
     });
 }
-

@@ -4,6 +4,8 @@ import { useAppStore, LabelData } from '@/store/appStore';
 import { useChatStore } from '@/store/chatStore';
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc, { buildZaloAuth } from '@/lib/ipc';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
+import { getAdapter } from '@/lib/adapters/registry';
 
 // Cache TTL: 12 hour
 const FRIENDS_CACHE_TTL = 12 * 60 * 60 * 1000;
@@ -25,7 +27,7 @@ function useFriends() {
 
   // Keep fetchFromApi up-to-date without causing effect re-runs
   fetchFromApiRef.current = async (force = false) => {
-    if (!auth || !activeAccountId) return;
+    if (!isZalo(acc?.channel) || !auth || !activeAccountId) return;
     setRefreshing(true);
     try {
       const res = await ipc.zalo?.getFriends(auth);
@@ -39,6 +41,12 @@ function useFriends() {
   };
 
   useEffect(() => {
+    if (!isZalo(acc?.channel)) {
+      setFriends([]);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (!auth || !activeAccountId) return;
     let cancelled = false;
 
@@ -163,7 +171,7 @@ function LabelTabsFilter({
           <button
             onClick={() => setTab('zalo')}
             className={`relative flex items-center gap-1.5 py-2 pr-4 text-xs font-medium transition-colors ${
-              tab === 'zalo' ? 'text-blue-400' : 'text-gray-400 hover:text-gray-300'
+              tab === CHANNEL.ZALO ? 'text-blue-400' : 'text-gray-400 hover:text-gray-300'
             }`}
           >
             <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" className="text-blue-400 flex-shrink-0">
@@ -175,7 +183,7 @@ function LabelTabsFilter({
                 {selectedZaloCount}
               </span>
             )}
-            {tab === 'zalo' && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400 rounded-t" />}
+            {tab === CHANNEL.ZALO && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400 rounded-t" />}
           </button>
         )}
         {selectedCount > 0 && (
@@ -790,15 +798,17 @@ export function SendCardModal({ threadId, threadType, onClose }: {
 }
 
 // ─── AddMemberToGroupModal ────────────────────────────────────────────────────
-export function AddMemberToGroupModal({ groupId, groupName, existingMemberIds = [], onClose, onAdded }: {
+export function AddMemberToGroupModal({ groupId, groupName, existingMemberIds = [], channel, onClose, onAdded }: {
   groupId: string;
   groupName: string;
   existingMemberIds?: string[];
+  channel?: string;
   onClose: () => void;
   onAdded?: () => void;
 }) {
-  const { getActiveAccount } = useAccountStore();
+  const { getActiveAccount, activeAccountId } = useAccountStore();
   const { showNotification } = useAppStore();
+  const { contacts } = useChatStore();
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
@@ -806,11 +816,22 @@ export function AddMemberToGroupModal({ groupId, groupName, existingMemberIds = 
   const { friends, loading, refreshing, refresh } = useFriends();
   const acc = getActiveAccount();
   const auth = acc ? buildZaloAuth(acc) : null;
+  const activeChannel = channel || acc?.channel || CHANNEL.ZALO;
+  const telegramCandidates = (activeAccountId ? (contacts[activeAccountId] || []) : [])
+    .filter(contact => contact.contact_type !== 'group')
+    .map(contact => ({
+      userId: contact.contact_id,
+      displayName: contact.alias || contact.display_name || contact.contact_id,
+      zaloName: contact.display_name || '',
+      avatar: contact.avatar_url || '',
+      phoneNumber: contact.phone || '',
+    }));
+  const candidates = isZalo(activeChannel) ? friends : telegramCandidates;
 
   const toggleSelect = (id: string) =>
     setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
 
-  const filteredFriends = friends.filter(f => {
+  const filteredFriends = candidates.filter(f => {
     if (existingMemberIds.includes(f.userId)) return false;
     const q = search.toLowerCase();
     if (!q) return true;
@@ -826,12 +847,15 @@ export function AddMemberToGroupModal({ groupId, groupName, existingMemberIds = 
   });
 
   const handleAdd = async () => {
-    if (!auth || selected.size === 0) return;
+    if (selected.size === 0 || !activeAccountId) return;
+    if (isZalo(activeChannel) && !auth) return;
     setAdding(true);
     let success = 0, failed = 0;
     for (const userId of selected) {
       try {
-        const res = await ipc.zalo?.addUserToGroup({ auth, userId, groupId });
+        const res = isZalo(activeChannel)
+          ? await ipc.zalo?.addUserToGroup({ auth, userId, groupId })
+          : await (getAdapter(activeChannel as any) as any).addMember({ accountId: activeAccountId, threadId: groupId, userId });
         if (res?.success) success++; else failed++;
       } catch { failed++; }
     }

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { TelegramForumTopicContext } from '../src/models/telegram';
 
 // Expose typed API to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -144,6 +145,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMessages: (params: any) => ipcRenderer.invoke('db:getMessages', params),
     getMessagesAround: (params: any) => ipcRenderer.invoke('db:getMessagesAround', params),
     getContacts: (zaloId: string) => ipcRenderer.invoke('db:getContacts', { zaloId }),
+    getContactsFiltered: (params: any) => ipcRenderer.invoke('db:getContactsFiltered', params),
+    saveAccount: (account: any) => ipcRenderer.invoke('db:saveAccount', account),
     searchContactByPhone: (params: { zaloId: string; phone: string }) => ipcRenderer.invoke('db:searchContactByPhone', params),
     searchMessages: (params: any) => ipcRenderer.invoke('db:searchMessages', params),
     getMediaMessages: (params: any) => ipcRenderer.invoke('db:getMediaMessages', params),
@@ -326,9 +329,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ─── Auto-update ─────────────────────────────────────────────────
   update: {
-    check:    () => ipcRenderer.send('update:check'),
-    download: () => ipcRenderer.send('update:download'),
-    install:  () => ipcRenderer.send('update:install'),
+    check:         () => ipcRenderer.send('update:check'),
+    download:      () => ipcRenderer.send('update:download'),
+    install:       () => ipcRenderer.send('update:install'),
+    rendererReady: () => ipcRenderer.send('update:renderer-ready'),
   },
 
   // ─── Integration Hub ──────────────────────────────────────────────
@@ -501,6 +505,94 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanResetCache:() => ipcRenderer.invoke('fb:scanResetCache'),
   },
 
+  // ─── Telegram Bot ───────────────────────────────────────────────────────
+  telegram: {
+    validateBot:    (botToken: string) => ipcRenderer.invoke('telegram:validateBot', botToken),
+    startBot:       (account: any) => ipcRenderer.invoke('telegram:startBot', account),
+    stopBot:        (accountId: string) => ipcRenderer.invoke('telegram:stopBot', accountId),
+    isBotPolling:   (params: any) => ipcRenderer.invoke('telegram:isBotPolling', params),
+    sendMessage:    (params: any) => ipcRenderer.invoke('telegram:sendMessage', params),
+    sendPhoto:      (params: any) => ipcRenderer.invoke('telegram:sendPhoto', params),
+    sendVideo:      (params: any) => ipcRenderer.invoke('telegram:sendVideo', params),
+    sendDocument:   (params: any) => ipcRenderer.invoke('telegram:sendDocument', params),
+    sendAudio:      (params: any) => ipcRenderer.invoke('telegram:sendAudio', params),
+    forwardMessage: (params: any) => ipcRenderer.invoke('telegram:forwardMessage', params),
+    deleteMessage:  (params: any) => ipcRenderer.invoke('telegram:deleteMessage', params),
+    addReaction:    (params: any) => ipcRenderer.invoke('telegram:addReaction', params),
+    pinMessage:     (params: any) => ipcRenderer.invoke('telegram:pinMessage', params),
+    sendPoll:       (params: any) => ipcRenderer.invoke('telegram:sendPoll', params),
+    editMessage:    (params: any) => ipcRenderer.invoke('telegram:editMessage', params),
+    getActiveBots:  () => ipcRenderer.invoke('telegram:getActiveBots'),
+  },
+
+  // ─── Telegram User (MTProto) ────────────────────────────────────────────
+  telegramUser: {
+    sendCode:       (phoneNumber: string) => ipcRenderer.invoke('telegramUser:sendCode', phoneNumber),
+    signIn:         (params: any) => ipcRenderer.invoke('telegramUser:signIn', params),
+    signIn2FA:      (password: string) => ipcRenderer.invoke('telegramUser:signIn2FA', password),
+    startListener:  (account: any) => ipcRenderer.invoke('telegramUser:startListener', account),
+    stopListener:   (accountId: string) => ipcRenderer.invoke('telegramUser:stopListener', accountId),
+    sendMessage:    (params: any) => ipcRenderer.invoke('telegramUser:sendMessage', params),
+    editMessage:    (params: any) => ipcRenderer.invoke('telegramUser:editMessage', params),
+    deleteMessages: (params: any) => ipcRenderer.invoke('telegramUser:deleteMessages', params),
+    forwardMessages:(params: any) => ipcRenderer.invoke('telegramUser:forwardMessages', params),
+    pinMessage:     (params: any) => ipcRenderer.invoke('telegramUser:pinMessage', params),
+    syncPinnedMessages: (params: any) => ipcRenderer.invoke('telegramUser:syncPinnedMessages', params),
+    ensureMessageAvailable: (params: any) => ipcRenderer.invoke('telegramUser:ensureMessageAvailable', params),
+    sendFile:       (params: any) => ipcRenderer.invoke('telegramUser:sendFile', params),
+    sendTopicFile:  (params: TelegramForumTopicContext & { filePath: string; caption?: string }) => ipcRenderer.invoke('telegramUser:sendTopicFile', params),
+    sendTyping:     (params: any) => ipcRenderer.invoke('telegramUser:sendTyping', params),
+    sendReaction:   (params: any) => ipcRenderer.invoke('telegramUser:sendReaction', params),
+    isConnected:    (accountId: string) => ipcRenderer.invoke('telegramUser:isConnected', accountId),
+    getActive:      () => ipcRenderer.invoke('telegramUser:getActive'),
+    refreshMessages:(params: { accountId: string }) => ipcRenderer.invoke('telegramUser:refreshMessages', params),
+    fetchSelfAvatar:(accountId: string) => ipcRenderer.invoke('telegramUser:fetchSelfAvatar', accountId),
+    // Group management
+    getGroupInfo:      (params: any) => ipcRenderer.invoke('telegramUser:getGroupInfo', params),
+    joinGroup:         (params: any) => ipcRenderer.invoke('telegramUser:joinGroup', params),
+    getGroupMembers:   (params: any) => ipcRenderer.invoke('telegramUser:getGroupMembers', params),
+    hydrateMessageSenders: (params: any) => ipcRenderer.invoke('telegramUser:hydrateMessageSenders', params),
+    setDialogMute:     (params: any) => ipcRenderer.invoke('telegramUser:setDialogMute', params),
+    setDialogArchived: (params: any) => ipcRenderer.invoke('telegramUser:setDialogArchived', params),
+    setDialogPin:      (params: any) => ipcRenderer.invoke('telegramUser:setDialogPin', params),
+    getMessageReactions:(params: any) => ipcRenderer.invoke('telegramUser:getMessageReactions', params),
+    addChatUser:       (params: any) => ipcRenderer.invoke('telegramUser:addChatUser', params),
+    deleteChatUser:    (params: any) => ipcRenderer.invoke('telegramUser:deleteChatUser', params),
+    editChatTitle:     (params: any) => ipcRenderer.invoke('telegramUser:editChatTitle', params),
+    editChatPhoto:     (params: any) => ipcRenderer.invoke('telegramUser:editChatPhoto', params),
+    editChatAdmin:     (params: any) => ipcRenderer.invoke('telegramUser:editChatAdmin', params),
+    leaveChat:         (params: any) => ipcRenderer.invoke('telegramUser:leaveChat', params),
+    blockUser:         (params: any) => ipcRenderer.invoke('telegramUser:blockUser', params),
+    unblockUser:       (params: any) => ipcRenderer.invoke('telegramUser:unblockUser', params),
+    exportChatInvite:  (params: any) => ipcRenderer.invoke('telegramUser:exportChatInvite', params),
+    readChatHistory:   (params: any) => ipcRenderer.invoke('telegramUser:readChatHistory', params),
+    getMessages:       (params: any) => ipcRenderer.invoke('telegramUser:getMessages', params),
+    repairMessageMedia:(params: { accountId: string; chatId: string; messageId: string }) => ipcRenderer.invoke('telegramUser:repairMessageMedia', params),
+    repairEmptyMessages:(params: { accountId: string; chatId: string; messageIds: string[] }) => ipcRenderer.invoke('telegramUser:repairEmptyMessages', params),
+    repairMessageQuotes:(params: { accountId: string; chatId: string; items: Array<{ messageId: string; replyToId: string }> }) => ipcRenderer.invoke('telegramUser:repairMessageQuotes', params),
+    getFullChat:       (params: any) => ipcRenderer.invoke('telegramUser:getFullChat', params),
+    getUserProfile:    (params: any) => ipcRenderer.invoke('telegramUser:getUserProfile', params),
+    resolveUsername:   (params: any) => ipcRenderer.invoke('telegramUser:resolveUsername', params),
+    searchContacts:    (params: any) => ipcRenderer.invoke('telegramUser:searchContacts', params),
+    getPeers:          (params: any) => ipcRenderer.invoke('telegramUser:getPeers', params),
+    // Forum / Topics
+    isForum:              (params: any) => ipcRenderer.invoke('telegramUser:isForum', params),
+    checkForumForNewGroups:(params: any) => ipcRenderer.invoke('telegramUser:checkForumForNewGroups', params),
+    getForumTopics:       (params: any) => ipcRenderer.invoke('telegramUser:getForumTopics', params),
+    getForumTopicMessages:(params: TelegramForumTopicContext & { limit?: number }) => ipcRenderer.invoke('telegramUser:getForumTopicMessages', params),
+    createForumTopic:     (params: any) => ipcRenderer.invoke('telegramUser:createForumTopic', params),
+    editForumTopic:       (params: TelegramForumTopicContext & { title?: string; iconEmojiId?: string; closed?: boolean; pinned?: boolean }) => ipcRenderer.invoke('telegramUser:editForumTopic', params),
+    sendTopicMessage:     (params: TelegramForumTopicContext & { text: string }) => ipcRenderer.invoke('telegramUser:sendTopicMessage', params),
+    // Sticker / GIF
+    getStickerSets:       (params: any) => ipcRenderer.invoke('telegramUser:getStickerSets', params),
+    getStickerSetStickers:(params: any) => ipcRenderer.invoke('telegramUser:getStickerSetStickers', params),
+    getRecentStickers:    (params: any) => ipcRenderer.invoke('telegramUser:getRecentStickers', params),
+    getGifs:              (params: any) => ipcRenderer.invoke('telegramUser:getGifs', params),
+    searchGifs:           (params: any) => ipcRenderer.invoke('telegramUser:searchGifs', params),
+    sendSticker:          (params: any) => ipcRenderer.invoke('telegramUser:sendSticker', params),
+    sendGif:              (params: any) => ipcRenderer.invoke('telegramUser:sendGif', params),
+  },
+
   // ─── ERP ─────────────────────────────────────────────────────────
   erp: {
     // Projects
@@ -615,6 +707,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'event:connected',
       'event:disconnected',
       'event:reaction',
+      'event:telegramReaction',
+      'event:messageEdited',
+      'event:messagesDeleted',
+      'event:userPresence',
+      'event:telegramEntityHydrated',
+      'event:forumTopicsChanged',
+      'event:groupMemberAvatar',
       'event:friendRequest',
       'event:friendAccepted',
       'event:groupEvent',
@@ -731,4 +830,3 @@ contextBridge.exposeInMainWorld('electronAPI', {
     test:          (proxy: any)                    => ipcRenderer.invoke('proxy:test', { proxy }),
   },
 });
-

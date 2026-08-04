@@ -26,6 +26,14 @@ export function toLocalMediaUrl(filePath: string, zaloId?: string): string {
     return filePath;
   }
 
+  // media://local/ prefix (legacy Telegram avatar format) → strip prefix and convert
+  if (filePath.startsWith('media://local/')) {
+    const rawPath = filePath.replace('media://local/', '');
+    const normalized = rawPath.replace(/\\/g, '/');
+    const withSlash = normalized.startsWith('/') ? normalized : '/' + normalized;
+    return 'local-media://' + withSlash;
+  }
+
   const mode = getMode();
   if (mode === 'employee') {
     // Employee: convert boss local path → boss REST URL

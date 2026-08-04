@@ -17,6 +17,7 @@ import { formatPhone } from '@/utils/phoneUtils';
 import ChatHistoryList from './ChatHistoryList';
 import SharedMessageContent from './SharedMessageContent';
 import { EMOJI_CATEGORIES, QUICK_EMOJIS } from '@/lib/chat/emojiUtils';
+import { CHANNEL } from '@/lib/channelHelper';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtTime(ts: number): string {
@@ -142,7 +143,7 @@ function QuickMsgPicker({ getAuth, accountId, onSelect, onClose }: {
   useEffect(() => {
     const auth = getAuth();
     if (!auth) { setLoading(false); return; }
-    const mode = (localStorage.getItem(`qm_mode_${accountId}`) as 'zalo'|'local') || 'zalo';
+    const mode = (localStorage.getItem(`qm_mode_${accountId}`) as 'zalo'|'local') || CHANNEL.ZALO;
     fetchQuickMessages(auth, accountId, mode).then(setItems).catch(() => setItems([])).finally(() => setLoading(false));
   }, [accountId]);
 

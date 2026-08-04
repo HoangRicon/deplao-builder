@@ -4,6 +4,7 @@ import { useAccountStore } from '@/store/accountStore';
 import DataAccessor from '@/lib/data/DataAccessor';
 import GroupAvatar from '../common/GroupAvatar';
 import { HardDriveIcon, CloudIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 import { formatMsgTime } from '@/lib/chat/messageParser';
 
 export default function ForwardMessageModal({ messages, contacts, onClose, onForward }: {
@@ -218,7 +219,7 @@ export default function ForwardMessageModal({ messages, contacts, onClose, onFor
               ><HardDriveIcon className="w-4 h-4 inline" /> Local</button>
               <button
                 onClick={() => { setLabelSource('zalo'); setSelectedLabelId(null); }}
-                className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${labelSource === 'zalo' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-600 text-gray-400 hover:border-gray-500 hover:text-gray-300'}`}
+                className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${labelSource === CHANNEL.ZALO ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-600 text-gray-400 hover:border-gray-500 hover:text-gray-300'}`}
               ><CloudIcon className="w-4 h-4 inline" /> Zalo</button>
             </div>
 

@@ -6,7 +6,7 @@ import { useAppStore } from '@/store/appStore';
 import { callApi, extractApiError } from '@/utils/apiError';
 import { showConfirm } from '../common/ConfirmDialog';
 import { toLocalMediaUrl } from '@/lib/localMedia';
-import { getCapability, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
 import { ImageIcon, PlayIcon } from '@/components/common/icons';
 
 
@@ -226,7 +226,7 @@ function QuickMessageDialog({
             className="w-full bg-gray-700 border border-gray-600 focus:border-blue-500 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-400 resize-none focus:outline-none transition-colors" />
 
           {/* ── Zalo mode: single image ── */}
-          {mode === 'zalo' && (
+          {mode === CHANNEL.ZALO && (
             mediaPreview ? (
               <div className="relative inline-block">
                 <img src={mediaPreview} alt="preview" className="w-24 h-24 rounded-xl object-cover border border-gray-600" />
@@ -421,8 +421,10 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
   const { showNotification } = useAppStore();
 
   const activeAccount = getActiveAccount();
-  const channelCap = getCapability((activeAccount?.channel || 'zalo') as Channel);
-  const [mode, setMode] = useState<QuickMessageMode>(() => channelCap.supportsQuickMessages ? getStoredMode(activeAccountId || '') : 'local');
+  // Telegram/Bot quick messages are stored locally. Do not reuse the Zalo
+  // per-account tab preference when a standalone non-Zalo account is active.
+  const canUseZaloQuickMessages = isZalo(activeAccount?.channel);
+  const [mode, setMode] = useState<QuickMessageMode>(() => canUseZaloQuickMessages ? getStoredMode(activeAccountId || '') : 'local');
   const [items, setItems] = useState<QuickMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -436,6 +438,10 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
   useEffect(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
   }, []);
+
+  useEffect(() => {
+    if (!canUseZaloQuickMessages && mode !== 'local') setMode('local');
+  }, [canUseZaloQuickMessages, mode]);
 
   // Close on outside click - only when clicking truly outside both panel AND dialog
   useEffect(() => {
@@ -457,6 +463,10 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
 
   const load = useCallback(async (force = false) => {
     if (!activeAccountId) return;
+    if (!canUseZaloQuickMessages && mode === CHANNEL.ZALO) {
+      setItems([]);
+      return;
+    }
     const auth = getAuth();
     if (!auth) return;
     setLoading(true);
@@ -468,11 +478,12 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
     } finally {
       setLoading(false);
     }
-  }, [activeAccountId, getAuth, mode, showNotification]);
+  }, [activeAccountId, canUseZaloQuickMessages, getAuth, mode, showNotification]);
 
   useEffect(() => { load(); }, [load]);
 
   const switchMode = (m: QuickMessageMode) => {
+    if (m === CHANNEL.ZALO && !canUseZaloQuickMessages) return;
     setMode(m);
     if (activeAccountId) setStoredMode(activeAccountId, m);
   };
@@ -511,7 +522,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
   const handleCreate = async (keyword: string, title: string, mediaPath?: string, localMediaFiles?: LocalMediaFile[]) => {
     const auth = getAuth();
     if (!auth || !activeAccountId) return;
-    if (mode === 'zalo') {
+    if (mode === CHANNEL.ZALO && canUseZaloQuickMessages) {
       await callApi(
         () => ipc.zalo?.addQuickMessage({ auth, keyword, title, mediaPath }),
         'Tạo tin nhắn nhanh thất bại'
@@ -536,7 +547,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
     if (!editItem || !activeAccountId) return;
     const auth = getAuth();
     if (!auth) return;
-    if (mode === 'zalo') {
+    if (mode === CHANNEL.ZALO && canUseZaloQuickMessages) {
       await callApi(
         () => ipc.zalo?.updateQuickMessage({ auth, keyword, title, mediaPath, itemId: editItem.id }),
         'Cập nhật tin nhắn nhanh thất bại'
@@ -567,7 +578,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
     });
     if (!ok) return;
     try {
-      if (mode === 'zalo') {
+      if (mode === CHANNEL.ZALO && canUseZaloQuickMessages) {
         const auth = getAuth();
         if (!auth) return;
         await callApi(
@@ -610,7 +621,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
           <span className="text-sm font-semibold text-white">Tin nhắn nhanh</span>
           <div className="flex items-center gap-2">
             {/* Mode toggle - hide Zalo tab for Facebook channel */}
-            {channelCap.supportsQuickMessages && (
+            {canUseZaloQuickMessages && (
             <div className="flex items-center gap-0.5 p-0.5 bg-gray-700 rounded-lg">
               <button
                 onClick={() => switchMode('local')}
@@ -625,7 +636,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
               <button
                 onClick={() => switchMode('zalo')}
                 title="Zalo API"
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${mode === 'zalo' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${mode === CHANNEL.ZALO ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
               >
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -643,7 +654,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700/60 flex-shrink-0 bg-gray-800/80">
           <div className="flex items-center gap-2">
             {/* Sync button - only on Zalo tab, not for Facebook channel */}
-            {mode === 'zalo' && channelCap.supportsQuickMessages && (
+            {mode === CHANNEL.ZALO && canUseZaloQuickMessages && (
               <SyncDropdown onSync={handleSync} syncing={syncing} anchorRef={syncBtnRef} />
             )}
             <button onClick={() => load(true)} disabled={loading} title="Làm mới"
@@ -677,7 +688,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
               </svg>
               Chưa có tin nhắn nhanh nào.
-              {mode === 'local' && channelCap.supportsQuickMessages && (
+              {mode === 'local' && canUseZaloQuickMessages && (
                 <span className="text-gray-400">
                   Chuyển sang tab <strong className="text-gray-400">Zalo</strong> và nhấn <strong className="text-gray-400">Đồng bộ</strong> để import
                 </span>
@@ -753,8 +764,8 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
 
         {/* Mode hint footer */}
         <div className={`px-4 py-2.5 border-t border-gray-700/60 flex-shrink-0 text-xs ${mode === 'local' ? 'text-green-400/70' : 'text-yellow-400/70'}`}>
-          {!channelCap.supportsQuickMessages
-            ? '✓ Local - tin nhắn nhanh cho kênh Facebook'
+          {!canUseZaloQuickMessages
+            ? '✓ Local - tin nhắn nhanh nội bộ cho kênh này'
             : mode === 'local'
             ? '✓ Local - không bị Zalo chặn số lượng tin nhắn nhanh'
             : '⚠ Zalo API - có thể bị giới hạn nếu bạn không dùng gói trả phí của Zalo'}
@@ -765,7 +776,7 @@ export function QuickMessageManagerPanel({ onClose, onSelect }: { onClose: () =>
       {showDialog && (
         <QuickMessageDialog
           initial={editItem}
-          mode={mode}
+          mode={canUseZaloQuickMessages ? mode : 'local'}
           onClose={() => { setShowDialog(false); setEditItem(undefined); }}
           onSave={editItem ? handleUpdate : handleCreate}
         />

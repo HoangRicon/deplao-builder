@@ -7,6 +7,7 @@ import { useVisibleAccounts } from '@/hooks/useVisibleAccounts';
 import ChannelBadge from '../common/ChannelBadge';
 import { formatPhone } from '@/utils/phoneUtils';
 import { FolderIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 interface AccountPanelProps {
   onAddAccount: () => void;
@@ -130,7 +131,7 @@ export default function AccountPanel({ onAddAccount }: AccountPanelProps) {
               >
                 {/* Avatar */}
                 <div className="relative flex-shrink-0">
-                  <div className="w-8 h-8 rounded-full overflow-hidden ring-1 ring-white/10">
+                  <div className="w-10 h-10 rounded-full overflow-hidden ring-1 ring-white/10">
                     {account.avatar_url ? (
                       <img src={account.avatar_url} alt={account.full_name}
                         className="w-full h-full object-cover"
@@ -139,7 +140,7 @@ export default function AccountPanel({ onAddAccount }: AccountPanelProps) {
                           img.src = '';
                           const ownerId = account.zalo_id;
                           import('@/lib/avatarRetry').then(({ handleAvatarError }) =>
-                            handleAvatarError({ ownerId, contactId: ownerId, channel: account.channel || 'zalo' })
+                            handleAvatarError({ ownerId, contactId: ownerId, channel: account.channel || CHANNEL.ZALO })
                           ).then(newUrl => {
                             if (newUrl) {
                               useAccountStore.getState().updateAccount(ownerId, { avatar_url: newUrl });
@@ -163,7 +164,7 @@ export default function AccountPanel({ onAddAccount }: AccountPanelProps) {
                   )}
                   {/* Channel badge */}
                   <div className="absolute -top-1 -left-1 z-10 pointer-events-none scale-[0.7]">
-                    <ChannelBadge channel={(account.channel as any) || 'zalo'} size="xs" />
+                    <ChannelBadge channel={(account.channel as any) || CHANNEL.ZALO} size="md" />
                   </div>
                 </div>
 
@@ -180,6 +181,8 @@ export default function AccountPanel({ onAddAccount }: AccountPanelProps) {
                   <div className="flex items-center gap-1.5 mt-0.5">
                     {account.phone ? (
                       <span className="text-[10px] text-gray-400 truncate">{formatPhone(account.phone)}</span>
+                    ) : account.username ? (
+                      <span className="text-[10px] text-gray-400 truncate">@{account.username}</span>
                     ) : null}
                     {!account.isConnected && !listenerDead && (
                       <span className="text-[9px] text-red-400/70 font-medium">Chưa kết nối</span>

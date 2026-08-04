@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 export interface UpdateInfo {
   version: string;
-  releaseNotes?: string;
+  releaseNotes?: string | Array<{ note: string }>;
 }
 
 export interface ProgressInfo {

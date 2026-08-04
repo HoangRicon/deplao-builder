@@ -13,6 +13,7 @@ import type { LocalLabelItem } from '@/components/common/LocalLabelSelector';
 import NoteList from '../notes/NoteList';
 import PhoneDisplay from '@/components/common/PhoneDisplay';
 import type { PinnedNote } from '@/components/chat/PinnedMessages';
+import { CHANNEL } from '@/lib/channelHelper';
 import { GiftIcon } from '@/components/common/icons';
 
 interface CRMContactDetailPanelProps {
@@ -343,7 +344,7 @@ export default function CRMContactDetailPanel({ contact, allLabels, localLabels,
                     </button>
                     <button
                       onClick={() => setNoteTab('zalo')}
-                      className={`flex-1 py-1 font-medium transition-colors ${noteTab === 'zalo' ? 'bg-yellow-500/80 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                      className={`flex-1 py-1 font-medium transition-colors ${noteTab === CHANNEL.ZALO ? 'bg-yellow-500/80 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
                       Zalo ({zaloNotes.length})
                     </button>
                   </div>
@@ -355,7 +356,7 @@ export default function CRMContactDetailPanel({ contact, allLabels, localLabels,
                 )}
 
                 {/* Zalo group notes - read-only, logic cũ */}
-                {isGroup && noteTab === 'zalo' && (
+                {isGroup && noteTab === CHANNEL.ZALO && (
                   <div className="space-y-2">
                     {zaloNotes.length === 0 && (
                       <p className="text-xs text-gray-400 text-center py-2">Chưa có ghi chú Zalo nào</p>

@@ -36,6 +36,7 @@ import {
   FBInitTaskStatus,
   FBInitNeeds,
 } from '@/lib/fbInitUtils';
+import { CHANNEL, isFacebook, isTelegram } from '@/lib/channelHelper';
 
 // ── Task metadata ─────────────────────────────────────────────────────────────
 
@@ -101,9 +102,10 @@ interface Props {
 
 export default function AccountInitPanel({ accountId, onClose }: Props) {
   const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === accountId);
-  const channel = acc?.channel || 'zalo';
-  const isFB = channel === 'facebook';
-  const taskList = isFB ? FB_TASKS : ZALO_TASKS;
+  const channel = acc?.channel || CHANNEL.ZALO;
+  const isFB = isFacebook(channel);
+  const isTG = isTelegram(channel);
+  const taskList = isFB ? FB_TASKS : isTG ? [] : ZALO_TASKS;
 
   const [progress, setProgress] = useState<ProgressMap>(() => mkInitialProgress(taskList as string[]));
   const [needs, setNeeds]       = useState<(InitNeeds | FBInitNeeds) | null>(null);
@@ -126,7 +128,11 @@ export default function AccountInitPanel({ accountId, onClose }: Props) {
     if (!acc) { onClose(); return; }
     abortRef.current = { current: false };
 
-    if (isFB) {
+    if (isTG) {
+      // Telegram: no init needed, info comes from MTProto/Bot API
+      onClose();
+      return;
+    } else if (isFB) {
       // Facebook init flow
       checkFBAccountInitNeeds(accountId).then(initNeeds => {
         if (!initNeeds.any) { onClose(); return; }

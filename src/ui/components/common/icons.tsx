@@ -134,10 +134,16 @@ export const BellOffIcon = ({ className, size }: IconProps) => (
 
 export const BotIcon = ({ className, size }: IconProps) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={toSize(className, size)}>
-    <path d="M21.5 11.5c-.2-.5-.6-.6-.9-.6V8c0-1.1-.9-2-2-2h-6V4.4c.3-.3.5-.7.5-1.1a1.5 1.5 0 0 0-3 0c0 .4.2.8.5 1.1V6H5c-1.1 0-2 .9-2 2v3c-.6 0-1 .4-1 1v2c0 .6.4 1 1 1h1v5c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-5h1c.6 0 1-.4 1-1v-2c0-.5-.4-.9-.5-.9z" />
-    <ellipse cx="8.5" cy="12" rx="1.2" ry="1.8" fill="currentColor" stroke="none" />
-    <ellipse cx="15.5" cy="12" rx="1.2" ry="1.8" fill="currentColor" stroke="none" />
-    <rect x="8" y="16" width="8" height="2.5" rx="1" fill="currentColor" stroke="none" />
+    {/* Antenna */}
+    <path d="M12 2v3" />
+    <circle cx="12" cy="2" r="1" fill="currentColor" stroke="none" />
+    {/* Head - taller square */}
+    <rect x="4" y="6" width="16" height="15" rx="2" />
+    {/* Eyes - square dots */}
+    <rect x="8" y="11" width="2.5" height="3" rx="0.5" fill="currentColor" stroke="none" />
+    <rect x="13.5" y="11" width="2.5" height="3" rx="0.5" fill="currentColor" stroke="none" />
+    {/* Mouth */}
+    <line x1="9" y1="17" x2="15" y2="17" />
   </svg>
 );
 

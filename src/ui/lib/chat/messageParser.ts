@@ -2,6 +2,7 @@
  * messageParser.ts - Các helper parse nội dung tin nhắn (content, quote, media URL, etc.)
  * Dùng chung cho ChatWindow, MessageBubbles, và các component khác.
  */
+import React from 'react';
 import { convertZaloEmojis } from './emojiUtils';
 
 /**
@@ -22,6 +23,52 @@ export function parseTxt(content: string): string {
     if (p?.title && typeof p.title === 'string' && !p.href && !p.thumb) return convertZaloEmojis(p.title);
     return '';
   } catch { return convertZaloEmojis(content); }
+}
+
+/**
+ * Detect URL trong text và trả về React nodes với link clickable.
+ * Hỗ trợ: http://, https://, www., t.me/, các domain phổ biến.
+ */
+export function linkifyText(text: string): React.ReactNode[] {
+  if (!text) return [text];
+  // Regex match URL: http(s)://, www., hoặc domain pattern
+  const urlRegex = /(https?:\/\/[^\s<>"')\]]+|www\.[^\s<>"')\]]+|[a-zA-Z0-9._-]+\.(com|vn|net|org|io|dev|app|me|co|xyz|info|tv|gg|link|page|site|online|tech|store|fun|icu|top|cc|pw|tk|ml|ga|cf|gq)(?:\/[^\s<>"')\]]*)?)/gi;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    // Thêm text trước match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const rawUrl = match[0];
+    // Chuẩn hóa URL: nếu bắt đầu bằng www. thì thêm https://
+    const href = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+    parts.push(
+      React.createElement('a', {
+        key: `link-${match.index}`,
+        href,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        className: 'text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer break-all',
+        onClick: (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          // Dùng Electron shell.openExternal nếu có
+          try { window.electronAPI?.shell?.openExternal?.(href); } catch {}
+        },
+        title: href,
+      }, rawUrl)
+    );
+    lastIndex = match.index + rawUrl.length;
+  }
+
+  // Thêm phần text còn lại
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : [text];
 }
 
 /**

@@ -2,7 +2,35 @@ import React from 'react';
 import { zaloCodeToEmoji } from '@/lib/chat/emojiUtils';
 
 /** Parse reactions từ msg.reactions -> { emoji: count } (dùng cho hiển thị bubble) */
-function parseReactions(raw: any): Record<string, number> {
+function reactionKey(value: string, channel?: string): string {
+  return channel === 'telegram_user' ? value : zaloCodeToEmoji(value);
+}
+
+// Normalize common emoji variants to ensure proper color rendering
+const EMOJI_NORMALIZE: Record<string, string> = {
+  '❤': '❤️', '❤︎': '❤️',
+  '👍': '👍️', '👍︎': '👍️',
+  '👎': '👎️', '👎︎': '👎️',
+  '🔥': '🔥️', '🔥︎': '🔥️',
+  '👏': '👏️', '👏︎': '👏️',
+  '😁': '😁️', '😁︎': '😁️',
+  '😢': '😢️', '😢︎': '😢️',
+  '😮': '😮️', '😮︎': '😮️',
+  '🥰': '🥰️', '🥰︎': '🥰️',
+  '🤔': '🤔️', '🤔︎': '🤔️',
+  '🤯': '🤯️', '🤯︎': '🤯️',
+  '🎉': '🎉️', '🎉︎': '🎉️',
+  '😡': '😡️', '😡︎': '😡️',
+  '😂': '😂️', '😂︎': '😂️',
+  '😍': '😍️', '😍︎': '😍️',
+};
+
+function displayReactionEmoji(value: string): string {
+  if (value.startsWith('tg_custom:')) return '✨';
+  return EMOJI_NORMALIZE[value] || value;
+}
+
+function parseReactions(raw: any, channel?: string): Record<string, number> {
   if (!raw) return {};
   let parsed = raw;
   if (typeof parsed === 'string') {
@@ -10,7 +38,7 @@ function parseReactions(raw: any): Record<string, number> {
   }
   if (!parsed || typeof parsed !== 'object') return {};
 
-  const toEmoji = (k: string) => zaloCodeToEmoji(k);
+  const toEmoji = (k: string) => reactionKey(k, channel);
 
   // Format mới: { total, lastReact, emoji: { emojiChar: { total, users } } }
   if (parsed.emoji && typeof parsed.emoji === 'object') {
@@ -36,7 +64,7 @@ function parseReactions(raw: any): Record<string, number> {
 }
 
 /** Parse reactions ra full ReactionData (có users) để check current user và hiển thị popup */
-function parseReactionsFull(raw: any): { total: number; emoji: Record<string, { total: number; users: Record<string, number> }> } {
+function parseReactionsFull(raw: any, channel?: string): { total: number; emoji: Record<string, { total: number; users: Record<string, number> }> } {
   const empty = { total: 0, emoji: {} };
   if (!raw) return empty;
   let parsed = raw;
@@ -45,7 +73,7 @@ function parseReactionsFull(raw: any): { total: number; emoji: Record<string, { 
   }
   if (!parsed || typeof parsed !== 'object') return empty;
 
-  const convertKey = (k: string) => zaloCodeToEmoji(k);
+  const convertKey = (k: string) => reactionKey(k, channel);
 
   // New format: has .emoji with user counts - convert Zalo codes to emoji
   if (parsed.emoji && typeof parsed.emoji === 'object') {
@@ -132,14 +160,50 @@ function ReactionContextMenu({ x, y, msg, myEmoji, onClose, onReact, onCancel }:
 
 // ─── Reaction Popup ──────────────────────────────────────────────────────────
 
-function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserId, onClose }: {
+function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserId, onClose, ownerZaloId }: {
   msg: any; initialEmoji: string;
   contacts: any[]; groupMembers?: any[]; currentUserId: string;
   onClose: () => void;
+  ownerZaloId?: string;
 }) {
   const [tab, setTab] = React.useState(initialEmoji || 'all');
-  const data = parseReactionsFull(msg.reactions);
+  const [fetchedData, setFetchedData] = React.useState<ReturnType<typeof parseReactionsFull> | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const baseData = parseReactionsFull(msg.reactions, msg.channel);
+  const data = fetchedData || baseData;
   const totalAll = data.total;
+
+  // Fetch full reaction list từ Telegram API khi popup mở
+  React.useEffect(() => {
+    if (!ownerZaloId || msg.channel !== 'telegram_user') return;
+    const threadId = msg.thread_id || msg.owner_zalo_id;
+    if (!threadId) return;
+    setLoading(true);
+    const ipc = (window as any).electronAPI?.telegramUser;
+    ipc?.getMessageReactions({
+      accountId: ownerZaloId,
+      chatId: threadId,
+      messageId: msg.msg_id,
+    }).then((res: any) => {
+      if (!res?.success || !res.reactions?.length) return;
+      // REPLACE (not merge) with API results to avoid double-counting
+      const replaced: ReturnType<typeof parseReactionsFull> = { total: 0, emoji: {} };
+      for (const r of res.reactions) {
+        const emoji = r.emoji;
+        if (!emoji) continue;
+        if (!replaced.emoji[emoji]) {
+          replaced.emoji[emoji] = { total: 0, users: {} };
+        }
+        replaced.emoji[emoji].total += 1;
+        if (r.userId) {
+          replaced.emoji[emoji].users[r.userId] = (replaced.emoji[emoji].users[r.userId] || 0) + 1;
+        }
+      }
+      // Calculate total
+      replaced.total = Object.values(replaced.emoji).reduce((s, e) => s + e.total, 0);
+      setFetchedData(replaced);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, [ownerZaloId, msg.msg_id, msg.channel]);
 
   const getUsersForTab = (): { uid: string; emojis: Record<string, number>; total: number }[] => {
     if (tab === 'all') {
@@ -166,14 +230,14 @@ function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserI
     const c = contacts.find(c => c.contact_id === uid);
     if (c?.alias || c?.display_name) return c.alias || c.display_name;
     // Fallback: look up in group members list
-    const m = groupMembers?.find(m => m.userId === uid);
-    if (m?.displayName) return m.displayName;
+    const m = groupMembers?.find(m => (m.userId || m.id) === uid);
+    if (m?.displayName || m?.firstName) return m.displayName || [m.firstName, m.lastName].filter(Boolean).join(' ');
     return uid;
   };
   const getAvatar = (uid: string) => {
     const c = contacts.find(c => c.contact_id === uid);
     if (c?.avatar_url) return c.avatar_url;
-    const m = groupMembers?.find(m => m.userId === uid);
+    const m = groupMembers?.find(m => (m.userId || m.id) === uid);
     return m?.avatar || '';
   };
   const users = getUsersForTab();
@@ -200,7 +264,7 @@ function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserI
               onClick={() => setTab(emo)}
               className={`flex items-center gap-1 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors ${tab === emo ? 'text-white border-blue-500' : 'text-gray-400 border-transparent hover:text-gray-200'}`}
             >
-              {emo} <span className="bg-gray-700 px-1.5 py-0.5 rounded-full text-gray-300">{emoData.total}</span>
+              {displayReactionEmoji(emo)} <span className="bg-gray-700 px-1.5 py-0.5 rounded-full text-gray-300">{emoData.total}</span>
             </button>
           ))}
         </div>
@@ -221,14 +285,16 @@ function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserI
               <div className="flex items-center gap-0.5 flex-shrink-0">
                 {Object.entries(emojis).map(([emo, cnt]) => (
                   <span key={emo} className="text-base">
-                    {emo}{(cnt as number) > 1 && <span className="text-xs text-gray-400">{cnt as number}</span>}
+                    {displayReactionEmoji(emo)}{(cnt as number) > 1 && <span className="text-xs text-gray-400">{cnt as number}</span>}
                   </span>
                 ))}
               </div>
             </div>
           ))}
           {users.length === 0 && (
-            <p className="text-xs text-gray-400 text-center py-6">Chưa có ai thả cảm xúc này</p>
+            <p className="text-xs text-gray-400 text-center py-6">
+              {loading ? 'Đang tải...' : 'Chưa có ai thả cảm xúc này'}
+            </p>
           )}
         </div>
       </div>
@@ -236,4 +302,4 @@ function ReactionPopup({ msg, initialEmoji, contacts, groupMembers, currentUserI
   );
 }
 
-export { ReactionContextMenu, ReactionPopup, parseReactions, parseReactionsFull };
+export { ReactionContextMenu, ReactionPopup, parseReactions, parseReactionsFull, displayReactionEmoji };

@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { NODE_GROUPS } from './workflowConfig';
+import { Channel } from '../../../configs/channelConfig';
 
 const GROUP_ACCENT: Record<string, string> = {
   'Kích hoạt':             'bg-violet-500',
   'Hành động':             'bg-blue-600',
+  'Telegram':              'bg-cyan-500',
   'Thao tác':              'bg-blue-500',
   'Điều kiện & Logic':     'bg-amber-500',
   'Xử lý dữ liệu':        'bg-teal-500',
@@ -15,6 +17,7 @@ const GROUP_ACCENT: Record<string, string> = {
 const GROUP_HOVER: Record<string, string> = {
   'Kích hoạt':             'hover:border-violet-500/50 hover:bg-violet-500/5',
   'Hành động':             'hover:border-blue-600/50 hover:bg-blue-600/5',
+  'Telegram':              'hover:border-cyan-500/50 hover:bg-cyan-500/5',
   'Thao tác':              'hover:border-blue-500/50 hover:bg-blue-500/5',
   'Điều kiện & Logic':     'hover:border-amber-500/50 hover:bg-amber-500/5',
   'Xử lý dữ liệu':        'hover:border-teal-500/50 hover:bg-teal-500/5',
@@ -25,7 +28,7 @@ const GROUP_HOVER: Record<string, string> = {
 };
 
 interface Props {
-  channel?: 'zalo' | 'facebook';
+  channel?: Channel;
 }
 
 export default function NodePalette({ channel }: Props) {
@@ -41,7 +44,12 @@ export default function NodePalette({ channel }: Props) {
   const channelFilter = (item: { channel?: string }) => {
     if (!channel) return true;
     if (!item.channel || item.channel === 'both') return true;
-    return item.channel === channel;
+    if (item.channel === channel) return true;
+    // Telegram: both telegram_user and telegram_bot see each other's nodes
+    const isTelegramWorkflow = channel === 'telegram_user' || channel === 'telegram_bot';
+    const isTelegramNode = item.channel === 'telegram_user' || item.channel === 'telegram_bot';
+    if (isTelegramWorkflow && isTelegramNode) return true;
+    return false;
   };
 
   const filtered = NODE_GROUPS.map(g => ({

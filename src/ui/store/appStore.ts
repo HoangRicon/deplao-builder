@@ -11,6 +11,11 @@ export interface GroupMember {
   displayName: string;
   avatar: string;
   role: number; // 0=member, 1=owner, 2=deputy
+  username?: string; // Telegram @username
+  status?: string;
+  statusText?: string;
+  lastSeenAt?: number;
+  onlineUntil?: number;
 }
 
 export interface CachedGroupInfo {
@@ -18,6 +23,13 @@ export interface CachedGroupInfo {
   name: string;
   avatar: string;
   memberCount: number;
+  onlineCount?: number;
+  peerType?: string;
+  canSend?: boolean;
+  canManageTopics?: boolean;
+  sendReason?: string;
+  membershipState?: string;
+  joinAction?: string;
   members: GroupMember[];
   creatorId?: string;
   adminIds?: string[];
@@ -64,6 +76,7 @@ interface AppStore {
   notification: { message: string; type: 'success' | 'error' | 'info' | 'warning' } | null;
   erpPermissionDialog: { title: string; message: string; details?: string } | null;
   addAccountModalOpen: boolean;
+  addAccountInitialChannel: string | null;  // Channel to pre-select when opening Add Account modal (e.g., re-login)
   showConversationInfo: boolean;
   showGroupBoard: boolean;
   showIntegrationQuickPanel: boolean;
@@ -123,7 +136,7 @@ interface AppStore {
   hideNotification: () => void;
   showErpPermissionDialog: (payload?: { title?: string; message?: string; details?: string }) => void;
   hideErpPermissionDialog: () => void;
-  setAddAccountModalOpen: (open: boolean) => void;
+  setAddAccountModalOpen: (open: boolean, initialChannel?: string) => void;
   toggleConversationInfo: () => void;
   setShowGroupBoard: (open: boolean) => void;
   toggleIntegrationQuickPanel: () => void;
@@ -341,6 +354,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   notification: null,
   erpPermissionDialog: null,
   addAccountModalOpen: false,
+  addAccountInitialChannel: null,
   showConversationInfo: false,
   showGroupBoard: false,
   showIntegrationQuickPanel: false,
@@ -404,7 +418,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     },
   }),
   hideErpPermissionDialog: () => set({ erpPermissionDialog: null }),
-  setAddAccountModalOpen: (addAccountModalOpen) => set({ addAccountModalOpen }),
+  setAddAccountModalOpen: (addAccountModalOpen, initialChannel) => set({ addAccountModalOpen, addAccountInitialChannel: initialChannel || null }),
   toggleConversationInfo: () => set((s) => ({
     showConversationInfo: !s.showConversationInfo,
     showGroupBoard: !s.showConversationInfo ? false : s.showGroupBoard,
@@ -584,7 +598,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         } else if (row.mute_until > 0 && row.mute_until > Date.now()) {
           newMuted[row.contact_id] = row.mute_until;
         }
-        if (row.is_in_others === 1) {
+        // "Khác" folder: is_in_others=1 hoặc telegram_archived=1
+        if (row.is_in_others === 1 || row.telegram_archived === 1) {
           othersSet.add(row.contact_id);
         }
       }

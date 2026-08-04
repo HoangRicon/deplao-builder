@@ -66,7 +66,7 @@ async function countFiles(dir: string): Promise<number> {
 }
 
 export function registerDatabaseIpc() {
-    ipcMain.handle('db:getMessages', async (_event, { zaloId, threadId, limit = 50, offset = 0, before = 0 }) => {
+    ipcMain.handle('db:getMessages', async (_event, { zaloId, threadId, limit = 50, offset = 0, before = 0, topicId }: { zaloId: string; threadId: string; limit?: number; offset?: number; before?: number; topicId?: string }) => {
         try {
             const _isEmp = isEmployeeMode();
             if (_isEmp) {
@@ -74,7 +74,7 @@ export function registerDatabaseIpc() {
                 return { success: true };
             }
             Logger.log(`[databaseIpc] db:getMessages zaloId=${zaloId} threadId=${threadId} limit=${limit} offset=${offset} before=${before}`);
-            const messages = DatabaseService.getInstance().getMessages(zaloId, threadId, limit, offset, before > 0 ? before : undefined);
+            const messages = DatabaseService.getInstance().getMessages(zaloId, threadId, limit, offset, before > 0 ? before : undefined, topicId);
             Logger.log(`[databaseIpc] db:getMessages → ${messages.length} msgs returned`);
             return { success: true, messages };
         } catch (error: any) {
@@ -92,10 +92,30 @@ export function registerDatabaseIpc() {
         }
     });
 
+    ipcMain.handle('db:saveAccount', async (_event, account: any) => {
+        try {
+            DatabaseService.getInstance().saveAccount(account);
+            return { success: true };
+        } catch (error: any) {
+            Logger.error(`[db:saveAccount] ${error.message}`);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('db:getContacts', async (_event, { zaloId }) => {
         try {
             if (isEmployeeMode()) return { success: true };
             const contacts = DatabaseService.getInstance().getContacts(zaloId);
+            return { success: true, contacts };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('db:getContactsFiltered', async (_event, params: { zaloId: string; channel?: string; search?: string; othersOnly?: boolean; excludeOthers?: boolean; unreadOnly?: boolean; limit?: number }) => {
+        try {
+            if (isEmployeeMode()) return { success: true, contacts: [] };
+            const contacts = DatabaseService.getInstance().getContactsFiltered(params.zaloId, params);
             return { success: true, contacts };
         } catch (error: any) {
             return { success: false, error: error.message };
@@ -224,10 +244,10 @@ export function registerDatabaseIpc() {
         }
     });
 
-    ipcMain.handle('db:getMessageById', async (_event, { zaloId, msgId }) => {
+    ipcMain.handle('db:getMessageById', async (_event, { zaloId, msgId, threadId }) => {
         try {
             if (isEmployeeMode()) return { success: true };
-            const message = DatabaseService.getInstance().getMessageById(zaloId, String(msgId));
+            const message = DatabaseService.getInstance().getMessageById(zaloId, String(msgId), threadId);
             return { success: true, message: message || null };
         } catch (error: any) {
             return { success: false, error: error.message };

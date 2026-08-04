@@ -5,6 +5,7 @@ import { useAppStore, CachedGroupInfo, GroupMember } from '@/store/appStore';
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc, { buildZaloAuth } from '@/lib/ipc';
 import { AddMemberToGroupModal } from './GroupModals';
+import ForumTopicsPanel from './ForumTopicsPanel';
 import { UserProfilePopup } from '../common/UserProfilePopup';
 import { showConfirm } from '../common/ConfirmDialog';
 import { extractApiError } from '@/utils/apiError';
@@ -12,18 +13,32 @@ import GroupAvatar from '../common/GroupAvatar';
 import MediaSection, { MediaDetailPanel, MediaTab } from './MediaSection';
 import { GroupActionSection } from './ConversationActions';
 import { syncZaloGroups, MemberPlaceholder } from '@/lib/zaloGroupUtils';
-import { getCapability, type Channel, type ChannelCapability } from '../../../configs/channelConfig';
+import { getCapability, channelSupports, type Channel, type ChannelCapability } from '../../../configs/channelConfig';
+import { CHANNEL, isZalo as isZaloCh, isTelegram as isTelegramCh, isFacebook as isFacebookCh, isNonZalo } from '@/lib/channelHelper';
 import { Spinner } from '@/components/common/PageLoading';
 import * as channelIpc from '@/lib/channelIpc';
+import { getAdapter } from '@/lib/adapters/registry';
 import { ArrowDownIcon, ArrowUpIcon, BellIcon, BellOffIcon, CloseIcon, MapPinIcon, PinIcon, SettingsIcon, TrashIcon, UserIcon, UsersIcon } from '@/components/common/icons';
 
 
-type PanelView = 'info' | 'members' | 'manage' | 'media' | 'pending';
+type PanelView = 'info' | 'members' | 'manage' | 'media' | 'pending' | 'topics';
 
 // ─── Pending members cache (5-min TTL, module-level) ─────────────────────────
 const PENDING_CACHE_TTL = 5 * 60 * 1000;
 type PendingMember = { userId: string; displayName: string; avatar: string };
 const pendingMembersCache = new Map<string, { data: PendingMember[]; ts: number }>();
+
+function formatTelegramMemberStatus(member: GroupMember): string {
+  if (member.statusText === 'Đang online') return member.statusText;
+  if (member.lastSeenAt) {
+    const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - member.lastSeenAt);
+    if (elapsed < 60) return 'Vừa hoạt động';
+    if (elapsed < 3600) return `Hoạt động ${Math.floor(elapsed / 60)} phút trước`;
+    if (elapsed < 86400) return `Hoạt động ${Math.floor(elapsed / 3600)} giờ trước`;
+    return `Hoạt động ${Math.floor(elapsed / 86400)} ngày trước`;
+  }
+  return member.statusText || '';
+}
 
 async function fetchPendingMembers(
   auth: any,
@@ -111,7 +126,7 @@ export default function GroupInfoPanel() {
   const avatarUrl = contact?.avatar_url || '';
 
   // Channel capability
-  const channelCap = getCapability((contact?.channel || 'zalo') as Channel);
+  const channelCap = getCapability((contact?.channel || CHANNEL.ZALO) as Channel);
 
   const getAuth = () => {
     const acc = getActiveAccount();
@@ -120,9 +135,9 @@ export default function GroupInfoPanel() {
   };
 
 
-  // Load pin status on thread change - only for channels that support it
+  // Load pin status on thread change - only for Zalo (server-side pin sync)
   useEffect(() => {
-    if (!activeThreadId || !channelCap.supportsPinConversation) return;
+    if (!activeThreadId || !channelCap.supportsPinConversation || channelCap.id !== CHANNEL.ZALO) return;
     setIsPinned(false);
     const auth = getAuth();
     if (!auth) return;
@@ -154,7 +169,7 @@ export default function GroupInfoPanel() {
   const isMuted = activeAccountId && activeThreadId ? isMutedFn(activeAccountId, activeThreadId) : false;
 
   const handleTogglePin = async () => {
-    if (!channelCap.supportsPinConversation) return;
+    if (!channelCap.supportsPinConversation || channelCap.id !== CHANNEL.ZALO) return;
     const auth = getAuth();
     if (!auth || !activeThreadId) return;
     try {
@@ -187,8 +202,19 @@ export default function GroupInfoPanel() {
     setMuted(activeAccountId, activeThreadId, until);
     showNotification('Đã tắt thông báo', 'success');
     setMuteDropdownOpen(false);
-    // Gọi API đồng bộ lên Zalo (fire-and-forget) - chỉ khi kênh hỗ trợ
-    if (channelCap.supportsMuteSync) {
+    if (isTelegramCh(channelCap.id)) {
+      const muteUntil = until === 0 ? 2147483647 : Math.floor(until / 1000);
+      ipc.telegramUser?.setDialogMute({ accountId: activeAccountId, chatId: activeThreadId, muteUntil })
+        .then((res) => {
+          if (!res?.success) showNotification(res?.error || 'Không thể đồng bộ tắt thông báo với Telegram', 'error');
+        }).catch(() => showNotification('Không thể đồng bộ tắt thông báo với Telegram', 'error'));
+      useChatStore.getState().updateContact(activeAccountId, {
+        contact_id: activeThreadId, is_muted: until === 0 ? 1 : 0, mute_until: until === 0 ? 0 : until,
+      } as any);
+      return;
+    }
+    // Gọi API đồng bộ lên Zalo (fire-and-forget) - chỉ Zalo
+    if (channelCap.supportsMuteSync && channelCap.id === CHANNEL.ZALO) {
       const auth = getAuth();
       if (auth) {
         const duration = muteUntilToDuration(until);
@@ -200,9 +226,19 @@ export default function GroupInfoPanel() {
   const handleUnmute = () => {
     if (!activeAccountId || !activeThreadId) return;
     clearMuted(activeAccountId, activeThreadId);
+    if (isTelegramCh(channelCap.id)) {
+      ipc.telegramUser?.setDialogMute({ accountId: activeAccountId, chatId: activeThreadId, muteUntil: 0 })
+        .then((res) => {
+          if (!res?.success) showNotification(res?.error || 'Không thể đồng bộ bật thông báo với Telegram', 'error');
+        }).catch(() => showNotification('Không thể đồng bộ bật thông báo với Telegram', 'error'));
+      useChatStore.getState().updateContact(activeAccountId, {
+        contact_id: activeThreadId, is_muted: 0, mute_until: 0,
+      } as any);
+      return;
+    }
     showNotification('Đã bật thông báo', 'success');
-    // Gọi API đồng bộ lên Zalo (fire-and-forget) - chỉ khi kênh hỗ trợ
-    if (channelCap.supportsMuteSync) {
+    // Gọi API đồng bộ lên Zalo (fire-and-forget) - chỉ Zalo
+    if (channelCap.supportsMuteSync && channelCap.id === CHANNEL.ZALO) {
       const auth = getAuth();
       if (auth) {
         ipc.zalo?.setMute({ auth, threadId: activeThreadId, threadType: 1, action: 3 }).catch(() => {});
@@ -245,6 +281,17 @@ export default function GroupInfoPanel() {
     return () => clearInterval(poll);
   }, [activeThreadId, activeAccountId]);
 
+  useEffect(() => {
+    const openMembers = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      if (String(detail.accountId) !== String(activeAccountId) || String(detail.chatId) !== String(activeThreadId)) return;
+      setPanelView('members');
+      fetchGroupInfo().catch(() => {});
+    };
+    window.addEventListener('telegram:open-group-members', openMembers);
+    return () => window.removeEventListener('telegram:open-group-members', openMembers);
+  }, [activeAccountId, activeThreadId]);
+
   // Sync localGroupInfo từ cache khi ChatWindow populate xong
   // (GroupInfoPanel có thể đang hiển thị trong khi ChatWindow async load từ DB)
   const { groupInfoCache } = useAppStore();
@@ -262,8 +309,63 @@ export default function GroupInfoPanel() {
 
   const fetchGroupInfo = async () => {
     if (!activeThreadId || !activeAccountId) return;
-    // FB groups: don't call Zalo API
-    if (channelCap.id === 'facebook') return;
+    const ch = channelCap.id;
+    // Facebook: no group info API
+    if (isFacebookCh(ch)) return;
+
+    // Telegram: use adapter to fetch group info
+    if (isTelegramCh(ch)) {
+      setLoading(true);
+      try {
+        const adapter = getAdapter(ch);
+        const res = await (adapter as any).getGroupInfo({ accountId: activeAccountId, threadId: activeThreadId });
+        if (res?.success && res.info) {
+          const entity = res.info.entity || res.info || {};
+          const fullChat = res.info.full || res.info || {};
+          const name = entity.title || entity.username || displayName;
+          const memberCount = res.info.memberCount || fullChat.participantsCount || fullChat.memberCount || 0;
+          const onlineCount = res.info.onlineCount || fullChat.onlineCount || 0;
+          const telegramAvatarUrl = res.info.avatarUrl || avatarUrl || '';
+          // Update contact
+          useChatStore.getState().updateContact(activeAccountId, {
+            contact_id: activeThreadId, display_name: name, avatar_url: telegramAvatarUrl, contact_type: 'group',
+            telegram_peer_type: res.info.peerType || '', telegram_members_count: memberCount,
+            telegram_online_count: onlineCount, telegram_can_send: res.info.canSend === false ? 0 : 1,
+            telegram_send_reason: res.info.sendReason || '',
+            telegram_membership_state: res.info.membershipState || 'member',
+            telegram_join_action: res.info.joinAction || 'none',
+          });
+          DataAccessor.updateContactProfile({
+            zaloId: activeAccountId, contactId: activeThreadId, displayName: name, avatarUrl: telegramAvatarUrl, contactType: 'group',
+          }).catch(() => {});
+
+          // Fetch members
+          const adminsRes = await (adapter as any).getGroupMembers({ accountId: activeAccountId, threadId: activeThreadId });
+          if (adminsRes?.success && adminsRes.members) {
+            const admins = adminsRes.members.map((m: any) => ({
+              userId: String(m.id || ''),
+              displayName: [m.firstName, m.lastName].filter(Boolean).join(' ') || m.username || '',
+              avatar: m.avatar || '',
+              role: Number(m.role || 0),
+              status: m.status || '', statusText: m.statusText || '',
+              lastSeenAt: m.lastSeenAt, onlineUntil: m.onlineUntil,
+            }));
+            useAppStore.getState().setGroupInfo(activeAccountId, activeThreadId, {
+              name, avatar: telegramAvatarUrl, members: admins, fetchedAt: Date.now(),
+              groupId: activeThreadId, memberCount: memberCount || admins.length,
+              onlineCount, peerType: res.info.peerType,
+              canSend: res.info.canSend, sendReason: res.info.sendReason,
+              membershipState: res.info.membershipState, joinAction: res.info.joinAction,
+              canManageTopics: res.info.canManageTopics,
+            });
+          }
+        }
+      } catch {}
+      setLoading(false);
+      return;
+    }
+
+    // Zalo: existing logic below
     // Guard: verify thread still belongs to current account at fetch time
     const currentContacts = useChatStore.getState().contacts[activeAccountId] || [];
     if (currentContacts.length > 0 && !currentContacts.some(c => c.contact_id === activeThreadId)) return;
@@ -415,6 +517,18 @@ export default function GroupInfoPanel() {
     }
   };
 
+  // Telegram group/channel/forum details need an explicit profile-photo fetch
+  // when the dialog sync did not cache one yet.
+  const telegramInfoRequestedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeAccountId || !activeThreadId || !isTelegramCh(channelCap.id)) return;
+    const key = `${activeAccountId}_${activeThreadId}`;
+    if (telegramInfoRequestedRef.current.has(key)) return;
+    if (groupInfo?.avatar && groupInfo?.members?.length) return;
+    telegramInfoRequestedRef.current.add(key);
+    fetchGroupInfo();
+  }, [activeAccountId, activeThreadId, channelCap.id]);
+
   // Load pending count for admins whenever groupInfo is refreshed
   useEffect(() => {
     if (!groupInfo || !activeThreadId || !activeAccountId) return;
@@ -464,7 +578,7 @@ export default function GroupInfoPanel() {
         groupId={activeThreadId}
         onBack={() => setPanelView('info')}
         myAccountId={activeAccountId || ''}
-        channel={contact?.channel || 'zalo'}
+        channel={contact?.channel || CHANNEL.ZALO}
       />
     );
   }
@@ -487,6 +601,22 @@ export default function GroupInfoPanel() {
         myAccountId={activeAccountId || ''}
         onBack={() => setPanelView('info')}
         onCountChange={setPendingCount}
+      />
+    );
+  }
+
+  if (panelView === 'topics' && activeAccountId && activeThreadId) {
+    return (
+      <ForumTopicsPanel
+        accountId={activeAccountId}
+        chatId={activeThreadId}
+        chatName={groupInfo?.name || displayName}
+        onSelectTopic={(topicId, topicTitle, forumTopicId) => {
+          useChatStore.getState().setMessages(activeAccountId, activeThreadId, []);
+          useChatStore.setState({ activeTopicId: topicId, activeForumTopicId: forumTopicId || null, activeTopicTitle: topicTitle, messagesLoading: true });
+          setPanelView('info');
+        }}
+        onBack={() => setPanelView('info')}
       />
     );
   }
@@ -582,10 +712,10 @@ export default function GroupInfoPanel() {
             </div>
           )}
         </div>
-        {channelCap.supportsPinConversation && (
+        {channelCap.supportsPinConversation && channelCap.id === CHANNEL.ZALO && (
           <GrpActionBtn icon={<PinIcon className="w-4 h-4" />} label={isPinned ? 'Bỏ ghim' : 'Ghim hội thoại'} onClick={handleTogglePin} active={isPinned} />
         )}
-        {!channelCap.supportsPinConversation && (
+        {(!channelCap.supportsPinConversation || channelCap.id !== CHANNEL.ZALO) && (
           <GrpActionBtn icon={<MapPinIcon className="w-4 h-4" />} label={isLocalPinned ? 'Bỏ ghim app' : 'Ghim trong app'} onClick={handleToggleLocalPin} active={isLocalPinned} />
         )}
         {channelCap.supportsInviteToGroup && (
@@ -647,8 +777,26 @@ export default function GroupInfoPanel() {
         </button>
       )}
 
-      {/* Bảng tin nhóm - only for channels that support it */}
-      {channelCap.supportsGroupBoard && (
+      {/* Telegram forum topics */}
+      {isTelegramCh(channelCap.id) && Number((contact as any)?.is_forum) === 1 && (
+      <button
+          onClick={() => setPanelView('topics')}
+          className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-700 hover:bg-gray-700/40 transition-colors group"
+      >
+        <div className="flex items-center gap-2 text-sm text-gray-200">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-sky-400">
+            <path d="M21 15a4 4 0 01-4 4H8l-5 3V7a4 4 0 014-4h10a4 4 0 014 4z"/>
+          </svg>
+          <span>Chủ đề</span>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-400 group-hover:text-gray-300 transition-colors">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+      )}
+
+      {/* Bảng tin nhóm is a Zalo feature; Telegram uses forum topics above. */}
+      {channelCap.supportsGroupBoard && isZaloCh(channelCap.id) && (
       <button
           onClick={() => useAppStore.getState().setShowGroupBoard(true)}
           className="w-full flex items-center justify-between px-4 py-3 border-b border-gray-700 hover:bg-gray-700/40 transition-colors group"
@@ -692,6 +840,7 @@ export default function GroupInfoPanel() {
         <AddMemberToGroupModal
           groupId={activeThreadId}
           groupName={groupInfo?.name || displayName}
+          channel={channelCap.id}
           existingMemberIds={groupInfo?.members?.map(m => m.userId) || []}
           onClose={() => setAddMemberOpen(false)}
           onAdded={fetchGroupInfo}
@@ -744,18 +893,21 @@ export default function GroupInfoPanel() {
   );
 
   function handleChangeAvatar() {
-    if (channelCap.id === 'facebook') return; // FB uses different mechanism
+    if (channelCap.id === CHANNEL.FACEBOOK) return; // FB uses different mechanism
     const input = document.createElement('input');
     input.type = 'file'; input.accept = 'image/*';
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file || !activeThreadId) return;
+      if (!activeAccountId) return;
       const auth = getAuth();
       if (!auth) return;
       const filePath = (file as any).path || '';
       if (!filePath) { showNotification('Không đọc được đường dẫn file', 'error'); return; }
       try {
-        const res = await ipc.zalo?.changeGroupAvatar({ auth, avatarPath: filePath, groupId: activeThreadId });
+        const res = isTelegramCh(channelCap.id)
+          ? await (getAdapter(channelCap.id) as any).setGroupAvatar({ accountId: activeAccountId, threadId: activeThreadId, photoPath: filePath })
+          : await ipc.zalo?.changeGroupAvatar({ auth, avatarPath: filePath, groupId: activeThreadId });
         if (res?.success) { showNotification('Đã đổi ảnh nhóm', 'success'); fetchGroupInfo(); }
         else showNotification(extractApiError(res, 'Đổi ảnh nhóm thất bại'), 'error');
       } catch (e: any) { showNotification(extractApiError(e, 'Đổi ảnh nhóm thất bại'), 'error'); }
@@ -813,6 +965,7 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
 }) {
   const { getActiveAccount } = useAccountStore();
   const { showNotification } = useAppStore();
+  const userPresence = useChatStore(state => state.userPresence);
   const [search, setSearch] = useState('');
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [ctxMember, setCtxMember] = useState<GroupMember | null>(null);
@@ -850,6 +1003,12 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
     !search || (m.displayName || m.userId).toLowerCase().includes(search.toLowerCase())
   );
   const sorted = [...filtered].sort((a, b) => b.role - a.role);
+  const getStatusText = (member: GroupMember) => {
+    const live = userPresence[`${myAccountId}_${member.userId}`];
+    if (live?.status === 'online') return 'Đang online';
+    if (live?.lastSeen) return formatTelegramMemberStatus({ ...member, lastSeenAt: live.lastSeen, statusText: 'Đã offline' });
+    return formatTelegramMemberStatus(member);
+  };
 
   const handleRemoveMember = async (member: GroupMember) => {
     const ok = await showConfirm({
@@ -862,9 +1021,17 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
     const auth = getAuth();
     if (!auth) return;
     try {
-      const res = await ipc.zalo?.removeUserFromGroup({ auth, userId: member.userId, groupId });
-      if (res?.success) { showNotification('Đã xóa thành viên', 'success'); onRefresh(); }
-      else showNotification(extractApiError(res, 'Xóa thành viên thất bại'), 'error');
+      const ch = channelCap?.id || CHANNEL.ZALO;
+      if (isNonZalo(ch)) {
+        const adapter = getAdapter(ch);
+        const res = await (adapter as any).removeMember({ accountId: myAccountId, threadId: groupId, userId: member.userId });
+        if (res?.success) { showNotification('Đã xóa thành viên', 'success'); onRefresh(); }
+        else showNotification(res?.error || 'Xóa thành viên thất bại', 'error');
+      } else {
+        const res = await ipc.zalo?.removeUserFromGroup({ auth, userId: member.userId, groupId });
+        if (res?.success) { showNotification('Đã xóa thành viên', 'success'); onRefresh(); }
+        else showNotification(extractApiError(res, 'Xóa thành viên thất bại'), 'error');
+      }
     } catch (e: any) { showNotification(extractApiError(e, 'Xóa thành viên thất bại'), 'error'); }
     setCtxMember(null);
   };
@@ -872,7 +1039,17 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
   const handleMakeDeputy = async (member: GroupMember) => {
     const auth = getAuth();
     if (!auth) return;
+    const ch = channelCap?.id || CHANNEL.ZALO;
     try {
+      if (isNonZalo(ch)) {
+        const adapter = getAdapter(ch);
+        const isDeputy = member.role === 2;
+        const res = await (adapter as any).promoteMember({ accountId: myAccountId, threadId: groupId, userId: member.userId, isAdmin: !isDeputy });
+        if (res?.success) { showNotification(isDeputy ? 'Đã xóa quyền admin' : 'Đã cấp quyền admin', 'success'); onRefresh(); }
+        else showNotification(res?.error || 'Thao tác thất bại', 'error');
+        setCtxMember(null);
+        return;
+      }
       const isDeputy = member.role === 2;
       const res = isDeputy
         ? await ipc.zalo?.removeGroupDeputy({ auth, userId: member.userId, groupId })
@@ -893,7 +1070,16 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
     if (!ok) return;
     const auth = getAuth();
     if (!auth) return;
+    const ch = channelCap?.id || CHANNEL.ZALO;
     try {
+      if (isNonZalo(ch)) {
+        const adapter = getAdapter(ch);
+        const res = await (adapter as any).removeMember({ accountId: myAccountId, threadId: groupId, userId: member.userId });
+        if (res?.success) { showNotification('Đã chặn thành viên', 'success'); onRefresh(); }
+        else showNotification(res?.error || 'Chặn thành viên thất bại', 'error');
+        setCtxMember(null);
+        return;
+      }
       const res = await ipc.zalo?.addGroupBlockedMember({ auth, userId: member.userId, groupId });
       if (res?.success) { showNotification('Đã chặn thành viên', 'success'); onRefresh(); }
       else showNotification(extractApiError(res, 'Chặn thành viên thất bại'), 'error');
@@ -911,7 +1097,15 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
     if (!ok) return;
     const auth = getAuth();
     if (!auth) return;
+    const ch = channelCap?.id || CHANNEL.ZALO;
     try {
+      if (isNonZalo(ch)) {
+        const adapter = getAdapter(ch);
+        const res = await (adapter as any).leaveGroup({ accountId: myAccountId, threadId: groupId });
+        if (res?.success) { showNotification('Đã rời khỏi nhóm', 'success'); onBack(); }
+        else showNotification(res?.error || 'Rời nhóm thất bại', 'error');
+        return;
+      }
       const res = await ipc.zalo?.leaveGroup({ auth, groupId });
       if (res?.success) { showNotification('Đã rời khỏi nhóm', 'success'); onBack(); }
       else showNotification(extractApiError(res, 'Rời nhóm thất bại'), 'error');
@@ -983,6 +1177,11 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
             </button>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-gray-200 truncate">{m.displayName || m.userId}</p>
+              {getStatusText(m) && (
+                <p className={`text-[11px] truncate ${getStatusText(m) === 'Đang online' ? 'text-green-400' : 'text-gray-500'}`}>
+                  {getStatusText(m)}
+                </p>
+              )}
               <div className="flex items-center gap-1">
                 {m.role === 1 && <span className="text-[11px] bg-yellow-600/30 text-yellow-400 px-1.5 rounded">Trưởng nhóm</span>}
                 {m.role === 2 && <span className="text-[11px] bg-blue-600/30 text-blue-400 px-1.5 rounded">Phó nhóm</span>}
@@ -1040,6 +1239,7 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
         <AddMemberToGroupModal
           groupId={groupId}
           groupName={groupInfo?.name || groupId}
+          channel={channelCap?.id || CHANNEL.ZALO}
           existingMemberIds={groupInfo?.members?.map(m => m.userId) || []}
           onClose={() => setAddMemberOpen(false)}
           onAdded={onRefresh}
@@ -1299,7 +1499,7 @@ function PendingMembersSection({ groupId, isAdmin, channel }: { groupId: string;
   };
 
   const loadPending = async () => {
-    if (channel !== 'zalo') return;
+    if (!channelSupports(channel as Channel, 'supportsPendingApproval')) return;
     const auth = getAuth();
     if (!auth) return;
     setLoading(true);
@@ -1552,6 +1752,10 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
     return buildZaloAuth(acc, activeAccountId);
   };
 
+  const ch = channel || CHANNEL.ZALO;
+  const isZalo = isZaloCh(ch);
+  const isTelegram = isTelegramCh(ch);
+
   /** Extract link from various API response shapes */
   const extractLink = (res: any): string =>
     res?.response?.data?.link
@@ -1562,16 +1766,28 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
 
   // Auto-load group link on mount
   useEffect(() => {
-    const auth = getAuth();
-    if (!auth || !groupId) return;
+    if (!groupId) return;
     setLoadingLink(true);
-    ipc.zalo?.getGroupLinkDetail({ auth, groupId })
-      .then((res: any) => {
-        const link = extractLink(res);
-        if (link) setGroupLink(link);
-      })
-      .catch(() => {})
-      .finally(() => setLoadingLink(false));
+    if (isTelegram) {
+      // Telegram: use adapter
+      import('@/lib/adapters/registry').then(({ getAdapter }) => {
+        const adapter = getAdapter(ch as any);
+        (adapter as any).getGroupLink?.({ accountId: myAccountId, threadId: groupId })
+          .then((res: any) => { if (res?.link) setGroupLink(res.link); })
+          .catch(() => {})
+          .finally(() => setLoadingLink(false));
+      });
+    } else {
+      const auth = getAuth();
+      if (!auth) { setLoadingLink(false); return; }
+      ipc.zalo?.getGroupLinkDetail({ auth, groupId })
+        .then((res: any) => {
+          const link = extractLink(res);
+          if (link) setGroupLink(link);
+        })
+        .catch(() => {})
+        .finally(() => setLoadingLink(false));
+    }
   }, [groupId]);
 
   // Listen for new_link event to update link in real-time
@@ -1590,6 +1806,7 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
   }, [groupInfo]);
 
   const handleToggleSetting = async (key: string, current: any) => {
+    if (!isZalo) { showNotification('Tính năng chưa hỗ trợ cho kênh này', 'info'); return; }
     const auth = getAuth();
     if (!auth) return;
     const newVal = current ? 0 : 1;
@@ -1611,24 +1828,35 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
   };
 
   const handleGetGroupLink = async () => {
-    const auth = getAuth();
-    if (!auth) return;
     setLoadingLink(true);
     try {
-      const res = await ipc.zalo?.getGroupLinkDetail({ auth, groupId });
-      const link = extractLink(res);
-      if (link) { setGroupLink(link); }
-      else {
-        // Enable link first
-        const enRes = await ipc.zalo?.enableGroupLink({ auth, groupId });
-        const newLink = extractLink(enRes);
-        setGroupLink(newLink || 'Không lấy được link');
+      if (isTelegram) {
+        const { getAdapter } = await import('@/lib/adapters/registry');
+        const adapter = getAdapter(ch as any);
+        const res = await (adapter as any).getGroupLink({ accountId: myAccountId, threadId: groupId });
+        if (res?.link) setGroupLink(res.link);
+        else showNotification('Lấy link nhóm thất bại', 'error');
+      } else {
+        const auth = getAuth();
+        if (!auth) { setLoadingLink(false); return; }
+        const res = await ipc.zalo?.getGroupLinkDetail({ auth, groupId });
+        const link = extractLink(res);
+        if (link) { setGroupLink(link); }
+        else {
+          const enRes = await ipc.zalo?.enableGroupLink({ auth, groupId });
+          const newLink = extractLink(enRes);
+          setGroupLink(newLink || 'Không lấy được link');
+        }
       }
     } catch (e: any) { showNotification(extractApiError(e, 'Lấy link nhóm thất bại'), 'error'); }
     finally { setLoadingLink(false); }
   };
 
   const handleDisable = async () => {
+    if (isTelegram) {
+      showNotification('Telegram không hỗ trợ tắt link nhóm', 'info');
+      return;
+    }
     const auth = getAuth();
     if (!auth) return;
     try {
@@ -1639,6 +1867,10 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
   };
 
   const handleDisperseGroup = async () => {
+    if (isTelegram) {
+      showNotification('Telegram không hỗ trợ giải tán nhóm', 'info');
+      return;
+    }
     const ok = await showConfirm({
       title: 'Giải tán nhóm này?',
       message: 'Hành động này không thể hoàn tác. Toàn bộ thành viên sẽ bị xóa khỏi nhóm.',
@@ -1664,13 +1896,16 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
     } catch (e: any) { showNotification(extractApiError(e, 'Giải tán nhóm thất bại'), 'error'); }
   };
 
-  const SETTINGS_LIST = [
+  const SETTINGS_LIST = isZalo ? [
     { key: 'blockName',       label: 'Thay đổi tên & ảnh đại diện của nhóm',                   inverted: true  },
     { key: 'setTopicOnly',    label: 'Ghim tin nhắn, ghi chú, bình chọn lên đầu hội thoại',    inverted: true  },
     { key: 'lockCreatePost',  label: 'Tạo mới ghi chú, nhắc hẹn',                              inverted: true  },
     { key: 'lockCreatePoll',  label: 'Tạo mới bình chọn',                                      inverted: true  },
     { key: 'lockSendMsg',     label: 'Gửi tin nhắn',                                           inverted: true  },
-  ];
+  ] : isTelegram ? [
+    // Telegram: settings handled via restrictChatMember, not group-level toggles
+    // These are informational only — actual restriction is per-member
+  ] : [];
 
   return (
     <div className={asModal ? 'flex flex-col w-full h-full overflow-y-auto' : 'w-72 h-full flex-shrink-0 bg-gray-800 border-l border-gray-700 flex flex-col overflow-y-auto'}>
@@ -1682,7 +1917,9 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
         <span className="text-sm font-semibold text-white flex-1 text-center pr-6">Quản lý nhóm</span>
       </div>
 
-      {/* Member permissions */}
+      {/* Member permissions + settings — Zalo only */}
+      {isZalo && (
+      <>
       <div className="px-4 py-3">
         {!isAdmin && (
           <p className="text-xs text-orange-400 mb-2 flex items-center gap-1">
@@ -1740,9 +1977,11 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
           </button>
         </div>
       </div>
+      </>
+      )}
 
       {/* Danh sách chờ duyệt - visible for admin khi bật joinAppr */}
-      <PendingMembersSection groupId={groupId} isAdmin={isAdmin} channel={channel || 'zalo'} />
+      <PendingMembersSection groupId={groupId} isAdmin={isAdmin} channel={channel || CHANNEL.ZALO} />
 
       {/* Group link */}
       <div className="border-t border-gray-700 px-4 py-3 space-y-2">
@@ -1752,7 +1991,9 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
             <input value={groupLink} readOnly className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-2 py-1 text-xs text-gray-300 truncate" />
             <button onClick={() => { navigator.clipboard.writeText(groupLink); showNotification('Đã sao chép link', 'success'); }}
               className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-lg">Sao chép</button>
-            <button onClick={handleDisable} className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded-lg">Tắt</button>
+            {!isTelegram && (
+              <button onClick={handleDisable} className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded-lg">Tắt</button>
+            )}
           </div>
         ) : (
           <button onClick={handleGetGroupLink} disabled={loadingLink}
@@ -1770,8 +2011,8 @@ export function ManagePanel({ groupInfo, groupId, onBack, myAccountId, asModal, 
         )}
       </div>
 
-      {/* Danger zone - owner only */}
-      {isOwner && (
+      {/* Danger zone - owner only, Zalo only */}
+      {isOwner && isZalo && (
         <div className="border-t border-gray-700 px-4 py-3 mt-auto space-y-2">
           <button
             onClick={() => setPanelViewBlocked()}

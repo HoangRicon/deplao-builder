@@ -35,10 +35,11 @@ interface Props {
   onScrollToMsg: (msgId: string) => void;
   pinnedNotes?: PinnedNote[];
   onNoteClick?: (note: PinnedNote) => void;
+  channel?: string;
 }
 
 // ─── PinnedBar ────────────────────────────────────────────────────────────────
-export default function PinnedBar({ zaloId, threadId, pins, onPinsChange, onScrollToMsg, pinnedNotes = [], onNoteClick }: Props) {
+export default function PinnedBar({ zaloId, threadId, pins, onPinsChange, onScrollToMsg, pinnedNotes = [], onNoteClick, channel }: Props) {
   const [showList, setShowList] = useState(false);
   const [activeTab, setActiveTab] = useState<'msg' | 'note'>('msg');
 
@@ -147,6 +148,10 @@ export default function PinnedBar({ zaloId, threadId, pins, onPinsChange, onScro
               pin={pins[0]}
               isFirst={true}
               onUnpin={async () => {
+                if (channel === 'telegram_user') {
+                  const result = await ipc.telegramUser?.pinMessage({ accountId: zaloId, chatId: threadId, messageId: pins[0].msg_id, unpin: true });
+                  if (!result?.success) return;
+                }
                 await ipc.db?.unpinMessage({ zaloId, threadId, msgId: pins[0].msg_id });
                 onPinsChange(pins.filter(p => p.msg_id !== pins[0].msg_id));
               }}
@@ -186,6 +191,7 @@ export default function PinnedBar({ zaloId, threadId, pins, onPinsChange, onScro
           onScrollToMsg={(id) => { onScrollToMsg(id); setShowList(false); }}
           onPinsChange={onPinsChange}
           onNoteClick={(note) => { onNoteClick?.(note); setShowList(false); }}
+          channel={channel}
         />
       )}
     </>
@@ -193,12 +199,13 @@ export default function PinnedBar({ zaloId, threadId, pins, onPinsChange, onScro
 }
 
 // ─── PinnedListModal ──────────────────────────────────────────────────────────
-function PinnedListModal({ pins, notes, zaloId, threadId, onClose, onScrollToMsg, onPinsChange, onNoteClick }: {
+function PinnedListModal({ pins, notes, zaloId, threadId, onClose, onScrollToMsg, onPinsChange, onNoteClick, channel }: {
   pins: PinnedMsg[]; notes: PinnedNote[]; zaloId: string; threadId: string;
   onClose: () => void;
   onScrollToMsg: (id: string) => void;
   onPinsChange: (pins: PinnedMsg[]) => void;
   onNoteClick?: (note: PinnedNote) => void;
+  channel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -211,6 +218,10 @@ function PinnedListModal({ pins, notes, zaloId, threadId, onClose, onScrollToMsg
   }, [onClose]);
 
   const handleUnpin = async (msgId: string) => {
+    if (channel === 'telegram_user') {
+      const result = await ipc.telegramUser?.pinMessage({ accountId: zaloId, chatId: threadId, messageId: msgId, unpin: true });
+      if (!result?.success) return;
+    }
     await ipc.db?.unpinMessage({ zaloId, threadId, msgId });
     onPinsChange(pins.filter(p => p.msg_id !== msgId));
   };
@@ -586,10 +597,11 @@ function parsePinsResponse(res: any): { pins: PinnedMsg[]; notes: PinnedNote[] }
  * Chỉ gọi 1 IPC getPinnedMessages duy nhất, trả về cả pins và notes.
  * Trả thêm `ready` flag để ChatWindow biết khi nào data đã load xong.
  */
-export function usePinnedData(zaloId: string | null, threadId: string | null) {
+export function usePinnedData(zaloId: string | null, threadId: string | null, channel?: string) {
   const [pins, setPins] = useState<PinnedMsg[]>([]);
   const [pinnedNotes, setPinnedNotes] = useState<PinnedNote[]>([]);
   const [ready, setReady] = useState(false);
+  const remoteSyncedKeyRef = useRef('');
 
   const loadAll = useCallback(async () => {
     if (!zaloId || !threadId) {
@@ -599,6 +611,17 @@ export function usePinnedData(zaloId: string | null, threadId: string | null) {
       return;
     }
     try {
+      const syncKey = `${zaloId}:${threadId}`;
+      const syncingKey = `syncing:${syncKey}`;
+      if (
+        channel === 'telegram_user'
+        && remoteSyncedKeyRef.current !== syncKey
+        && remoteSyncedKeyRef.current !== syncingKey
+      ) {
+        remoteSyncedKeyRef.current = syncingKey;
+        const remoteResult = await ipc.telegramUser?.syncPinnedMessages({ accountId: zaloId, chatId: threadId });
+        remoteSyncedKeyRef.current = remoteResult?.success ? syncKey : '';
+      }
       const res = await ipc.db?.getPinnedMessages({ zaloId, threadId });
       const { pins: p, notes: n } = parsePinsResponse(res);
       setPins(p);
@@ -608,7 +631,7 @@ export function usePinnedData(zaloId: string | null, threadId: string | null) {
       setPinnedNotes([]);
     }
     setReady(true);
-  }, [zaloId, threadId]);
+  }, [zaloId, threadId, channel]);
 
   // Reset ready khi thread thay đổi
   useEffect(() => {

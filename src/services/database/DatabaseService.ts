@@ -4,6 +4,8 @@ import { app, safeStorage } from 'electron';
 import Logger from '../../utils/Logger';
 import BetterSqlite3 from 'better-sqlite3';
 import type { Account, Message, Contact, CRMNote, CRMCampaign, CRMCampaignContact, CRMSendLog, CRMCampaignStatus, CRMContactStatus } from '../../models';
+import type { TelegramPeer } from '../../models/telegram';
+import { CHANNEL } from '../../ui/lib/channelHelper';
 
 // better-sqlite3: native SQLite - no WASM heap, memory-mapped I/O
 let db: BetterSqlite3.Database | null = null;
@@ -472,7 +474,9 @@ class DatabaseService {
     }
 
     private normalizeWorkflowChannel(channel?: string): 'zalo' | 'facebook' {
-        return channel === 'facebook' ? 'facebook' : 'zalo';
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { normalizeChannel } = require('../../configs/channelConfig');
+        return normalizeChannel(channel) as 'zalo' | 'facebook';
     }
 
     private createTables(): void {
@@ -510,6 +514,7 @@ class DatabaseService {
                 local_paths TEXT DEFAULT '{}',
                 status TEXT DEFAULT 'received',
                 is_recalled INTEGER DEFAULT 0,
+                topic_id TEXT DEFAULT NULL,
                 UNIQUE(msg_id, owner_zalo_id)
             );
             CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(owner_zalo_id, thread_id, timestamp);
@@ -529,6 +534,63 @@ class DatabaseService {
                 last_message TEXT DEFAULT '',
                 last_message_time INTEGER DEFAULT 0,
                 UNIQUE(owner_zalo_id, contact_id)
+            );
+        `);
+
+        // Telegram MTProto requires an access hash for most peer operations.
+        // Keep this separate from contacts: group members and resolved peers
+        // must not become conversation rows merely to retain their identity.
+        this.exec(`
+            CREATE TABLE IF NOT EXISTS telegram_peers (
+                owner_zalo_id TEXT NOT NULL,
+                peer_id TEXT NOT NULL,
+                peer_type TEXT NOT NULL DEFAULT 'user',
+                access_hash TEXT DEFAULT '',
+                username TEXT DEFAULT '',
+                display_name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                avatar_url TEXT DEFAULT '',
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (owner_zalo_id, peer_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_telegram_peers_type
+                ON telegram_peers(owner_zalo_id, peer_type, updated_at);
+        `);
+
+        // MTProto global update cursor. This is deliberately separate from
+        // per-dialog message history: Difference also carries edits, deletes,
+        // typing and other updates that have no message timestamp.
+        this.exec(`
+            CREATE TABLE IF NOT EXISTS telegram_update_state (
+                owner_zalo_id TEXT PRIMARY KEY,
+                pts INTEGER NOT NULL DEFAULT 0,
+                qts INTEGER NOT NULL DEFAULT 0,
+                date INTEGER NOT NULL DEFAULT 0,
+                seq INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+        `);
+
+        // Per-channel pts for channel/supergroup update sync.
+        // Each channel/supergroup has its own pts independent of the global pts.
+        // Required for updates.GetChannelDifference after reconnect.
+        this.exec(`
+            CREATE TABLE IF NOT EXISTS telegram_channel_pts (
+                owner_zalo_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                pts INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (owner_zalo_id, channel_id)
+            );
+        `);
+
+        // Bot API durable cursor: one row per bot token (hashed).
+        // Prevents replay on restart and ensures exactly one consumer per token.
+        this.exec(`
+            CREATE TABLE IF NOT EXISTS telegram_bot_cursor (
+                bot_token_hash TEXT PRIMARY KEY,
+                offset_value INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
             );
         `);
 
@@ -1541,6 +1603,7 @@ class DatabaseService {
         try {
             db!.exec(`CREATE INDEX IF NOT EXISTS idx_contacts_channel ON contacts(channel, owner_zalo_id)`);
             db!.exec(`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, owner_zalo_id, thread_id)`);
+            db!.exec(`CREATE INDEX IF NOT EXISTS idx_contacts_others ON contacts(owner_zalo_id, is_in_others)`);
         } catch (err: any) {
             Logger.warn(`[DatabaseService] Migration channel indexes: ${err.message}`);
         }
@@ -1705,6 +1768,18 @@ class DatabaseService {
             }
         } catch (err: any) {
             Logger.warn(`[DatabaseService] page_group_member migration warning: ${err.message}`);
+        }
+
+        // Migration: add username column to page_group_member if missing
+        try {
+            const cols = this.query<any>(`PRAGMA table_info(page_group_member)`);
+            if (cols.length > 0 && !cols.some((c: any) => c.name === 'username')) {
+                db!.exec(`ALTER TABLE page_group_member ADD COLUMN username TEXT DEFAULT ''`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added username column to page_group_member');
+            }
+        } catch (err: any) {
+            Logger.warn(`[DatabaseService] page_group_member username migration warning: ${err.message}`);
         }
 
         // Migration: create friend_requests table if missing
@@ -1872,6 +1947,11 @@ class DatabaseService {
                 this.save();
                 Logger.log('[DatabaseService] Migration: added is_business column to accounts');
             }
+            if (!cols.some((c: any) => c.name === 'username')) {
+                db!.exec(`ALTER TABLE accounts ADD COLUMN username TEXT DEFAULT ''`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added username column to accounts');
+            }
         } catch (err: any) {
             Logger.warn(`[DatabaseService] accounts migration warning: ${err.message}`);
         }
@@ -1896,6 +1976,11 @@ class DatabaseService {
                 Logger.log('[DatabaseService] Migration: added is_in_others to contacts');
                 needSave = true;
             }
+            if (!names.includes('has_mention')) {
+                db!.exec(`ALTER TABLE contacts ADD COLUMN has_mention INTEGER DEFAULT 0`);
+                Logger.log('[DatabaseService] Migration: added has_mention to contacts');
+                needSave = true;
+            }
             if (!names.includes('alias')) {
                 db!.exec(`ALTER TABLE contacts ADD COLUMN alias TEXT DEFAULT ''`);
                 Logger.log('[DatabaseService] Migration: added alias to contacts');
@@ -1910,6 +1995,25 @@ class DatabaseService {
                 db!.exec(`ALTER TABLE contacts ADD COLUMN birthday TEXT DEFAULT NULL`);
                 Logger.log('[DatabaseService] Migration: added birthday to contacts');
                 needSave = true;
+            }
+            const telegramColumns: Array<[string, string]> = [
+                ['telegram_folder_id', 'INTEGER DEFAULT 0'],
+                ['telegram_archived', 'INTEGER DEFAULT 0'],
+                ['telegram_can_send', 'INTEGER DEFAULT NULL'],
+                ['telegram_send_reason', "TEXT DEFAULT ''"],
+                ['telegram_peer_type', "TEXT DEFAULT ''"],
+                ['telegram_members_count', 'INTEGER DEFAULT 0'],
+                ['telegram_online_count', 'INTEGER DEFAULT 0'],
+                ['telegram_state_updated_at', 'INTEGER DEFAULT 0'],
+                ['telegram_membership_state', "TEXT DEFAULT 'member'"],
+                ['telegram_join_action', "TEXT DEFAULT 'none'"],
+            ];
+            for (const [column, definition] of telegramColumns) {
+                if (!names.includes(column)) {
+                    db!.exec(`ALTER TABLE contacts ADD COLUMN ${column} ${definition}`);
+                    Logger.log(`[DatabaseService] Migration: added ${column} to contacts`);
+                    needSave = true;
+                }
             }
             if (needSave) this.save();
         } catch (err: any) {
@@ -2349,35 +2453,288 @@ class DatabaseService {
         } catch (err: any) {
             Logger.warn(`[DatabaseService] base_url migration: ${err.message}`);
         }
+
+        // ── contacts.is_forum (Telegram forum detection cache) ──────────────
+        try {
+            const contactCols = this.query<any>(`PRAGMA table_info(contacts)`);
+            if (!contactCols.some((c: any) => c.name === 'is_forum')) {
+                db!.exec(`ALTER TABLE contacts ADD COLUMN is_forum INTEGER DEFAULT NULL`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added is_forum column to contacts');
+            }
+        } catch (err: any) {
+            Logger.warn(`[DatabaseService] is_forum migration: ${err.message}`);
+        }
+
+        // Telegram message IDs are only unique inside a chat. The original
+        // (msg_id, owner_zalo_id) key silently dropped messages from a second
+        // Telegram group/channel that reused the same numeric message ID.
+        // Rebuild once with a channel + thread scoped uniqueness constraint.
+        try {
+            const indexes = this.query<any>(`PRAGMA index_list(messages)`);
+            const hasScopedMessageKey = indexes.some((index: any) => {
+                if (!Number(index?.unique)) return false;
+                const name = String(index?.name || '').replace(/"/g, '""');
+                const columns = this.query<any>(`PRAGMA index_info("${name}")`)
+                    .sort((a: any, b: any) => Number(a.seqno) - Number(b.seqno))
+                    .map((column: any) => column.name);
+                return columns.join('|') === 'msg_id|owner_zalo_id|channel|thread_id';
+            });
+
+            if (!hasScopedMessageKey) {
+                db!.exec(`
+                    BEGIN TRANSACTION;
+                    ALTER TABLE messages RENAME TO messages_legacy_unique;
+                    CREATE TABLE messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        msg_id TEXT NOT NULL,
+                        cli_msg_id TEXT,
+                        owner_zalo_id TEXT NOT NULL,
+                        thread_id TEXT NOT NULL,
+                        thread_type INTEGER NOT NULL DEFAULT 0,
+                        sender_id TEXT NOT NULL,
+                        content TEXT NOT NULL DEFAULT '',
+                        msg_type TEXT NOT NULL DEFAULT 'text',
+                        timestamp INTEGER NOT NULL,
+                        is_sent INTEGER DEFAULT 0,
+                        attachments TEXT DEFAULT '[]',
+                        local_paths TEXT DEFAULT '{}',
+                        status TEXT DEFAULT 'received',
+                        is_recalled INTEGER DEFAULT 0,
+                        quote_data TEXT DEFAULT NULL,
+                        reactions TEXT DEFAULT '{}',
+                        recalled_content TEXT DEFAULT NULL,
+                        deleted_by TEXT DEFAULT NULL,
+                        reply_to_id TEXT DEFAULT NULL,
+                        edit_history TEXT DEFAULT NULL,
+                        is_edited INTEGER DEFAULT 0,
+                        channel TEXT DEFAULT 'zalo',
+                        topic_id TEXT DEFAULT NULL,
+                        handled_by_employee TEXT DEFAULT NULL,
+                        UNIQUE(msg_id, owner_zalo_id, channel, thread_id)
+                    );
+                    INSERT OR IGNORE INTO messages (
+                        id, msg_id, cli_msg_id, owner_zalo_id, thread_id, thread_type,
+                        sender_id, content, msg_type, timestamp, is_sent, attachments,
+                        local_paths, status, is_recalled, quote_data, reactions,
+                        recalled_content, deleted_by, reply_to_id, edit_history, is_edited,
+                        channel, topic_id, handled_by_employee
+                    )
+                    SELECT
+                        id, msg_id, cli_msg_id, owner_zalo_id, thread_id, thread_type,
+                        sender_id, content, msg_type, timestamp, is_sent, attachments,
+                        local_paths, status, is_recalled, quote_data, reactions,
+                        recalled_content, deleted_by, reply_to_id, edit_history, is_edited,
+                        COALESCE(channel, 'zalo'), NULL, handled_by_employee
+                    FROM messages_legacy_unique;
+                    DROP TABLE messages_legacy_unique;
+                    CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(owner_zalo_id, thread_id, timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, owner_zalo_id, thread_id);
+                    COMMIT;
+                `);
+                this.save();
+                Logger.log('[DatabaseService] Migration: scoped message uniqueness by channel and thread');
+            }
+        } catch (err: any) {
+            try { db!.exec('ROLLBACK'); } catch {}
+            Logger.warn(`[DatabaseService] scoped message uniqueness migration: ${err.message}`);
+        }
+
+        // Telegram forum messages share one chat ID. Keep their root-message
+        // identity in the unified message table so history can be queried
+        // without mixing unrelated topics.
+        try {
+            const messageCols = this.query<any>(`PRAGMA table_info(messages)`);
+            if (messageCols.length > 0 && !messageCols.some((column: any) => column.name === 'topic_id')) {
+                db!.exec(`ALTER TABLE messages ADD COLUMN topic_id TEXT DEFAULT NULL`);
+                db!.exec(`CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(owner_zalo_id, thread_id, topic_id, timestamp)`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added messages.topic_id for Telegram forum history');
+            }
+        } catch (err: any) {
+            Logger.warn(`[DatabaseService] messages.topic_id migration: ${err.message}`);
+        }
     }
 
     // ─── Account Operations ───────────────────────────────────────────────
 
+    // ─── Forum Detection Cache ─────────────────────────────────────────────
+
+    /** Lấy is_forum từ contacts table. null = chưa check, 0 = not forum, 1 = forum */
+    public getIsForum(ownerZaloId: string, contactId: string): number | null {
+        if (!this.initialized) return null;
+        const row = this.queryOne<any>(
+            `SELECT is_forum FROM contacts WHERE owner_zalo_id = ? AND contact_id = ?`,
+            [ownerZaloId, contactId]
+        );
+        return row?.is_forum ?? null;
+    }
+
+    /** Lưu is_forum vào contacts table */
+    public setIsForum(ownerZaloId: string, contactId: string, isForum: boolean): void {
+        if (!this.initialized) return;
+        this.run(
+            `UPDATE contacts SET is_forum = ? WHERE owner_zalo_id = ? AND contact_id = ?`,
+            [isForum ? 1 : 0, ownerZaloId, contactId]
+        );
+    }
+
+    // ─── Telegram MTProto Peer Cache ──────────────────────────────────────
+
+    public upsertTelegramPeer(ownerZaloId: string, peer: Omit<TelegramPeer, 'accountId'>): void {
+        if (!this.initialized || !peer.peerId) return;
+        this.run(`
+            INSERT INTO telegram_peers
+                (owner_zalo_id, peer_id, peer_type, access_hash, username, display_name, phone, avatar_url, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_zalo_id, peer_id) DO UPDATE SET
+                peer_type = excluded.peer_type,
+                access_hash = CASE WHEN excluded.access_hash != '' THEN excluded.access_hash ELSE telegram_peers.access_hash END,
+                username = CASE WHEN excluded.username != '' THEN excluded.username ELSE telegram_peers.username END,
+                display_name = CASE WHEN excluded.display_name != '' THEN excluded.display_name ELSE telegram_peers.display_name END,
+                phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE telegram_peers.phone END,
+                avatar_url = CASE WHEN excluded.avatar_url != '' THEN excluded.avatar_url ELSE telegram_peers.avatar_url END,
+                updated_at = excluded.updated_at
+        `, [
+            ownerZaloId,
+            peer.peerId,
+            peer.peerType || 'user',
+            peer.accessHash || '',
+            peer.username || '',
+            peer.displayName || '',
+            peer.phone || '',
+            peer.avatarUrl || '',
+            Date.now(),
+        ]);
+    }
+
+    public getTelegramPeer(ownerZaloId: string, peerId: string): any | null {
+        if (!this.initialized || !peerId) return null;
+        return this.queryOne<any>(
+            `SELECT * FROM telegram_peers WHERE owner_zalo_id = ? AND peer_id = ?`,
+            [ownerZaloId, peerId]
+        );
+    }
+
+    public getTelegramUpdateState(ownerZaloId: string): { pts: number; qts: number; date: number; seq: number; updated_at: number } | null {
+        if (!this.initialized || !ownerZaloId) return null;
+        return this.queryOne<any>(
+            `SELECT pts, qts, date, seq, updated_at FROM telegram_update_state WHERE owner_zalo_id = ?`,
+            [ownerZaloId]
+        );
+    }
+
+    public saveTelegramUpdateState(ownerZaloId: string, state: { pts: number; qts: number; date: number; seq: number }): void {
+        if (!this.initialized || !ownerZaloId) return;
+        this.run(`
+            INSERT INTO telegram_update_state (owner_zalo_id, pts, qts, date, seq, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_zalo_id) DO UPDATE SET
+                pts = excluded.pts,
+                qts = excluded.qts,
+                date = excluded.date,
+                seq = excluded.seq,
+                updated_at = excluded.updated_at
+        `, [
+            ownerZaloId,
+            Number(state.pts || 0),
+            Number(state.qts || 0),
+            Number(state.date || 0),
+            Number(state.seq || 0),
+            Date.now(),
+        ]);
+    }
+
+    // ─── Telegram per-channel pts ──────────────────────────────────────────
+
+    public getTelegramChannelPts(ownerZaloId: string, channelId: string): number {
+        if (!this.initialized || !ownerZaloId || !channelId) return 0;
+        const row = this.queryOne<any>(
+            `SELECT pts FROM telegram_channel_pts WHERE owner_zalo_id = ? AND channel_id = ?`,
+            [ownerZaloId, channelId]
+        );
+        return row?.pts ?? 0;
+    }
+
+    public saveTelegramChannelPts(ownerZaloId: string, channelId: string, pts: number): void {
+        if (!this.initialized || !ownerZaloId || !channelId) return;
+        this.run(`
+            INSERT INTO telegram_channel_pts (owner_zalo_id, channel_id, pts, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(owner_zalo_id, channel_id) DO UPDATE SET
+                pts = excluded.pts,
+                updated_at = excluded.updated_at
+        `, [ownerZaloId, channelId, Number(pts || 0), Date.now()]);
+    }
+
+    public getAllTelegramChannelPts(ownerZaloId: string): Array<{ channel_id: string; pts: number }> {
+        if (!this.initialized || !ownerZaloId) return [];
+        return this.query<any>(
+            `SELECT channel_id, pts FROM telegram_channel_pts WHERE owner_zalo_id = ?`,
+            [ownerZaloId]
+        );
+    }
+
+    // ─── Telegram Bot durable cursor ────────────────────────────────────────
+
+    public getBotCursor(tokenHash: string): number {
+        if (!this.initialized || !tokenHash) return 0;
+        const row = this.queryOne<any>(
+            `SELECT offset_value FROM telegram_bot_cursor WHERE bot_token_hash = ?`,
+            [tokenHash]
+        );
+        return row?.offset_value ?? 0;
+    }
+
+    public setBotCursor(tokenHash: string, offset: number): void {
+        if (!this.initialized || !tokenHash) return;
+        const now = new Date().toISOString();
+        this.run(`
+            INSERT INTO telegram_bot_cursor (bot_token_hash, offset_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(bot_token_hash) DO UPDATE SET
+                offset_value = excluded.offset_value,
+                updated_at = excluded.updated_at
+        `, [tokenHash, offset, now]);
+    }
+
+    public deleteBotCursor(tokenHash: string): void {
+        if (!this.initialized || !tokenHash) return;
+        this.run(`DELETE FROM telegram_bot_cursor WHERE bot_token_hash = ?`, [tokenHash]);
+    }
+
     public saveAccount(account: Omit<Account, 'id'>): void {
         if (!this.initialized) return;
         const normalizedPhone = this.normalizeVietnamPhone(account.phone || '');
-        let encryptedCookies = account.cookies;
+        let cookiesToStore = account.cookies;
         try {
-            if (safeStorage.isEncryptionAvailable()) {
-                encryptedCookies = safeStorage.encryptString(account.cookies).toString('base64');
+            // Chỉ encrypt cookies dạng JSON (Zalo/FB).
+            // Telegram sessions (GramJS base64) KHÔNG encrypt — tránh DPAPI mismatch khi restart.
+            if (safeStorage.isEncryptionAvailable() && cookiesToStore &&
+                (cookiesToStore.trimStart().startsWith('[') || cookiesToStore.trimStart().startsWith('{'))) {
+                cookiesToStore = safeStorage.encryptString(cookiesToStore).toString('base64');
             }
         } catch {}
 
         const isBusiness = account.is_business ?? 0;
+        const channel = (account as any).channel || CHANNEL.ZALO;
+        const username = (account as any).username || '';
         this.run(
-            `INSERT INTO accounts (zalo_id, full_name, avatar_url, phone, is_business, imei, user_agent, cookies, is_active, created_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?)
+            `INSERT INTO accounts (zalo_id, full_name, avatar_url, phone, username, is_business, imei, user_agent, cookies, is_active, created_at, channel)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(zalo_id) DO UPDATE SET
                full_name=excluded.full_name,
                avatar_url=excluded.avatar_url,
                phone=excluded.phone,
+               username=excluded.username,
                is_business=excluded.is_business,
                imei=excluded.imei,
                user_agent=excluded.user_agent,
                cookies=excluded.cookies,
                is_active=excluded.is_active,
+               channel=excluded.channel,
                last_seen=datetime('now')`,
-            [account.zalo_id, account.full_name, account.avatar_url, normalizedPhone, isBusiness, account.imei, account.user_agent, encryptedCookies, account.is_active, account.created_at]
+            [account.zalo_id, account.full_name, account.avatar_url, normalizedPhone, username, isBusiness, account.imei, account.user_agent, cookiesToStore, account.is_active, account.created_at, channel]
         );
     }
 
@@ -2420,6 +2777,9 @@ class DatabaseService {
         this.run('DELETE FROM contacts WHERE owner_zalo_id = ?', [zaloId]);
         this.run('DELETE FROM friends WHERE owner_zalo_id = ?', [zaloId]);
         this.run('DELETE FROM page_group_member WHERE owner_zalo_id = ?', [zaloId]);
+        this.run('DELETE FROM telegram_peers WHERE owner_zalo_id = ?', [zaloId]);
+        this.run('DELETE FROM telegram_update_state WHERE owner_zalo_id = ?', [zaloId]);
+        this.run('DELETE FROM telegram_channel_pts WHERE owner_zalo_id = ?', [zaloId]);
         this.run('DELETE FROM links WHERE owner_zalo_id = ?', [zaloId]);
         this.run('DELETE FROM friend_requests WHERE owner_zalo_id = ?', [zaloId]);
         this.run('DELETE FROM pinned_messages WHERE owner_zalo_id = ?', [zaloId]);
@@ -2610,16 +2970,36 @@ class DatabaseService {
         // Fast-path: already plain JSON (saved before encryption was added, or safeStorage was unavailable)
         const trimmed = encrypted.trimStart();
         if (trimmed.startsWith('[') || trimmed.startsWith('{')) return encrypted;
+        // Fast-path: Telegram bot token format (digits:alphanumeric, e.g., "123456:ABC-DEF1234...")
+        if (/^\d+:[A-Za-z0-9_-]+$/.test(trimmed)) return encrypted;
+        // Fast-path: looks like a raw base64 session string (GramJS Telegram session, not encrypted)
+        // GramJS sessions are base64 of JSON (e.g., eyJkYyI6...) - won't start with "U2Fsd" (safeStorage prefix)
+        if (/^[A-Za-z0-9+/=]{20,}$/.test(trimmed) && !trimmed.startsWith('U2Fsd')) {
+            return encrypted; // Already raw session, no decryption needed
+        }
 
         try {
             if (safeStorage.isEncryptionAvailable()) {
                 const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
-                // Sanity check: result must be parseable JSON
-                JSON.parse(decrypted);
+                // Sanity check for JSON cookies (Zalo/FB): must be parseable JSON
+                // Non-JSON (e.g., Telegram GramJS session) is also valid — return as-is
+                if (decrypted.startsWith('[') || decrypted.startsWith('{')) {
+                    JSON.parse(decrypted);
+                }
                 return decrypted;
+            } else {
+                Logger.warn('[DatabaseService] decryptCookies: safeStorage not available, returning raw value');
             }
         } catch (err: any) {
-            Logger.warn(`[DatabaseService] decryptCookies failed - cookies may be encrypted by a different app instance (${err.message}). Account will need to re-login.`);
+            // DPAPI key mismatch (dev vs production build, different user, etc.)
+            const prefix = encrypted.substring(0, 20);
+            Logger.warn(`[DatabaseService] decryptCookies failed (${err.message}). Encrypted prefix: "${prefix}".`);
+            // Recovery: nếu là encrypted blob (U2Fsd...) → return rỗng để caller biết session invalid
+            // User cần login lại. Không return encrypted blob vì sẽ gây lỗi downstream.
+            if (encrypted.startsWith('U2Fsd')) {
+                Logger.warn(`[DatabaseService] Session encrypted by different instance - returning empty (user must re-login)`);
+                return '';
+            }
         }
         return encrypted;
     }
@@ -2774,18 +3154,28 @@ class DatabaseService {
         }
     }
 
-    public getMessages(ownerZaloId: string, threadId: string, limit = 50, offset = 0, before?: number): Message[] {
+    public getMessages(ownerZaloId: string, threadId: string, limit = 50, offset = 0, before?: number, topicId?: string): Message[] {
         if (!this.initialized) return [];
+        // Telegram General has UI topic ID "1", but its messages do not carry
+        // a forum top_msg_id. Persist them as NULL and expose them through the
+        // same topic-aware query contract.
+        const isTelegramGeneralTopic = topicId === '1';
+        const topicFilter = isTelegramGeneralTopic
+            ? ` AND (topic_id IS NULL OR topic_id = '' OR topic_id = '1')`
+            : topicId ? ' AND topic_id = ?' : '';
+        const topicParams = topicId && !isTelegramGeneralTopic ? [topicId] : [];
         if (before && before > 0) {
+            // Use <= instead of < to handle messages with same timestamp.
+            // prependMessages() deduplicates by msg_id, so duplicates are safe.
             const msgs = this.query<Message>(
-                'SELECT * FROM messages WHERE owner_zalo_id = ? AND thread_id = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?',
-                [ownerZaloId, threadId, before, limit]
+                `SELECT * FROM messages WHERE owner_zalo_id = ? AND thread_id = ?${topicFilter} AND timestamp <= ? ORDER BY timestamp DESC, msg_id DESC LIMIT ?`,
+                [ownerZaloId, threadId, ...topicParams, before, limit]
             );
             return msgs;
         }
         const msgs = this.query<Message>(
-            'SELECT * FROM messages WHERE owner_zalo_id = ? AND thread_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?',
-            [ownerZaloId, threadId, limit, offset]
+            `SELECT * FROM messages WHERE owner_zalo_id = ? AND thread_id = ?${topicFilter} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+            [ownerZaloId, threadId, ...topicParams, limit, offset]
         );
         if (msgs.length === 0) {
             Logger.log(`[DB:getMessages] No messages found for owner=${ownerZaloId} thread=${threadId}`);
@@ -2937,6 +3327,46 @@ class DatabaseService {
         );
     }
 
+    /** getContacts với filter channel, search, others — filter ở DB level cho nhanh */
+    public getContactsFiltered(ownerZaloId: string, opts?: {
+        channel?: string;
+        search?: string;
+        othersOnly?: boolean;
+        excludeOthers?: boolean;
+        unreadOnly?: boolean;
+        limit?: number;
+    }): Contact[] {
+        if (!this.initialized) return [];
+        const conditions: string[] = ['owner_zalo_id = ?'];
+        const params: any[] = [ownerZaloId];
+
+        if (opts?.channel && opts.channel !== 'all') {
+            conditions.push('channel = ?');
+            params.push(opts.channel);
+        }
+        if (opts?.search) {
+            const q = `%${opts.search.toLowerCase()}%`;
+            conditions.push("(LOWER(display_name) LIKE ? OR LOWER(alias) LIKE ? OR contact_id LIKE ? OR phone LIKE ?)");
+            params.push(q, q, q, q);
+        }
+        if (opts?.othersOnly) {
+            conditions.push('is_in_others = 1');
+        }
+        if (opts?.excludeOthers) {
+            conditions.push('is_in_others = 0');
+        }
+        if (opts?.unreadOnly) {
+            conditions.push('unread_count > 0');
+        }
+
+        const where = conditions.join(' AND ');
+        const limit = opts?.limit ? ` LIMIT ${opts.limit}` : '';
+        return this.query<Contact>(
+            `SELECT * FROM contacts WHERE ${where} ORDER BY last_message_time DESC${limit}`,
+            params
+        );
+    }
+
     /**
      * Tìm contact trong DB theo số điện thoại (normalized).
      * So khớp cả phone đã lưu (normalized) và raw phone từ user nhập.
@@ -2955,14 +3385,15 @@ class DatabaseService {
         ) || null;
     }
 
-    /** Update one or more flag columns (is_muted, mute_until, is_in_others) for a contact row */
-    public setContactFlags(ownerZaloId: string, contactId: string, flags: { is_muted?: number; mute_until?: number; is_in_others?: number }): void {
+    /** Update one or more flag columns (is_muted, mute_until, is_in_others, has_mention) for a contact row */
+    public setContactFlags(ownerZaloId: string, contactId: string, flags: { is_muted?: number; mute_until?: number; is_in_others?: number; has_mention?: number }): void {
         if (!this.initialized || !contactId) return;
         const sets: string[] = [];
         const vals: any[] = [];
         if (flags.is_muted !== undefined)    { sets.push('is_muted=?');    vals.push(flags.is_muted); }
         if (flags.mute_until !== undefined)  { sets.push('mute_until=?');  vals.push(flags.mute_until); }
         if (flags.is_in_others !== undefined){ sets.push('is_in_others=?');vals.push(flags.is_in_others); }
+        if (flags.has_mention !== undefined) { sets.push('has_mention=?'); vals.push(flags.has_mention); }
         if (sets.length === 0) return;
         vals.push(ownerZaloId, contactId);
         this.run(`UPDATE contacts SET ${sets.join(', ')} WHERE owner_zalo_id=? AND contact_id=?`, vals);
@@ -2978,10 +3409,10 @@ class DatabaseService {
     }
 
     /** Get all contacts that have flags set (for bulk load on startup) */
-    public getContactsWithFlags(ownerZaloId: string): { contact_id: string; is_muted: number; mute_until: number; is_in_others: number }[] {
+    public getContactsWithFlags(ownerZaloId: string): { contact_id: string; is_muted: number; mute_until: number; is_in_others: number; telegram_archived: number }[] {
         if (!this.initialized) return [];
         return this.query<any>(
-            'SELECT contact_id, is_muted, mute_until, is_in_others FROM contacts WHERE owner_zalo_id=? AND (is_muted=1 OR mute_until>0 OR is_in_others=1)',
+            'SELECT contact_id, is_muted, mute_until, is_in_others, telegram_archived FROM contacts WHERE owner_zalo_id=? AND (is_muted=1 OR mute_until>0 OR is_in_others=1 OR telegram_archived=1)',
             [ownerZaloId]
         );
     }
@@ -3889,8 +4320,14 @@ class DatabaseService {
         }
     }
 
-    public getMessageById(ownerZaloId: string, msgId: string): Message | undefined {
+    public getMessageById(ownerZaloId: string, msgId: string, threadId?: string): Message | undefined {
         if (!this.initialized || !msgId) return undefined;
+        if (threadId) {
+            return this.queryOne<Message>(
+                'SELECT * FROM messages WHERE owner_zalo_id = ? AND thread_id = ? AND msg_id = ?',
+                [ownerZaloId, threadId, String(msgId)]
+            );
+        }
         return this.queryOne<Message>(
             'SELECT * FROM messages WHERE owner_zalo_id = ? AND msg_id = ?',
             [ownerZaloId, String(msgId)]
@@ -4122,17 +4559,17 @@ class DatabaseService {
     public saveGroupMembers(
         ownerZaloId: string,
         groupId: string,
-        members: Array<{ memberId: string; displayName: string; avatar: string; role: number }>
+        members: Array<{ memberId: string; displayName: string; avatar: string; role: number; username?: string }>
     ): void {
         if (!this.initialized) return;
         const now = Date.now();
         const stmt = db!.prepare(`
             INSERT OR REPLACE INTO page_group_member
-                (owner_zalo_id, group_id, member_id, display_name, avatar, role, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (owner_zalo_id, group_id, member_id, display_name, avatar, role, username, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const m of members) {
-            stmt.run(ownerZaloId, groupId, m.memberId, m.displayName || '', m.avatar || '', m.role || 0, now);
+            stmt.run(ownerZaloId, groupId, m.memberId, m.displayName || '', m.avatar || '', m.role || 0, m.username || '', now);
         }
         this.save();
         Logger.log(`[DB] Saved ${members.length} group members for group ${groupId}`);
@@ -4142,14 +4579,14 @@ class DatabaseService {
     public upsertGroupMember(
         ownerZaloId: string,
         groupId: string,
-        member: { memberId: string; displayName: string; avatar: string; role: number }
+        member: { memberId: string; displayName: string; avatar: string; role: number; username?: string }
     ): void {
         if (!this.initialized) return;
         db!.prepare(
             `INSERT OR REPLACE INTO page_group_member
-                (owner_zalo_id, group_id, member_id, display_name, avatar, role, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(ownerZaloId, groupId, member.memberId, member.displayName || '', member.avatar || '', member.role || 0, Date.now());
+                (owner_zalo_id, group_id, member_id, display_name, avatar, role, username, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(ownerZaloId, groupId, member.memberId, member.displayName || '', member.avatar || '', member.role || 0, member.username || '', Date.now());
         this.save();
         Logger.log(`[DB] Upserted member ${member.memberId} role=${member.role} in group ${groupId}`);
     }
@@ -4445,6 +4882,23 @@ class DatabaseService {
              pin.previewText, pin.previewImage, pin.senderId, pin.senderName,
              pin.timestamp, Date.now()]
         );
+    }
+
+    /** Replace Telegram's remote pin snapshot while preserving local note pins. */
+    public replaceRemotePinnedMessages(ownerZaloId: string, threadId: string, pins: Array<{
+        msgId: string; msgType: string; content: string;
+        previewText: string; previewImage: string;
+        senderId: string; senderName: string; timestamp: number;
+    }>): void {
+        if (!this.initialized) return;
+        this.transaction(() => {
+            this.run(
+                `DELETE FROM pinned_messages
+                 WHERE owner_zalo_id=? AND thread_id=? AND msg_type <> 'note'`,
+                [ownerZaloId, threadId]
+            );
+            for (const pin of pins) this.pinMessage(ownerZaloId, threadId, pin);
+        });
     }
 
     /** Bỏ ghim một tin nhắn */
@@ -7695,4 +8149,3 @@ class DatabaseService {
 }
 
 export default DatabaseService;
-

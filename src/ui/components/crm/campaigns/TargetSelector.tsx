@@ -5,6 +5,7 @@ import ipc from '@/lib/ipc';
 import ZaloLabelBadge from '../tags/ZaloLabelBadge';
 import { formatPhone } from '@/utils/phoneUtils';
 import { CloudIcon, HardDriveIcon, LinkIcon, TagIcon, UserCheckIcon, UsersIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 export interface LocalLabelItem {
   id: number;
@@ -396,7 +397,7 @@ export default function TargetSelector({ zaloId, allLabels, localLabels, localLa
               </button>
               <button onClick={() => setLabelTab('zalo')}
                 className={`text-[11px] px-3 py-1 rounded-md font-medium transition-colors ${
-                  labelTab === 'zalo'
+                  labelTab === CHANNEL.ZALO
                     ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
                     : 'text-gray-400 hover:text-gray-300 border border-transparent'
                 }`}>
@@ -429,7 +430,7 @@ export default function TargetSelector({ zaloId, allLabels, localLabels, localLa
             )}
 
             {/* Zalo labels tab */}
-            {labelTab === 'zalo' && (
+            {labelTab === CHANNEL.ZALO && (
               allLabels.length > 0 ? (
                 <div className="flex gap-1.5 overflow-x-auto pb-1 flex-wrap" style={{ scrollbarWidth: 'thin' }}>
                   {allLabels.map(label => {

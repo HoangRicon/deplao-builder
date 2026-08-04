@@ -2,6 +2,7 @@
 // Dùng trong React components thay vì gọi trực tiếp
 
 import { useAppStore } from '../store/appStore';
+import type { TelegramForumTopicContext } from '../../models/telegram';
 
 
 declare global {
@@ -135,6 +136,8 @@ declare global {
         getMessages: (params: any) => Promise<any>;
         getMessagesAround: (params: { zaloId: string; threadId: string; timestamp: number; limit?: number }) => Promise<any>;
         getContacts: (zaloId: string) => Promise<any>;
+        getContactsFiltered: (params: { zaloId: string; channel?: string; search?: string; othersOnly?: boolean; excludeOthers?: boolean; unreadOnly?: boolean; limit?: number }) => Promise<{ success: boolean; contacts: any[] }>;
+        saveAccount: (account: any) => Promise<{ success: boolean; error?: string }>;
         searchContactByPhone: (params: { zaloId: string; phone: string }) => Promise<{ success: boolean; contact: any | null }>;
         searchMessages: (params: any) => Promise<any>;
         getMediaMessages: (params: { zaloId: string; threadId?: string; limit?: number; offset?: number }) => Promise<any>;
@@ -195,7 +198,7 @@ declare global {
         setLocalQMActive: (params: { id: number; isActive: number }) => Promise<{ success: boolean; error?: string }>;
         setLocalQMOrder: (params: { id: number; order: number }) => Promise<{ success: boolean; error?: string }>;
         setContactFlags: (params: { zaloId: string; contactId: string; flags: { is_muted?: number; mute_until?: number; is_in_others?: number } }) => Promise<{ success: boolean }>;
-        getContactsWithFlags: (params: { zaloId: string }) => Promise<{ success: boolean; rows: Array<{ contact_id: string; is_muted: number; mute_until: number; is_in_others: number }> }>;
+        getContactsWithFlags: (params: { zaloId: string }) => Promise<{ success: boolean; rows: Array<{ contact_id: string; is_muted: number; mute_until: number; is_in_others: number; telegram_archived: number }> }>;
         setContactAlias: (params: { zaloId: string; contactId: string; alias: string }) => Promise<{ success: boolean }>;
         // Message Drafts
         upsertDraft: (params: { zaloId: string; threadId: string; content: string }) => Promise<{ success: boolean }>;
@@ -528,6 +531,94 @@ declare global {
         scanGetStats:       (params: { accountId: string }) => Promise<{ success: boolean; totalTabs: number; totalItems: number; successCount: number; errorCount: number; byType: Record<string, number>; topTabs: Array<{ id: string; name: string; itemsCount: number }>; error?: string }>;
         scanResetCache:       () => Promise<{ success: boolean; error?: string }>;
       };
+      // ─── Telegram Bot ──────────────────────────────────────────────────
+      telegram: {
+        validateBot:    (botToken: string) => Promise<{ success: boolean; bot?: any; error?: string }>;
+        startBot:       (account: { accountId: string; botToken: string; botUsername: string; botFirstName: string }) => Promise<{ success: boolean; error?: string }>;
+        stopBot:        (accountId: string) => Promise<{ success: boolean; error?: string }>;
+        isBotPolling:   (params: { accountId: string }) => Promise<{ success: boolean; polling: boolean }>;
+        sendMessage:    (params: { accountId: string; chatId: string; text: string; parseMode?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendPhoto:      (params: { accountId: string; chatId: string; photoPath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendVideo:      (params: { accountId: string; chatId: string; videoPath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendDocument:   (params: { accountId: string; chatId: string; filePath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendAudio:      (params: { accountId: string; chatId: string; audioPath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        forwardMessage: (params: { accountId: string; chatId: string; fromChatId: string; messageId: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        deleteMessage:  (params: { accountId: string; chatId: string; messageId: string }) => Promise<{ success: boolean; error?: string }>;
+        addReaction:    (params: { accountId: string; chatId: string; messageId: string; emoji: string }) => Promise<{ success: boolean; error?: string }>;
+        pinMessage:     (params: { accountId: string; chatId: string; messageId: string }) => Promise<{ success: boolean; error?: string }>;
+        sendPoll:       (params: { accountId: string; chatId: string; question: string; options: string[] }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        editMessage:    (params: { accountId: string; chatId: string; messageId: string; text: string }) => Promise<{ success: boolean; error?: string }>;
+        getActiveBots:  () => Promise<{ success: boolean; bots: any[]; error?: string }>;
+      };
+      // ─── Telegram User (MTProto) ───────────────────────────────────────
+      telegramUser: {
+        sendCode:       (phoneNumber: string) => Promise<{ success: boolean; phoneCodeHash?: string; error?: string }>;
+        signIn:         (params: { phoneNumber: string; code: string; phoneCodeHash: string }) => Promise<{ success: boolean; stringSession?: string; accountId?: string; userInfo?: { firstName: string; lastName: string; phone: string }; error?: string }>;
+        signIn2FA:      (password: string) => Promise<{ success: boolean; stringSession?: string; accountId?: string; userInfo?: { firstName: string; lastName: string; phone: string }; error?: string }>;
+        startListener:  (account: { accountId: string; phoneNumber: string; stringSession: string }) => Promise<{ success: boolean; error?: string }>;
+        stopListener:   (accountId: string) => Promise<{ success: boolean; error?: string }>;
+        sendMessage:    (params: { accountId: string; chatId: string; text: string; mentions?: Array<{ uid: string; pos: number; len: number }> }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        isConnected:    (accountId: string) => Promise<{ success: boolean; connected: boolean; error?: string }>;
+        getActive:      () => Promise<{ success: boolean; listeners: any[]; error?: string }>;
+        refreshMessages:(params: { accountId: string }) => Promise<{ success: boolean; inserted?: number; pending?: boolean; error?: string }>;
+        fetchSelfAvatar:(accountId: string) => Promise<{ success: boolean; avatarUrl?: string; error?: string }>;
+        // Message operations
+        editMessage:    (params: { accountId: string; chatId: string; messageId: string; text: string }) => Promise<{ success: boolean; error?: string }>;
+        deleteMessages: (params: { accountId: string; chatId: string; messageIds: string[] }) => Promise<{ success: boolean; error?: string }>;
+        forwardMessages:(params: { accountId: string; fromChatId: string; toChatId: string; messageIds: string[] }) => Promise<{ success: boolean; error?: string }>;
+        pinMessage:     (params: { accountId: string; chatId: string; messageId: string; silent?: boolean; unpin?: boolean }) => Promise<{ success: boolean; error?: string }>;
+        syncPinnedMessages: (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; pins?: any[]; error?: string }>;
+        ensureMessageAvailable: (params: { accountId: string; chatId: string; messageId: string }) => Promise<{ success: boolean; message?: any; error?: string }>;
+        sendFile:       (params: { accountId: string; chatId: string; filePath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendTopicFile:  (params: TelegramForumTopicContext & { filePath: string; caption?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendTyping:     (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; error?: string }>;
+        sendReaction:   (params: { accountId: string; chatId: string; messageId: string; emoji?: string }) => Promise<{ success: boolean; error?: string }>;
+        // Group management
+        getGroupInfo:      (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; info?: any; error?: string }>;
+        joinGroup:         (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; requested?: boolean; info?: any; error?: string }>;
+        getGroupMembers:   (params: { accountId: string; chatId: string; limit?: number }) => Promise<{ success: boolean; members?: any[]; error?: string }>;
+        hydrateMessageSenders: (params: { accountId: string; chatId: string; messageIds: string[]; senderIds?: string[] }) => Promise<{ success: boolean; members?: any[]; error?: string }>;
+        setDialogMute:     (params: { accountId: string; chatId: string; muteUntil: number }) => Promise<{ success: boolean; muteUntil?: number; error?: string }>;
+        setDialogArchived: (params: { accountId: string; chatId: string; archived: boolean }) => Promise<{ success: boolean; folderId?: number; error?: string }>;
+        setDialogPin:      (params: { accountId: string; chatId: string; pinned: boolean }) => Promise<{ success: boolean; error?: string }>;
+        getMessageReactions: (params: { accountId: string; chatId: string; messageId: string; reaction?: string; offset?: string; limit?: number }) => Promise<{ success: boolean; reactions?: Array<{ userId: string; emoji: string; date: number }>; count?: number; nextOffset?: string; error?: string }>;
+        addChatUser:       (params: { accountId: string; chatId: string; userId: string }) => Promise<{ success: boolean; error?: string }>;
+        deleteChatUser:    (params: { accountId: string; chatId: string; userId: string; revokeHistory?: boolean }) => Promise<{ success: boolean; error?: string }>;
+        editChatTitle:     (params: { accountId: string; chatId: string; title: string }) => Promise<{ success: boolean; error?: string }>;
+        editChatPhoto:     (params: { accountId: string; chatId: string; photoPath: string }) => Promise<{ success: boolean; error?: string }>;
+        editChatAdmin:     (params: { accountId: string; chatId: string; userId: string; isAdmin: boolean }) => Promise<{ success: boolean; error?: string }>;
+        leaveChat:         (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; error?: string }>;
+        blockUser:         (params: { accountId: string; userId: string }) => Promise<{ success: boolean; error?: string }>;
+        unblockUser:       (params: { accountId: string; userId: string }) => Promise<{ success: boolean; error?: string }>;
+        exportChatInvite:  (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; link?: string; error?: string }>;
+        readChatHistory:   (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; error?: string }>;
+        getMessages:       (params: { accountId: string; chatId: string; limit?: number; offsetId?: number; topicRootMessageId?: string }) => Promise<{ success: boolean; messages?: any[]; error?: string }>;
+        repairMessageMedia:(params: { accountId: string; chatId: string; messageId: string }) => Promise<{ success: boolean; localPaths?: Record<string, string>; attachments?: any[]; msgType?: string; error?: string }>;
+        repairEmptyMessages:(params: { accountId: string; chatId: string; messageIds: string[] }) => Promise<{ success: boolean; results?: Array<{ messageId: string; resolved: boolean; content: string; msgType: string; attachments: any[]; mediaClass: string }>; error?: string }>;
+        repairMessageQuotes:(params: { accountId: string; chatId: string; items: Array<{ messageId: string; replyToId: string }> }) => Promise<{ success: boolean; results?: Array<{ messageId: string; replyToId: string; status: 'repaired' | 'topic_routing' | 'not_found' | 'deferred' | 'invalid'; quoteData?: string }>; error?: string }>;
+        getFullChat:       (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; info?: any; error?: string }>;
+        getUserProfile:    (params: { accountId: string; userId: string; chatId?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>;
+        resolveUsername:   (params: { accountId: string; username: string }) => Promise<{ success: boolean; peer?: any; error?: string }>;
+        searchContacts:    (params: { accountId: string; query: string }) => Promise<{ success: boolean; peers?: any[]; error?: string }>;
+        getPeers:          (params: { accountId: string; peerType?: string }) => Promise<{ success: boolean; peers?: any[]; error?: string }>;
+        // Forum / Topics
+        isForum:              (params: { accountId: string; chatId: string; forceApi?: boolean }) => Promise<{ success: boolean; isForum?: boolean; error?: string }>;
+        checkForumForNewGroups:(params: { accountId: string }) => Promise<{ success: boolean; error?: string }>;
+        getForumTopics:       (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; topics?: any[]; error?: string }>;
+        getForumTopicMessages:(params: TelegramForumTopicContext & { limit?: number }) => Promise<{ success: boolean; messages?: any[]; error?: string }>;
+        createForumTopic:     (params: { accountId: string; chatId: string; title: string; iconColor?: number; iconEmojiId?: string }) => Promise<{ success: boolean; topicId?: string; error?: string }>;
+        editForumTopic:       (params: TelegramForumTopicContext & { title?: string; iconEmojiId?: string; closed?: boolean; pinned?: boolean }) => Promise<{ success: boolean; error?: string }>;
+        sendTopicMessage:     (params: TelegramForumTopicContext & { text: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        // Sticker / GIF
+        getStickerSets:       (params: { accountId: string }) => Promise<{ success: boolean; sets?: any[]; error?: string }>;
+        getStickerSetStickers:(params: { accountId: string; setId: string; accessHash?: string; shortName?: string }) => Promise<{ success: boolean; stickers?: any[]; error?: string }>;
+        getRecentStickers:    (params: { accountId: string }) => Promise<{ success: boolean; stickers?: any[]; error?: string }>;
+        getGifs:              (params: { accountId: string }) => Promise<{ success: boolean; gifs?: any[]; error?: string }>;
+        searchGifs:           (params: { accountId: string; query: string }) => Promise<{ success: boolean; gifs?: any[]; error?: string }>;
+        sendSticker:          (params: { accountId: string; chatId: string; stickerId: string; accessHash?: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        sendGif:              (params: { accountId: string; chatId: string; documentId: string }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+        downloadSticker:      (params: { accountId: string; stickerId: string; accessHash?: string }) => Promise<{ success: boolean; localPath?: string; error?: string }>;
+      };
       // ─── Proxy ───────────────────────────────────────────────────────────
       proxy: {
         list:          () => Promise<{ success: boolean; proxies: any[]; error?: string }>;
@@ -691,6 +782,8 @@ export const ipc = {
   workspace: window.electronAPI?.workspace,
   relay: window.electronAPI?.relay,
   fb: window.electronAPI?.fb,
+  telegram: window.electronAPI?.telegram,
+  telegramUser: window.electronAPI?.telegramUser,
   proxy: window.electronAPI?.proxy,
 
   erp,
@@ -716,4 +809,3 @@ export function buildZaloAuth(acc: { cookies?: string; imei?: string; user_agent
 }
 
 export default ipc;
-

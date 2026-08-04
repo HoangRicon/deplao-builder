@@ -18,6 +18,7 @@
 
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc from '@/lib/ipc';
+import { DEFAULT_NON_ZALO_LABELS, createDefaultLabels } from './defaultLabels';
 import { useAppStore } from '@/store/appStore';
 import { useChatStore } from '@/store/chatStore';
 import { useWorkspaceStore } from '@/store/workspaceStore';
@@ -328,6 +329,8 @@ async function _syncFriends(
   }
 }
 
+// Default labels imported from shared utility: @/lib/defaultLabels
+
 async function _syncLabels(
   activeAccountId: string,
   auth: any,
@@ -335,43 +338,55 @@ async function _syncLabels(
 ): Promise<void> {
   onProgress({ task: 'labels', status: 'running', detail: 'Đang tải nhãn...' });
   try {
-    // ── Step 1: Zalo API labels → appStore memory ──────────────────────────
-    let zaloLabelData: any[] = [];
-    let zaloLabelCount = 0;
-    try {
-      const res = await ipc.zalo?.getLabels({ auth });
-      zaloLabelData = res?.response?.labelData ?? [];
-      const version: number = res?.response?.version ?? 0;
-      if (zaloLabelData.length > 0) {
-        const store = useAppStore.getState();
-        store.setLabels(activeAccountId, zaloLabelData);
-        store.setLabelsVersion?.(activeAccountId, version);
-        zaloLabelCount = zaloLabelData.length;
-      }
-    } catch { /* non-fatal - continue to local clone step */ }
+    // Check if this is a Zalo account
+    const accounts = useChatStore.getState().contacts;
+    const isZaloAccount = !activeAccountId.startsWith('fb:') && !activeAccountId.startsWith('telegram');
 
-    // ── Step 1b: Zalo API labels → local_labels DB (merge mode) ───────────
-    let zaloToLocalCount = 0;
-    if (zaloLabelCount > 0) {
+    if (isZaloAccount) {
+      // ── Zalo: fetch labels from API ──────────────────────────────────────
+      let zaloLabelData: any[] = [];
+      let zaloLabelCount = 0;
       try {
-        zaloToLocalCount = await syncZaloLabelsToLocalDB({
-          zaloLabels: zaloLabelData,
-          activeZaloId: activeAccountId,
-          mode: 'merge',
-        });
+        const res = await ipc.zalo?.getLabels({ auth });
+        zaloLabelData = res?.response?.labelData ?? [];
+        const version: number = res?.response?.version ?? 0;
+        if (zaloLabelData.length > 0) {
+          const store = useAppStore.getState();
+          store.setLabels(activeAccountId, zaloLabelData);
+          store.setLabelsVersion?.(activeAccountId, version);
+          zaloLabelCount = zaloLabelData.length;
+        }
       } catch { /* non-fatal */ }
+
+      let zaloToLocalCount = 0;
+      if (zaloLabelCount > 0) {
+        try {
+          zaloToLocalCount = await syncZaloLabelsToLocalDB({
+            zaloLabels: zaloLabelData,
+            activeZaloId: activeAccountId,
+            mode: 'merge',
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      const details: string[] = [];
+      if (zaloLabelCount > 0) details.push(`${zaloLabelCount} nhãn Zalo`);
+      if (zaloToLocalCount > 0) details.push(`${zaloToLocalCount} nhãn → local DB`);
+      onProgress({
+        task: 'labels', status: 'done',
+        total: zaloLabelCount, current: zaloLabelCount,
+        detail: details.length > 0 ? details.join(', ') : 'Không có nhãn',
+      });
+    } else {
+      // ── Facebook/Telegram: tạo nhãn mặc định ────────────────────────────
+      const createdCount = await createDefaultLabels(activeAccountId);
+      onProgress({
+        task: 'labels', status: 'done',
+        total: DEFAULT_NON_ZALO_LABELS.length,
+        current: createdCount,
+        detail: `Đã tạo ${createdCount} nhãn mặc định`,
+      });
     }
-
-    const details: string[] = [];
-    if (zaloLabelCount > 0) details.push(`${zaloLabelCount} nhãn Zalo`);
-    if (zaloToLocalCount > 0) details.push(`${zaloToLocalCount} nhãn → local DB`);
-
-    onProgress({
-      task: 'labels', status: 'done',
-      total: zaloLabelCount,
-      current: zaloLabelCount,
-      detail: details.length > 0 ? details.join(', ') : 'Không có nhãn',
-    });
   } catch (err: any) {
     onProgress({ task: 'labels', status: 'error', detail: err?.message || 'Lỗi tải nhãn' });
   }

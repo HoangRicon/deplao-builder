@@ -3,11 +3,14 @@ import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import { useChatStore } from '@/store/chatStore';
 import { useEmployeeStore } from '@/store/employeeStore';
-import ChannelBadge from '../common/ChannelBadge';
+import ChannelBadge, { ZaloIcon, FacebookIcon, TelegramIcon } from '../common/ChannelBadge';
+import { isZalo, isFacebook, isTelegram } from '@/lib/channelHelper';
 import { useVisibleAccounts } from '@/hooks/useVisibleAccounts';
 import { hasUnseenSettingsTabs } from '@/utils/settingsSeenTabs';
 import { useErpPermissions } from '@/hooks/erp/useErpContext';
+import { toLocalMediaUrl } from '@/lib/localMedia';
 import { BellIcon, BookIcon, BotIcon, BrainIcon, CampaignIcon, ChartIcon, ChatIcon, CheckIcon, CloudIcon, CreditCardIcon, DiamondIcon, DollarIcon, EditIcon, FileTextIcon, FolderIcon, GlobeIcon, HelpCircleIcon, LightningIcon, LinkIcon, LightbulbIcon, MailIcon, MessageCircleIcon, PackageIcon, RefreshIcon, SaveIcon, SearchIcon, SettingsIcon, ShoppingCartIcon, SmartphoneIcon, StoreIcon, SunIcon, TagIcon, TrendingUpIcon, TruckIcon, UserIcon, UsersIcon, WaveIcon } from '@/components/common/icons';
+import { CHANNEL } from '@/lib/channelHelper';
 
 
 interface SidebarProps {
@@ -182,23 +185,34 @@ export default function Sidebar({ onAddAccount }: SidebarProps) {
                   }`}
                 >
                   {account.avatar_url ? (
-                    <img src={account.avatar_url} alt={account.full_name} className="w-full h-full object-cover"
+                    <img src={toLocalMediaUrl(account.avatar_url)} alt={account.full_name} className="w-full h-full object-cover"
                       onError={(e) => {
                         const img = e.target as HTMLImageElement;
-                        img.src = '';
-                        // Retry avatar cho cả Zalo + Facebook
+                        img.style.display = 'none';
+                        // Retry avatar, nếu fail → xóa avatar_url để fallback sang channel icon
                         import('@/lib/avatarRetry').then(({ handleAvatarError }) =>
-                          handleAvatarError({ ownerId: zaloId, contactId: zaloId, channel: account.channel || 'zalo' })
+                          handleAvatarError({ ownerId: zaloId, contactId: zaloId, channel: account.channel || CHANNEL.ZALO })
                         ).then(newUrl => {
                           if (newUrl) {
                             useAccountStore.getState().updateAccount(zaloId, { avatar_url: newUrl });
                             img.src = newUrl;
+                            img.style.display = '';
+                          } else {
+                            useAccountStore.getState().updateAccount(zaloId, { avatar_url: '' });
                           }
-                        }).catch(() => {});
+                        }).catch(() => {
+                          useAccountStore.getState().updateAccount(zaloId, { avatar_url: '' });
+                        });
                       }} />
                   ) : (
-                    <div className="w-full h-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm">
-                      {(account.full_name || account.zalo_id).charAt(0).toUpperCase()}
+                    <div className={`w-full h-full flex items-center justify-center text-white font-bold text-sm ${isFacebook(account.channel) ? 'bg-blue-800' : isTelegram(account.channel) ? 'bg-blue-500' : 'bg-blue-600'}`}>
+                      {isFacebook(account.channel) ? (
+                        <FacebookIcon size={16} />
+                      ) : isTelegram(account.channel) ? (
+                        <TelegramIcon size={16} />
+                      ) : (
+                        <ZaloIcon size={16} />
+                      )}
                     </div>
                   )}
                 </button>
@@ -208,8 +222,8 @@ export default function Sidebar({ onAddAccount }: SidebarProps) {
                   </span>
                 )}
                 {/* Channel badge */}
-                <div className="absolute -bottom-0.5 -left-0.5 z-10 pointer-events-none">
-                  <ChannelBadge channel={(account.channel as any) || 'zalo'} size="xs" />
+                <div className="absolute -top-2 -left-0.5 z-10 pointer-events-none">
+                  <ChannelBadge channel={(account.channel as any) || CHANNEL.ZALO} size="sm" />
                 </div>
                 {/* Disconnected indicator (merged inbox) */}
                 {!account.isConnected && (
@@ -275,25 +289,36 @@ export default function Sidebar({ onAddAccount }: SidebarProps) {
                   <div className="w-10 h-10 rounded-full overflow-hidden">
                     {account.avatar_url ? (
                       <img
-                        src={account.avatar_url}
+                        src={toLocalMediaUrl(account.avatar_url)}
                         alt={account.full_name}
                         className="w-full h-full object-cover"
                         onError={(e) => {
                           const img = e.target as HTMLImageElement;
-                          img.src = '';
+                          img.style.display = 'none';
                           import('@/lib/avatarRetry').then(({ handleAvatarError }) =>
-                            handleAvatarError({ ownerId: account.zalo_id, contactId: account.zalo_id, channel: account.channel || 'zalo' })
+                            handleAvatarError({ ownerId: account.zalo_id, contactId: account.zalo_id, channel: account.channel || CHANNEL.ZALO })
                           ).then(newUrl => {
                             if (newUrl) {
                               useAccountStore.getState().updateAccount(account.zalo_id, { avatar_url: newUrl });
                               img.src = newUrl;
+                              img.style.display = '';
+                            } else {
+                              useAccountStore.getState().updateAccount(account.zalo_id, { avatar_url: '' });
                             }
-                          }).catch(() => {});
+                          }).catch(() => {
+                            useAccountStore.getState().updateAccount(account.zalo_id, { avatar_url: '' });
+                          });
                         }}
                       />
                     ) : (
-                      <div className="w-full h-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm">
-                        {(account.full_name || account.zalo_id).charAt(0).toUpperCase()}
+                      <div className={`w-full h-full flex items-center justify-center text-white font-bold text-sm ${isFacebook(account.channel) ? 'bg-blue-800' : isTelegram(account.channel) ? 'bg-blue-500' : 'bg-blue-600'}`}>
+                        {isFacebook(account.channel) ? (
+                          <FacebookIcon size={16} />
+                        ) : isTelegram(account.channel) ? (
+                          <TelegramIcon size={16} />
+                        ) : (
+                          <ZaloIcon size={16} />
+                        )}
                       </div>
                     )}
                   </div>
@@ -319,8 +344,8 @@ export default function Sidebar({ onAddAccount }: SidebarProps) {
                   ) : null}
 
                   {/* ── Channel badge (Zalo/Facebook) ── */}
-                  <div className="absolute -bottom-0.5 -left-0.5 z-10">
-                    <ChannelBadge channel={(account.channel as any) || 'zalo'} size="xs" />
+                  <div className="absolute -top-2 -left-0.5 z-10">
+                    <ChannelBadge channel={(account.channel as any) || CHANNEL.ZALO} size="sm" />
                   </div>
 
                   {/* ── Disconnected indicator (bottom-right) ── */}

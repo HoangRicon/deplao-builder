@@ -14,6 +14,7 @@ import { extractUserProfile } from '../../../utils/profileUtils';
 import { fetchAllAliases } from '@/lib/zaloAliasUtils';
 import { Spinner } from '@/components/common/PageLoading';
 import { BotIcon } from '@/components/common/icons';
+import { CHANNEL, isZalo, isFacebook, isTelegram, isTelegramUser } from '@/lib/channelHelper';
 
 interface HeaderLocalLabel {
   id: number;
@@ -44,6 +45,7 @@ export default function ChatHeader() {
   const [editLabelsOpen, setEditLabelsOpen] = useState(false);
   const [aliasRefreshing, setAliasRefreshing] = useState(false);
   const [refreshingFBInfo, setRefreshingFBInfo] = useState(false);
+  const [refreshingTelegram, setRefreshingTelegram] = useState(false);
   const [aliasEditOpen, setAliasEditOpen] = useState(false);
   const [aliasEditPos, setAliasEditPos] = useState<{ x: number; y: number } | null>(null);
   const [aliasInputValue, setAliasInputValue] = useState('');
@@ -51,6 +53,10 @@ export default function ChatHeader() {
   const [groupNameEditing, setGroupNameEditing] = useState(false);
   const [groupNameInput, setGroupNameInput] = useState('');
   const [groupNameSaving, setGroupNameSaving] = useState(false);
+  // Telegram message download dialog
+  const [tgDownloadOpen, setTgDownloadOpen] = useState(false);
+  const [tgDownloadCount, setTgDownloadCount] = useState('200');
+  const [tgDownloading, setTgDownloading] = useState(false);
   const [groupNameEditPos, setGroupNameEditPos] = useState<{ x: number; y: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -126,23 +132,56 @@ export default function ChatHeader() {
   useEffect(() => {
     if (!activeAccountId || !activeThreadId) return;
     const isGroupThread = activeThreadType === 1;
-    if (isGroupThread) return;
 
     const storeContacts = useChatStore.getState().contacts[activeAccountId] || [];
     const ct = storeContacts.find((c) => c.contact_id === activeThreadId);
     if (!ct) return;
 
     const acc = getActiveAccount();
-    const channel = ct.channel || acc?.channel || 'zalo';
+    const channel = ct.channel || acc?.channel || CHANNEL.ZALO;
     // Kiểm tra nếu chưa có tên thật (display_name = contact_id hoặc chỉ toàn số)
     const hasRealName = !!(ct.display_name && ct.display_name !== activeThreadId && !/^\d+$/.test(ct.display_name));
     const hasAvatar = !!ct.avatar_url;
+    if (isGroupThread) {
+      if (isTelegram(channel)) {
+        import('@/lib/adapters/registry').then(({ getAdapter }) =>
+          (getAdapter(channel as any) as any).getGroupInfo?.({ accountId: activeAccountId, threadId: activeThreadId })
+        ).then((res: any) => {
+          if (!res?.success || !res?.info) return;
+          const avatarUrl = res?.info?.avatarUrl || '';
+          const entity = res.info.entity || {};
+          const current = useAppStore.getState().groupInfoCache?.[activeAccountId]?.[activeThreadId];
+          const memberCount = Number(res.info.memberCount || res.info.full?.participantsCount || entity.participantsCount || 0);
+          const onlineCount = Number(res.info.onlineCount || res.info.full?.onlineCount || 0);
+          const name = entity.title || ct.display_name || activeThreadId;
+          updateContact(activeAccountId, {
+            contact_id: activeThreadId, display_name: name,
+            ...(avatarUrl ? { avatar_url: avatarUrl } : {}), contact_type: 'group',
+            telegram_peer_type: res.info.peerType || '', telegram_members_count: memberCount,
+            telegram_online_count: onlineCount, telegram_can_send: res.info.canSend === false ? 0 : 1,
+            telegram_send_reason: res.info.sendReason || '', telegram_state_updated_at: Date.now(),
+            telegram_membership_state: res.info.membershipState || 'member',
+            telegram_join_action: res.info.joinAction || 'none',
+          });
+          useAppStore.getState().setGroupInfo(activeAccountId, activeThreadId, {
+            groupId: activeThreadId, name, avatar: avatarUrl || current?.avatar || ct.avatar_url || '',
+            memberCount: memberCount || current?.memberCount || current?.members?.length || 0,
+            onlineCount, members: current?.members || [], fetchedAt: Date.now(),
+            peerType: res.info.peerType, canSend: res.info.canSend, sendReason: res.info.sendReason,
+            membershipState: res.info.membershipState, joinAction: res.info.joinAction,
+            canManageTopics: res.info.canManageTopics,
+            creatorId: current?.creatorId, adminIds: current?.adminIds, settings: current?.settings,
+          });
+        }).catch(() => {});
+      }
+      return;
+    }
     if (hasRealName && hasAvatar) return; // Đã có đủ thông tin
 
-    if (channel === 'zalo') {
+    if (isZalo(channel)) {
       // Dùng fetchContactInfo đã có cache 7 ngày + xử lý alias
       fetchContactInfo(activeAccountId, activeThreadId).catch(() => {});
-    } else if (channel === 'facebook') {
+    } else if (isFacebook(channel)) {
       // Facebook: lấy tên + avatar từ HTML profile
       ipc.fb?.getUserInfoFacebookHtml({ accountId: activeAccountId, userId: activeThreadId })
         .then((res: any) => {
@@ -164,6 +203,22 @@ export default function ChatHeader() {
           })
           .catch(() => {});
       }
+    } else if (isTelegram(channel)) {
+      ipc.telegramUser?.getUserProfile({ accountId: activeAccountId, userId: activeThreadId })
+        .then((res: any) => {
+          const profile = res?.profile;
+          if (!res?.success || !profile) return;
+          const name = profile.displayName || [profile.firstName, profile.lastName].filter(Boolean).join(' ') || profile.username || activeThreadId;
+          updateContact(activeAccountId, {
+            contact_id: activeThreadId, display_name: name,
+            ...(profile.avatarUrl ? { avatar_url: profile.avatarUrl } : {}),
+            ...(profile.phone ? { phone: profile.phone } : {}), channel: 'telegram_user',
+          });
+          DataAccessor.updateContactProfile({
+            zaloId: activeAccountId, contactId: activeThreadId, displayName: name,
+            avatarUrl: profile.avatarUrl || '', phone: profile.phone || '', contactType: 'user',
+          }).catch(() => {});
+        }).catch(() => {});
     }
   }, [activeAccountId, activeThreadId, activeThreadType]);
 
@@ -218,7 +273,7 @@ export default function ChatHeader() {
       const aroundRes = await DataAccessor.getMessagesAround({
         zaloId: activeAccountId,
         threadId: activeThreadId,
-        msgId: String(msg.msg_id || msg.timestamp),
+        timestamp: Number(msg.timestamp),
         limit: 80,
       });
       const aroundMsgs = aroundRes?.messages;
@@ -343,7 +398,7 @@ export default function ChatHeader() {
     try {
       const trimmed = aliasInputValue.trim();
       // Zalo: sync to API. Facebook/kênh khác: save locally only.
-      if ((acc.channel || 'zalo') === 'zalo') {
+      if (isZalo(acc.channel)) {
         const auth = buildZaloAuth(acc, activeAccountId);
         const res = await ipc.zalo?.changeFriendAlias({ auth, alias: trimmed, friendId: activeThreadId });
         if (res && !res.success && res.error) {
@@ -365,6 +420,28 @@ export default function ChatHeader() {
     }
   };
 
+  /** Tải tin nhắn từ Telegram API */
+  const handleTgDownload = async () => {
+    if (!activeAccountId || !activeThreadId) return;
+    const limit = parseInt(tgDownloadCount, 10);
+    if (isNaN(limit) || limit <= 0) return;
+    setTgDownloading(true);
+    showNotification(`Đang tải ${limit} tin nhắn từ Telegram...`, 'info');
+    try {
+      const res = await ipc.telegramUser?.getMessages({ accountId: activeAccountId, chatId: activeThreadId, limit });
+      if (res?.success && res.messages?.length) {
+        showNotification(`Đã tải ${res.messages.length} tin nhắn`, 'success');
+      } else {
+        showNotification(res?.error || 'Không có tin nhắn mới', 'info');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Lỗi tải tin nhắn', 'error');
+    } finally {
+      setTgDownloading(false);
+      setTgDownloadOpen(false);
+    }
+  };
+
   /** Reload alias + user info từ API Zalo - lưu toàn bộ alias + cập nhật thông tin hội thoại hiện tại */
   const handleRefreshAlias = async () => {
     if (!activeThreadId || !activeAccountId || activeThreadType === 1) return;
@@ -372,7 +449,7 @@ export default function ChatHeader() {
     if (!acc) return;
     setAliasRefreshing(true);
     try {
-      if ((acc.channel || 'zalo') === 'zalo') {
+      if (isZalo(acc.channel)) {
         const auth = buildZaloAuth(acc, activeAccountId);
         // 1. Update toàn bộ alias từ fetchAllAliases (pagination, count=200)
         const aliasItems = await fetchAllAliases(auth);
@@ -437,7 +514,7 @@ export default function ChatHeader() {
     if (!trimmed || trimmed === displayName) { setGroupNameEditing(false); return; }
     setGroupNameSaving(true);
     try {
-      if ((acc.channel || 'zalo') === 'zalo') {
+      if (isZalo(acc.channel)) {
         const auth = buildZaloAuth(acc, activeAccountId);
         const res = await ipc.zalo?.changeGroupName({ name: trimmed, groupId: activeThreadId });
         if (res && !res.success && res.error) {
@@ -463,7 +540,7 @@ export default function ChatHeader() {
   const handleRefreshFacebookInfo = async () => {
     if (!activeThreadId || !activeAccountId || isGroup) return;
     const acc = getActiveAccount();
-    if (!acc || (acc.channel || 'zalo') !== 'facebook') return;
+    if (!acc || (acc.channel || CHANNEL.ZALO) !== 'facebook') return;
     setRefreshingFBInfo(true);
     try {
       const res = await ipc.fb?.getUserInfoFacebookHtml({ accountId: activeAccountId, userId: activeThreadId });
@@ -494,8 +571,21 @@ export default function ChatHeader() {
   const avatarUrl = toLocalMediaUrl(contact?.avatar_url || '');
   const isGroup = activeThreadType === 1 || contact?.contact_type === 'group';
   const activeAccount = getActiveAccount();
-  const isFacebookDM = !isGroup && activeAccount?.channel === 'facebook';
+  const isFacebookDM = !isGroup && isFacebook(activeAccount?.channel);
   const groupInfo = isGroup ? (groupInfoCache[activeAccountId] || {})[activeThreadId] : undefined;
+  const isTelegramGroup = isGroup && isTelegram(contact?.channel || activeAccount?.channel);
+  const telegramMemberCount = Number(groupInfo?.memberCount || contact?.telegram_members_count || 0);
+  const telegramOnlineCount = Number(groupInfo?.onlineCount || contact?.telegram_online_count || 0);
+  const telegramAudienceLabel = (groupInfo?.peerType || contact?.telegram_peer_type) === 'channel'
+    ? 'subscribers'
+    : 'members';
+
+  const openTelegramMembers = () => {
+    if (!showConversationInfo) toggleConversationInfo();
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent('telegram:open-group-members', {
+      detail: { accountId: activeAccountId, chatId: activeThreadId },
+    })), 50);
+  };
 
   // Render avatar: group composite or user avatar
   const renderAvatar = () => {
@@ -506,7 +596,7 @@ export default function ChatHeader() {
           // Retry avatar cho cả Zalo + Facebook
           if (activeAccountId && activeThreadId) {
             import('@/lib/avatarRetry').then(({ handleAvatarError }) =>
-              handleAvatarError({ ownerId: activeAccountId, contactId: activeThreadId, channel: contact?.channel || 'zalo' })
+              handleAvatarError({ ownerId: activeAccountId, contactId: activeThreadId, channel: contact?.channel || CHANNEL.ZALO })
             ).then(newUrl => {
               if (newUrl) {
                 updateContact(activeAccountId!, { contact_id: activeThreadId, avatar_url: newUrl });
@@ -625,7 +715,7 @@ export default function ChatHeader() {
               }
             </button>
             {/* Group rename button - chỉ cho nhóm Zalo (có API) */}
-            {isGroup && channelCap.supportsGroupRename && (activeAccount?.channel || 'zalo') === 'zalo' && (
+            {isGroup && channelCap.supportsGroupRename && isZalo(activeAccount?.channel) && (
               <button
                 title="Đổi tên nhóm"
                 onClick={(e) => handleOpenGroupNameEdit(e)}
@@ -638,7 +728,7 @@ export default function ChatHeader() {
               </button>
             )}
             {/* Reload user info + alias button - chỉ hiện cho user DM có hỗ trợ alias */}
-            {!isGroup && channelCap.supportsAlias && (activeAccount?.channel || 'zalo') === 'zalo' && (
+            {!isGroup && channelCap.supportsAlias && isZalo(activeAccount?.channel) && (
               <button
                 title="Cập nhật thông tin + tên gợi nhớ"
                 onClick={handleRefreshAlias}
@@ -670,7 +760,7 @@ export default function ChatHeader() {
             {/* Edit alias button - sửa tên gợi nhớ (mọi kênh) */}
             {!isGroup && channelCap.supportsAlias && (
               <button
-                title={(activeAccount?.channel || 'zalo') === 'zalo' ? 'Sửa tên gợi nhớ (đồng bộ Zalo)' : 'Sửa tên gợi nhớ (lưu local trên app)'}
+                title={isZalo(activeAccount?.channel) ? 'Sửa tên gợi nhớ (đồng bộ Zalo)' : 'Sửa tên gợi nhớ (lưu local trên app)'}
                 onClick={handleOpenAliasEdit}
                 className="flex-shrink-0 text-gray-400 hover:text-white transition-colors ml-1.5"
               >
@@ -681,6 +771,18 @@ export default function ChatHeader() {
               </button>
             )}
           </div>
+          {isTelegramGroup && (telegramMemberCount > 0 || telegramOnlineCount > 0) && (
+            <button
+              type="button"
+              onClick={openTelegramMembers}
+              className="mt-0.5 text-[11px] text-gray-400 hover:text-blue-300 transition-colors text-left"
+              title="Xem danh sách thành viên"
+            >
+              {telegramMemberCount > 0 && `${telegramMemberCount.toLocaleString()} ${telegramAudienceLabel}`}
+              {telegramMemberCount > 0 && telegramOnlineCount > 0 && ' · '}
+              {telegramOnlineCount > 0 && `${telegramOnlineCount.toLocaleString()} online`}
+            </button>
+          )}
           {/* Active labels row - clickable to open label picker */}
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             {channelCap.supportsLabel && (
@@ -735,7 +837,20 @@ export default function ChatHeader() {
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
-          {/* Tải tin nhắn cũ từ Facebook API (TẠM THỜI ẨN do API lỗi 500) */}
+          {/* Tải tin nhắn từ Telegram API */}
+          {isTelegramUser(contact?.channel) && (
+            <div className="relative group">
+              <button
+                title="Tải tin nhắn từ Telegram"
+                onClick={() => setTgDownloadOpen(true)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-gray-700 text-gray-400 hover:text-white"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+              </button>
+            </div>
+          )}
           {/* Bảng tin nhóm */}
           {isGroup && channelCap.supportsGroupBoard && (
             <button
@@ -922,6 +1037,39 @@ export default function ChatHeader() {
           anchorY={aliasEditPos.y}
         />
       )}
+
+      {/* Telegram message download dialog */}
+      {tgDownloadOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          onClick={() => { if (!tgDownloading) setTgDownloadOpen(false); }}>
+          <div className="bg-gray-800 border border-gray-600 rounded-2xl w-80 p-5 shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+            <h3 className="font-semibold text-white mb-1">Tải tin nhắn từ Telegram</h3>
+            <p className="text-xs text-gray-400 mb-3">Nhập số lượng tin nhắn muốn tải từ Telegram API.</p>
+            <input
+              type="number"
+              value={tgDownloadCount}
+              onChange={e => setTgDownloadCount(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !tgDownloading) handleTgDownload(); }}
+              placeholder="200"
+              min="1"
+              max="5000"
+              disabled={tgDownloading}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50 mb-3"
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setTgDownloadOpen(false)} disabled={tgDownloading}
+                className="flex-1 py-2 rounded-xl bg-gray-700 text-gray-300 text-sm hover:bg-gray-600 disabled:opacity-40">
+                Hủy
+              </button>
+              <button onClick={handleTgDownload} disabled={tgDownloading || !tgDownloadCount}
+                className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-40 flex items-center justify-center gap-1.5">
+                {tgDownloading ? <><Spinner size={3} /> Đang tải...</> : 'Tải'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1072,4 +1220,3 @@ function AliasEditPopup({ value, onChange, saving, onSave, onClose, anchorX, anc
     </div>
   );
 }
-

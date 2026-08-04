@@ -23,6 +23,7 @@ export interface Message {
     deleted_by?: string | null;
     /** ID of the message being replied to (Facebook/others) */
     reply_to_id?: string | null;
+    topic_id?: string | null;
 }
 
 /** Draft tin nhắn đang soạn dở */

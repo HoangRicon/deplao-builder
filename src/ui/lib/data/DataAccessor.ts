@@ -66,6 +66,7 @@ export class DataAccessor {
     limit?: number;
     before?: number;
     offset?: number;
+    topicId?: string;
   }) {
     if (isEmployee()) {
       const query: any = {
@@ -75,6 +76,7 @@ export class DataAccessor {
       };
       if (params.before !== undefined) query.before = params.before;
       if (params.offset !== undefined) query.offset = params.offset;
+      if (params.topicId !== undefined) query.topicId = params.topicId;
       const res = await rest().get('/api/query/messages', query);
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : (res.data.items || []);
@@ -88,27 +90,35 @@ export class DataAccessor {
       limit: params.limit || 50,
       offset: params.offset || 0,
       before: params.before,
+      topicId: params.topicId,
     });
   }
 
   static async getMessagesAround(params: {
     zaloId: string;
     threadId: string;
-    msgId: string;
+    timestamp?: number;
+    /** @deprecated Pass timestamp. Kept for older callers/employee REST compatibility. */
+    msgId?: string;
     limit?: number;
   }) {
+    const timestamp = Number(params.timestamp ?? params.msgId);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return { messages: [], items: [] };
     if (isEmployee()) {
-      const res = await rest().get('/api/query/messages/around', params);
+      const res = await rest().get('/api/query/messages/around', {
+        ...params,
+        msgId: String(timestamp),
+      });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : (res.data.items || []);
-        return { items };
+        return { messages: items, items };
       }
-      return { items: [] };
+      return { messages: [], items: [] };
     }
     return window.electronAPI.db.getMessagesAround({
       zaloId: params.zaloId,
       threadId: params.threadId,
-      timestamp: Number(params.msgId),
+      timestamp,
       limit: params.limit,
     });
   }
@@ -158,7 +168,7 @@ export class DataAccessor {
     });
   }
 
-  static async getMessageById(params: { zaloId: string; msgId: string }) {
+  static async getMessageById(params: { zaloId: string; msgId: string; threadId?: string }) {
     if (isEmployee()) {
       const res = await rest().get(`/api/query/messages/${params.msgId}`, params);
       return { success: true, message: res.data };

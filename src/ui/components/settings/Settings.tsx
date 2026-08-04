@@ -17,6 +17,7 @@ import LockScreenSettings from './LockScreenSettings';
 import AccountSettings from './AccountSettings';
 import TunnelSettings from './TunnelSettings';
 import { loadSeenTabs, markTabSeen, SETTINGS_WATCHLIST, hasUnseenChangelog, markChangelogSeen } from '@/utils/settingsSeenTabs';
+import { isZalo, isFacebook, isTelegram } from '@/lib/channelHelper';
 
 type SettingsTab = 'notifications' | 'accounts' | 'storage' | 'conversation' | 'employees' | 'workspace' | 'introduction' | 'changelog' | 'appearance' | 'proxy' | 'security' | 'webhooks';
 
@@ -304,12 +305,16 @@ export default function Settings() {
                 className="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600"
               >
                 <option value="__global__"><GlobeIcon className="w-4 h-4 inline" /> Mặc định (tất cả tài khoản)</option>
-                {accounts.filter(a => (a.channel || 'zalo') === 'zalo').map(acc => (
+                {accounts.filter(a => isZalo(a.channel)).map(acc => (
                   <option key={acc.zalo_id} value={acc.zalo_id}><SmartphoneIcon className="w-4 h-4 inline" /> {acc.full_name || acc.zalo_id}
                   </option>
                 ))}
-                {accounts.filter(a => a.channel === 'facebook').map(acc => (
+                {accounts.filter(a => isFacebook(a.channel)).map(acc => (
                   <option key={acc.zalo_id} value={acc.zalo_id}><BookIcon className="w-4 h-4 inline" /> {acc.full_name || acc.zalo_id}
+                  </option>
+                ))}
+                {accounts.filter(a => isTelegram(a.channel)).map(acc => (
+                  <option key={acc.zalo_id} value={acc.zalo_id}>✈️ {acc.full_name || acc.zalo_id}
                   </option>
                 ))}
               </select>

@@ -6,6 +6,7 @@ import {useEmployeeStore} from '@/store/employeeStore';
 import ipc from '@/lib/ipc'
 import DataAccessor from '@/lib/data/DataAccessor';;
 import { messageQueue, generateTempId, extractMsgIdFromResponse } from '@/lib/MessageQueue';
+import { Spinner } from '@/components/common/PageLoading';
 import AccountAssignmentPopup from './AccountAssignmentPopup';
 import {SendCardModal} from './GroupModals';
 import {CreatePollDialog} from './CreatePollDialog';
@@ -22,7 +23,9 @@ import {
 import ReminderPanel from './ReminderPanel';
 import { matchesShortcut } from '../common/LabelEmojiPicker';
 import { getCapability } from '../../../configs/channelConfig';
+import { isNonZalo, isTelegramBot, isTelegramUser, isTelegram, isFacebook, isZalo, CHANNEL, isTelegramForumGeneral } from '@/lib/channelHelper';
 import * as channelIpc from '../../lib/channelIpc';
+import { getAdapter } from '@/lib/adapters/registry';
 import { extractVideoThumbViaCanvas } from '@/lib/chat/videoUtils';
 import { EMOJI_CATEGORIES, QUICK_EMOJIS } from '@/lib/chat/emojiUtils';
 import { AlertIcon, AwardIcon, BellIcon, BookmarkIcon, BotIcon, ChartIcon, ChatIcon, CheckIcon, ClipboardListIcon, ClockIcon, CreditCardIcon, DollarIcon, EditIcon, FileTextIcon, FolderIcon, GiftIcon, GlobeIcon, KeyIcon, LightbulbIcon, LightningIcon, LinkIcon, PackageIcon, PinIcon, PluginIcon, RefreshIcon, SearchIcon, SettingsIcon, ShoppingCartIcon, SmartphoneIcon, SmileIcon, SparklesIcon, StarIcon, StoreIcon, TagIcon, TargetIcon, TrashIcon, TrendingUpIcon, TruckIcon, UserIcon } from '@/components/common/icons';
@@ -51,6 +54,7 @@ interface ContactCardSuggestion {
 export default function MessageInput() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [joiningTelegramGroup, setJoiningTelegramGroup] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickerPicker, setShowStickerPicker] = useState(false);
   const [showSendCard, setShowSendCard] = useState(false);
@@ -133,13 +137,17 @@ export default function MessageInput() {
   // Debounce timer for auto-saving draft while typing (~1s)
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { activeThreadId, activeThreadType, addMessage, removeMessage, replyTo, setReplyTo, markReplied, setDraft, clearDraft } = useChatStore();
+  const { activeThreadId, activeThreadType, activeTopicId, forumTopics, addMessage, removeMessage, replyTo, setReplyTo, editingMsg, setEditingMsg, markReplied, setDraft, clearDraft } = useChatStore();
   const { activeAccountId, getActiveAccount, accounts: allAccounts } = useAccountStore();
-  const { showNotification, groupInfoCache, mergedInboxMode, toggleIntegrationQuickPanel, pinnedIntegrationShortcuts, unpinIntegrationShortcut, editPinnedShortcutIcon, openIntegrationPanelTo, aiSuggestionsEnabled, aiSuggestions, aiSuggestionsLoading, setAiSuggestionsEnabled, setAiSuggestions, setAiSuggestionsLoading, isAiSuggestDisabled, toggleAiDisableForThread, toggleAiDisableForAccount, aiSuggestDisabledThreads, aiSuggestDisabledAccounts } = useAppStore();
+  const { showNotification, groupInfoCache, setGroupInfo, mergedInboxMode, toggleIntegrationQuickPanel, pinnedIntegrationShortcuts, unpinIntegrationShortcut, editPinnedShortcutIcon, openIntegrationPanelTo, aiSuggestionsEnabled, aiSuggestions, aiSuggestionsLoading, setAiSuggestionsEnabled, setAiSuggestions, setAiSuggestionsLoading, isAiSuggestDisabled, toggleAiDisableForThread, toggleAiDisableForAccount, aiSuggestDisabledThreads, aiSuggestDisabledAccounts } = useAppStore();
 
   // Channel capability for active thread
   const activeContact = useChatStore(s => (s.contacts[activeAccountId || ''] || []).find(c => c.contact_id === activeThreadId));
-  const channelCap = getCapability((activeContact?.channel || 'zalo') as any);
+  const channelCap = getCapability((activeContact?.channel || CHANNEL.ZALO) as any);
+  const activeTelegramTopic = activeAccountId && activeThreadId && activeTopicId
+    ? (forumTopics[`${activeAccountId}_${activeThreadId}`] || []).find((topic: any) =>
+        String(topic.rootMessageId || topic.id) === String(activeTopicId))
+    : undefined;
 
   // Employee mode: check permission to show/hide media features
   const empMode = useEmployeeStore(s => s.mode);
@@ -342,39 +350,166 @@ export default function MessageInput() {
 
     const account = getActiveAccount();
     if (!account) return;
-    const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
-
-    // Gọi API sendTyping nếu có (best-effort, silent fail)
-    (ipc.zalo as any)?.sendTyping?.({ auth, threadId: activeThreadId, type: activeThreadType })?.catch?.(() => {});
+    const channel = activeContact?.channel || CHANNEL.ZALO;
+    if (isNonZalo(channel)) {
+      channelIpc.sendTyping(channel as any, {
+        accountId: activeAccountId,
+        threadId: activeThreadId,
+        isTyping: true,
+        isGroup: activeThreadType === 1,
+      }).catch(() => {});
+    } else {
+      const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
+      (ipc.zalo as any)?.sendTyping?.({ auth, threadId: activeThreadId, type: activeThreadType })?.catch?.(() => {});
+    }
 
     // Reset stop timer
     if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
     typingStopTimerRef.current = setTimeout(() => {
       lastTypingSentRef.current = 0; // Reset để lần nhập tiếp theo gửi lại ngay
     }, 6000);
-  }, [activeAccountId, activeThreadId, activeThreadType, getActiveAccount]);
+  }, [activeAccountId, activeThreadId, activeThreadType, activeContact?.channel, getActiveAccount]);
 
   // @ mention: chỉ áp dụng cho thread nhóm, dùng groupMembers từ cache
   const isGroupThread = activeThreadType === 1;
-  const groupMembers: Array<{ userId: string; displayName: string; avatar: string }> =
+  const groupMembers: Array<{ userId: string; displayName: string; avatar: string; username?: string }> =
     (activeAccountId && activeThreadId && isGroupThread)
       ? (groupInfoCache?.[activeAccountId]?.[activeThreadId]?.members || [])
       : [];
 
+  // Fetch missing usernames for Telegram group members when @ is triggered
+  const [fetchingUsernames, setFetchingUsernames] = useState(false);
+  const usernameFetchDoneRef = useRef<Set<string>>(new Set()); // track which threads we've already fetched
+
+  useEffect(() => {
+    if (!showMentionDropdown || !isGroupThread || !activeAccountId || !activeThreadId) return;
+    if (!isTelegramUser(activeContact?.channel) && !isTelegramBot(activeContact?.channel)) return;
+
+    // Check if any members are missing username
+    const missingUsername = groupMembers.filter(m => m.userId && !m.username && m.userId !== 'all');
+    if (missingUsername.length === 0) return;
+
+    // Avoid re-fetching for the same thread in this session
+    const fetchKey = `${activeAccountId}:${activeThreadId}`;
+    if (usernameFetchDoneRef.current.has(fetchKey)) return;
+    usernameFetchDoneRef.current.add(fetchKey);
+
+    setFetchingUsernames(true);
+
+    (async () => {
+      const updates: Record<string, string> = {};
+
+      // Step 1: Get usernames from cached telegram_peers (fast DB query, no API call)
+      try {
+        const peersRes = await ipc.telegramUser?.getPeers({ accountId: activeAccountId });
+        if (peersRes?.success && peersRes.peers) {
+          const peerMap = new Map<string, string>();
+          for (const peer of peersRes.peers) {
+            if (peer.username) peerMap.set(String(peer.peer_id), peer.username);
+          }
+          for (const member of missingUsername) {
+            const username = peerMap.get(member.userId);
+            if (username) updates[member.userId] = username;
+          }
+        }
+      } catch {}
+
+      // Step 2: For members still missing username, try getUserProfile (slower, API call)
+      const stillMissing = missingUsername.filter(m => !updates[m.userId]);
+      if (stillMissing.length > 0) {
+        // Batch: resolve entities in parallel (limited concurrency to avoid rate limit)
+        const BATCH_SIZE = 3;
+        for (let i = 0; i < stillMissing.length; i += BATCH_SIZE) {
+          const batch = stillMissing.slice(i, i + BATCH_SIZE);
+          const results = await Promise.allSettled(
+            batch.map(member =>
+              ipc.telegramUser?.getUserProfile({
+                accountId: activeAccountId,
+                userId: member.userId,
+                chatId: activeThreadId,
+              }).catch(() => null) // catch individual failures
+            )
+          );
+          for (let j = 0; j < batch.length; j++) {
+            const result = results[j];
+            if (result.status === 'fulfilled' && result.value?.success) {
+              // Get username from profile
+              const username = result.value.profile?.username || '';
+              if (username) {
+                updates[batch[j].userId] = username;
+              }
+            }
+          }
+          // Small delay between batches to avoid rate limiting
+          if (i + BATCH_SIZE < stillMissing.length) {
+            await new Promise(r => setTimeout(r, 200));
+          }
+        }
+      }
+
+      // Update groupInfoCache with fetched usernames
+      if (Object.keys(updates).length > 0) {
+        const cached = groupInfoCache?.[activeAccountId]?.[activeThreadId];
+        if (cached?.members) {
+          const updatedMembers = cached.members.map((m: any) =>
+            updates[m.userId] ? { ...m, username: updates[m.userId] } : m
+          );
+          setGroupInfo(activeAccountId, activeThreadId, {
+            ...cached,
+            members: updatedMembers,
+          });
+        }
+      }
+      setFetchingUsernames(false);
+    })();
+  }, [showMentionDropdown, isGroupThread, activeAccountId, activeThreadId, activeContact?.channel, groupMembers]);
+
   const filteredMentions = showMentionDropdown && isGroupThread
-    ? groupMembers
-        .filter(m =>
-          m.displayName?.trim() &&   // ẩn thành viên không có tên (chỉ có UID)
-          (!mentionSearch ||
-            m.displayName.toLowerCase().includes(mentionSearch.toLowerCase()) ||
-            m.userId.includes(mentionSearch))
-        )
-        .slice(0, 50)   // giới hạn 50 để tránh render quá nhiều (nhóm 5k thành viên)
+    ? [
+        // @all option cho groups (Zalo: uid='-1', Telegram: uid='all')
+        ...((!mentionSearch || 'all'.includes(mentionSearch.toLowerCase()) || '@all'.includes(mentionSearch.toLowerCase()))
+          ? [{ userId: isZalo(activeContact?.channel) ? '-1' : 'all', displayName: '@all', avatar: '', username: '' }]
+          : []),
+        ...groupMembers
+          .filter(m =>
+            m.displayName?.trim() &&   // ẩn thành viên không có tên (chỉ có UID)
+            (!mentionSearch ||
+              m.displayName.toLowerCase().includes(mentionSearch.toLowerCase()) ||
+              (m.username || '').toLowerCase().includes(mentionSearch.toLowerCase()) ||
+              m.userId.includes(mentionSearch))
+          ),
+      ].slice(0, 50)   // giới hạn 50 để tránh render quá nhiều (nhóm 5k thành viên)
     : [];
 
   useEffect(() => {
     if (replyTo) textareaRef.current?.focus();
   }, [replyTo]);
+
+  // Pre-fill text when entering edit mode
+  useEffect(() => {
+    if (editingMsg) {
+      const el = textareaRef.current;
+      if (el) {
+        el.innerText = editingMsg.content || '';
+        setText(editingMsg.content || '');
+        el.focus();
+        // Move cursor to end of text
+        requestAnimationFrame(() => {
+          const range = document.createRange();
+          const sel = window.getSelection();
+          if (el.childNodes.length > 0) {
+            range.selectNodeContents(el);
+            range.collapse(false); // collapse to end
+          } else {
+            range.setStart(el, 0);
+            range.collapse(true);
+          }
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        });
+      }
+    }
+  }, [editingMsg?.msg_id]);
 
   // Close emoji picker when clicking outside
   useEffect(() => {
@@ -432,8 +567,21 @@ export default function MessageInput() {
     }
     setText(savedDraft);
 
-    // Focus editor sau khi đổi thread
-    setTimeout(() => textareaRef.current?.focus(), 50);
+    // Focus editor sau khi đổi thread + move cursor to end
+    setTimeout(() => {
+      const editor = textareaRef.current;
+      if (editor) {
+        editor.focus();
+        if (editor.childNodes.length > 0) {
+          const range = document.createRange();
+          const sel = window.getSelection();
+          range.selectNodeContents(editor);
+          range.collapse(false);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+      }
+    }, 50);
   }, [activeThreadId, activeAccountId]);
 
   // Preload quick messages when account changes
@@ -441,18 +589,18 @@ export default function MessageInput() {
     if (!activeAccountId) return;
     const account = getActiveAccount();
     if (!account) return;
-    const isFb = account.channel === 'facebook';
+    const channelCap = getCapability((account.channel || CHANNEL.ZALO) as any);
     const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
-    const mode = isFb ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || 'zalo');
+    const mode = channelCap.quickMessageSyncMode === 'local' ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || CHANNEL.ZALO);
     fetchQuickMessages(auth, activeAccountId, mode).then(setQuickMessages).catch(() => {});
     // Re-fetch when quick messages change (remote sync or another tab)
     const handleQMChange = () => {
       if (!activeAccountId) return;
       const account = getActiveAccount();
       if (!account) return;
-      const isFb = account.channel === 'facebook';
+      const channelCap = getCapability((account.channel || CHANNEL.ZALO) as any);
       const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
-      const mode = isFb ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || 'zalo');
+      const mode = channelCap.quickMessageSyncMode === 'local' ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || CHANNEL.ZALO);
       fetchQuickMessages(auth, activeAccountId, mode).then(setQuickMessages).catch(() => {});
     };
     window.addEventListener('ui:quickMessagesChanged', handleQMChange);
@@ -517,10 +665,16 @@ export default function MessageInput() {
   };
 
   // ── Inline sticker suggestions: when user types >2 chars + 1s pause ──
-  // Only for plain text (no reply quote, no clipboard images)
+  // Only for Zalo (plain text, no reply quote, no clipboard images)
   useEffect(() => {
     if (inlineStickerTimerRef.current) clearTimeout(inlineStickerTimerRef.current);
     const kw = text.trim().toLowerCase();
+
+    // Only for Zalo channel — Telegram/Facebook don't have keyword sticker search
+    if (!isZalo(activeContact?.channel)) {
+      setInlineStickerSuggestions([]);
+      return;
+    }
 
     // Clear suggestions when text is short or empty
     if (!kw || kw.length < 3) {
@@ -608,8 +762,9 @@ export default function MessageInput() {
 
   // Debounced lookup when text contains phone number
   useEffect(() => {
-    // Skip for Facebook channel - only Zalo supports business cards
-    if (activeContact?.channel === 'facebook') return;
+    // Skip for channels that don't support business cards
+    const contactChannel = (activeContact?.channel || CHANNEL.ZALO) as any;
+    if (!getCapability(contactChannel).supportsBusinessCard) return;
 
     if (contactCardTimerRef.current) clearTimeout(contactCardTimerRef.current);
 
@@ -696,7 +851,7 @@ export default function MessageInput() {
     const account = getActiveAccount();
     if (!account) return null;
     // FB accounts may not have Zalo credentials - return a placeholder so send flow continues
-    if ((account.channel || 'zalo') !== 'zalo') {
+    if (isNonZalo(account.channel)) {
       return { cookies: '', imei: '', userAgent: '' };
     }
     return { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
@@ -742,7 +897,7 @@ export default function MessageInput() {
         });
         messageQueue.enqueue({
           tempId: vidTempId, zaloId: activeAccountId!, threadId: activeThreadId,
-          threadType: activeThreadType, channel: (activeContact?.channel || 'zalo') as any,
+          threadType: activeThreadType, channel: (activeContact?.channel || CHANNEL.ZALO) as any,
           sendFn: async () => {
             try {
               const metaRes = await ipc.file?.getVideoMeta?.({ filePath: tempPath });
@@ -758,9 +913,9 @@ export default function MessageInput() {
                   if (saveRes?.success && saveRes?.filePath) thumbPath = saveRes.filePath;
                 }
               }
-              const ch = activeContact?.channel || 'zalo';
-              if (ch === 'facebook') {
-                const r = await channelIpc.sendVideo('facebook', { accountId: activeAccountId!, threadId: activeThreadId, threadType: activeThreadType, filePath: tempPath, body: '', quote: quotePayload || undefined });
+              const ch = activeContact?.channel || CHANNEL.ZALO;
+              if (isNonZalo(ch)) {
+                const r = await channelIpc.sendVideo(ch as any, { accountId: activeAccountId!, threadId: activeThreadId, threadType: activeThreadType, topicRootMessageId: activeTopicId || undefined, filePath: tempPath, body: '', quote: quotePayload || undefined });
                 if (!r.success) return { success: false, error: r.error || 'Gửi video Facebook thất bại' };
                 return { success: true, msgId: (r as any)?.messageId };
               } else {
@@ -788,7 +943,7 @@ export default function MessageInput() {
         const tempPath = await saveDroppedFileAsTemp(file);
         if (!tempPath) continue;
         const quotePayload = buildQuotePayload(replyTo);
-        const ch = activeContact?.channel || 'zalo';
+        const ch = activeContact?.channel || CHANNEL.ZALO;
         const fileTempId = generateTempId();
         addMessage(activeAccountId!, activeThreadId, {
           msg_id: fileTempId, owner_zalo_id: activeAccountId!, thread_id: activeThreadId,
@@ -802,9 +957,9 @@ export default function MessageInput() {
           threadType: activeThreadType, channel: ch as any,
           sendFn: async () => {
             try {
-              if (ch === 'facebook') {
-                const fileRes = await channelIpc.sendAttachment('facebook', { accountId: activeAccountId!, threadId: activeThreadId, filePath: tempPath, threadType: activeThreadType });
-                if (!fileRes?.success) return { success: false, error: fileRes?.error || 'Gửi file Facebook thất bại' };
+              if (isNonZalo(ch)) {
+                const fileRes = await channelIpc.sendAttachment(ch as any, { accountId: activeAccountId!, threadId: activeThreadId, topicRootMessageId: activeTopicId || undefined, filePath: tempPath, threadType: activeThreadType });
+                if (!fileRes?.success) return { success: false, error: fileRes?.error || 'Gửi file thất bại' };
                 return { success: true, msgId: (fileRes as any)?.messageId };
               } else {
                 const res = await ipc.zalo?.sendFile({ auth, threadId: activeThreadId, type: activeThreadType, filePath: tempPath, ...(quotePayload ? { quote: quotePayload } : {}) });
@@ -819,7 +974,7 @@ export default function MessageInput() {
 
     window.addEventListener('chat:dragDropFiles', handleDragDropFiles);
     return () => window.removeEventListener('chat:dragDropFiles', handleDragDropFiles);
-  }, [activeThreadId, activeAccountId, activeThreadType, replyTo, getAuth, activeContact]);
+  }, [activeThreadId, activeAccountId, activeThreadType, activeTopicId, replyTo, getAuth, activeContact]);
 
   const handleToggleLocalLabel = useCallback(async (label: LocalLabel) => {
     if (!activeAccountId || !activeThreadId || togglingLocalLabelId !== null) return;
@@ -1348,14 +1503,15 @@ export default function MessageInput() {
           // Send images batch
           if (imagePaths.length > 0 && tempImgId) {
             try {
-              const ch = activeContact?.channel || 'zalo';
-              if (ch === 'facebook') {
+              const ch = activeContact?.channel || CHANNEL.ZALO;
+              if (isNonZalo(ch)) {
                 // FB: send multiple images via channelIpc
                 for (const imgPath of imagePaths) {
-                  await channelIpc.sendAttachment('facebook', {
+                  await channelIpc.sendAttachment(ch, {
                     accountId,
                     threadId,
                     threadType: threadType as any,
+                    topicRootMessageId: activeTopicId || undefined,
                     filePath: imgPath,
                     body: '',
                   });
@@ -1390,12 +1546,13 @@ export default function MessageInput() {
                 }
               }
 
-              const ch = activeContact?.channel || 'zalo';
-              if (ch === 'facebook') {
-                await channelIpc.sendVideo('facebook', {
+              const ch = activeContact?.channel || CHANNEL.ZALO;
+              if (isNonZalo(ch)) {
+                await channelIpc.sendVideo(ch, {
                   accountId,
                   threadId,
                   threadType,
+                  topicRootMessageId: activeTopicId || undefined,
                   filePath: videoPath,
                   body: '',
                 });
@@ -1433,14 +1590,23 @@ export default function MessageInput() {
           // Send text
           if (msgTitle && tempTextId) {
             try {
-              const ch = activeContact?.channel || 'zalo';
-              if (ch === 'facebook') {
-                await channelIpc.sendMessage('facebook', {
+              const ch = activeContact?.channel || CHANNEL.ZALO;
+              if (isTelegramUser(ch) && activeTopicId && !isTelegramForumGeneral(activeTopicId)) {
+                const result = await (getAdapter('telegram_user') as any).sendTopicMessage({
+                  accountId,
+                  threadId,
+                  topicId: activeTopicId,
+                  text: msgTitle,
+                });
+                if (!result?.success) throw new Error(result?.error || 'Gửi tin nhắn Telegram thất bại');
+              } else if (isNonZalo(ch)) {
+                const sendResult = await channelIpc.sendMessage(ch, {
                   accountId,
                   threadId,
                   threadType: threadType as any,
                   body: msgTitle,
                 });
+                if (!sendResult?.success) throw new Error(sendResult?.error || 'Gửi tin nhắn thất bại');
               } else {
                 await ipc.zalo?.sendMessage({ auth, threadId, type: threadType, message: msgTitle });
               }
@@ -1491,16 +1657,26 @@ export default function MessageInput() {
     handleSelectQuickMessage(item, 0);
   };
 
-  const handleSelectMention = (member: { userId: string; displayName: string; avatar: string }) => {
+  const handleSelectMention = (member: { userId: string; displayName: string; avatar: string; username?: string }) => {
     const el = textareaRef.current;
     if (!el || mentionTriggerPos < 0) return;
     const cursorPos = getCaretOffset(el).start;
     const curText = getPlainText(el);
+    // mentionTriggerPos là vị trí của '@' đã gõ → bỏ qua nó khi splice
     const beforeAt = curText.slice(0, mentionTriggerPos);
     const afterCursor = curText.slice(cursorPos);
-    const mentionText = `@${member.displayName} `;
+    // Telegram: dùng @username nếu có, ngược lại dùng displayName
+    // Zalo: dùng displayName
+    const isTelegram = isTelegramUser(activeContact?.channel) || isTelegramBot(activeContact?.channel);
+    const mentionLabel = member.displayName.startsWith('@')
+      ? member.displayName
+      : (isTelegram && member.username)
+        ? `@${member.username}`
+        : `@${member.displayName}`;
+    const mentionText = `${mentionLabel} `;
     const newText = beforeAt + mentionText + afterCursor;
-    const newMention = { uid: member.userId, pos: mentionTriggerPos, len: mentionText.length - 1 };
+    // pos = vị trí '@' trong text mới, len = độ dài mention label (không tính trailing space)
+    const newMention = { uid: member.userId, pos: mentionTriggerPos, len: mentionLabel.length };
     setText(newText);
     setMentions(prev => [...prev, newMention]);
     setShowMentionDropdown(false);
@@ -1524,6 +1700,40 @@ export default function MessageInput() {
     if (!activeThreadId || !activeAccountId || sending) return;
     const auth = getAuth();
     if (!auth) return;
+
+    // ── Edit mode: call editMessage instead of sendMessage ────────────────
+    if (editingMsg && hasText && !hasImages) {
+      try {
+        setSending(true);
+        // Strip tg_ prefix for Telegram topic messages
+        const rawMsgId = editingMsg.msg_id?.replace(/^tg_/, '') || editingMsg.msg_id;
+        console.log(`[MessageInput] Edit msg: channel=${activeContact?.channel} msgId=${rawMsgId} chatId=${activeThreadId}`);
+        if (isTelegramBot(activeContact?.channel)) {
+          await ipc.telegram?.editMessage({ accountId: activeAccountId, chatId: activeThreadId, messageId: rawMsgId, text: msgText });
+        } else if (isTelegramUser(activeContact?.channel)) {
+          const res = await (ipc as any).telegramUser?.editMessage({ accountId: activeAccountId, chatId: activeThreadId, messageId: rawMsgId, text: msgText });
+          console.log(`[MessageInput] Telegram editMessage result:`, JSON.stringify(res));
+          if (res && !res.success) {
+            showNotification('Sửa tin nhắn thất bại: ' + (res.error || 'Unknown error'), 'error');
+            return;
+          }
+        } else if (isFacebook(activeContact?.channel)) {
+          await ipc.fb?.editMessage({ accountId: activeAccountId, messageId: rawMsgId, text: msgText });
+        }
+        // Update local message content
+        useChatStore.getState().updateMessageEdit(activeAccountId, activeThreadId, rawMsgId, msgText, (editingMsg.is_edited || 0) + 1, Date.now());
+        showNotification('Đã sửa tin nhắn', 'success');
+      } catch (e: any) {
+        showNotification('Sửa tin nhắn thất bại: ' + (e?.message || e), 'error');
+      } finally {
+        setSending(false);
+        setEditingMsg(null);
+        if (el) { el.innerHTML = ''; }
+        setText('');
+      }
+      return;
+    }
+
     const quotePayload = buildQuotePayload(replyTo);
 
     // Clear textarea immediately for instant visual feedback.
@@ -1560,13 +1770,14 @@ export default function MessageInput() {
           if (res?.success && res.filePath) tempPaths.push(res.filePath);
         }
         if (tempPaths.length > 0) {
-          const ch = activeContact?.channel || 'zalo';
+          const ch = activeContact?.channel || CHANNEL.ZALO;
           const imgBatchTempId = generateTempId();
           addMessage(activeAccountId, activeThreadId, {
             msg_id: imgBatchTempId, owner_zalo_id: activeAccountId, thread_id: activeThreadId,
             thread_type: activeThreadType, sender_id: activeAccountId, content: '',
             msg_type: 'image', timestamp: Date.now(), is_sent: 1, status: 'sending',
             send_status: 'sending', temp_id: imgBatchTempId, media_type: 'image', channel: ch as any,
+            ...(activeTopicId ? { topic_id: activeTopicId } : {}),
             attachments: JSON.stringify(tempPaths.map(fp => ({ type: 'image', localPath: fp }))),
             local_paths: JSON.stringify(tempPaths.reduce((acc, fp, i) => ({ ...acc, [`img${i}`]: fp }), {})),
           });
@@ -1579,7 +1790,18 @@ export default function MessageInput() {
             threadType: activeThreadType, channel: ch as any,
             sendFn: async () => {
               try {
-                if (ch === 'facebook') {
+                if (isTelegram(ch)) {
+                  let messageId: string | undefined;
+                  for (const filePath of tempPaths) {
+                    const result = await channelIpc.sendAttachment(ch, {
+                      accountId: activeAccountId!, threadId: activeThreadId, threadType: activeThreadType,
+                      topicRootMessageId: activeTopicId || undefined, filePath, fileType: 'image',
+                    });
+                    if (!result?.success) return { success: false, error: result?.error || 'Gửi ảnh Telegram thất bại' };
+                    messageId = result.messageId;
+                  }
+                  return { success: true, msgId: messageId };
+                } else if (isNonZalo(ch)) {
                   const batchRes = await ipc.fb?.sendAttachments({
                     accountId: activeAccountId!, threadId: activeThreadId, filePaths: tempPaths,
                     typeChat: activeThreadType === 0 ? 'user' : null,
@@ -1651,7 +1873,7 @@ export default function MessageInput() {
       // ── Chỉ gửi qua sendLink khi là URL thuần để tránh bị tách thành 2 tin (text + link) ──
       const linkPayload = parseLinkWithCaption(msgText);
       if (linkPayload && !linkPayload.caption && isUrlOnly(msgText)) {
-        const ch = activeContact?.channel || 'zalo';
+        const ch = activeContact?.channel || CHANNEL.ZALO;
         const linkTempId = generateTempId();
         addMessage(activeAccountId, activeThreadId, {
           msg_id: linkTempId, owner_zalo_id: activeAccountId, thread_id: activeThreadId,
@@ -1667,8 +1889,13 @@ export default function MessageInput() {
           channel: ch as any,
           sendFn: async () => {
             try {
-              if (ch === 'facebook') {
-                const r = await channelIpc.sendMessage('facebook', { accountId: activeAccountId, threadId: activeThreadId, body: msgText, threadType: activeThreadType, quote: quotePayload });
+              if (isTelegramUser(ch) && activeTopicId && !isTelegramForumGeneral(activeTopicId)) {
+                const r = await ((await import('@/lib/adapters/registry')).getAdapter('telegram_user') as any)
+                  .sendTopicMessage({ accountId: activeAccountId, threadId: activeThreadId, topicId: activeTopicId, text: msgText });
+                if (!r?.success) return { success: false, error: r?.error || 'Gửi link Telegram thất bại' };
+                return { success: true, msgId: r?.messageId };
+              } else if (isNonZalo(ch)) {
+                const r = await channelIpc.sendMessage(ch, { accountId: activeAccountId, threadId: activeThreadId, body: msgText, threadType: activeThreadType, quote: quotePayload });
                 if (!r?.success) return { success: false, error: r?.error || 'Gửi tin nhắn Facebook thất bại' };
                 return { success: true, msgId: (r as any)?.messageId };
               } else {
@@ -1688,17 +1915,18 @@ export default function MessageInput() {
       }
 
       // ── Gửi tin nhắn văn bản thường ─────────────────────────────
-      const activeChannel = activeContact?.channel || 'zalo';
+      const activeChannel = activeContact?.channel || CHANNEL.ZALO;
 
-      if (activeChannel === 'facebook') {
-        // Facebook: route through channelIpc facade → enqueue
+      if (isNonZalo(activeContact?.channel)) {
+        // Non-Zalo: route through channelIpc facade → enqueue
         const fbTempId = generateTempId();
         setReplyTo(null);
         addMessage(activeAccountId, activeThreadId, {
           msg_id: fbTempId, owner_zalo_id: activeAccountId, thread_id: activeThreadId,
           thread_type: activeThreadType, sender_id: activeAccountId, content: msgText,
-          msg_type: 'text', timestamp: Date.now(), is_sent: 1, status: 'sending', channel: 'facebook',
+          msg_type: 'text', timestamp: Date.now(), is_sent: 1, status: 'sending', channel: activeChannel as any,
           send_status: 'pending', temp_id: fbTempId, media_type: 'text',
+          ...(activeTopicId ? { topic_id: activeTopicId } : {}),
           ...(quotePayload ? { quote_data: quotePayload } : {}),
         });
         messageQueue.enqueue({
@@ -1706,16 +1934,20 @@ export default function MessageInput() {
           zaloId: activeAccountId,
           threadId: activeThreadId,
           threadType: activeThreadType,
-          channel: 'facebook',
+          channel: activeChannel as any,
           sendFn: async () => {
             try {
-              const res = await channelIpc.sendMessage('facebook', {
-                accountId: activeAccountId,
-                threadId: activeThreadId,
-                body: msgText,
-                threadType: activeThreadType,
-                quote: quotePayload,
-              });
+              const res = isTelegramUser(activeChannel) && activeTopicId && !isTelegramForumGeneral(activeTopicId)
+                ? await ((await import('@/lib/adapters/registry')).getAdapter('telegram_user') as any)
+                  .sendTopicMessage({ accountId: activeAccountId, threadId: activeThreadId, topicId: activeTopicId, text: msgText })
+                : await channelIpc.sendMessage(activeChannel, {
+                  accountId: activeAccountId,
+                  threadId: activeThreadId,
+                  body: msgText,
+                  threadType: activeThreadType,
+                  quote: quotePayload,
+                  ...(isTelegramUser(activeChannel) && mentions.length > 0 ? { mentions } : {}),
+                });
               if (!res?.success) return { success: false, error: res?.error || 'Gửi tin nhắn Facebook thất bại' };
               return { success: true, msgId: res?.messageId };
             } catch (err: any) {
@@ -1793,13 +2025,14 @@ export default function MessageInput() {
   const handleSendLike = async () => {
     const auth = getAuth();
     if (!auth || !activeThreadId || !activeAccountId) return;
-    const ch = activeContact?.channel || 'zalo';
+    const ch = activeContact?.channel || CHANNEL.ZALO;
     const likeTempId = generateTempId();
     addMessage(activeAccountId, activeThreadId, {
       msg_id: likeTempId, owner_zalo_id: activeAccountId, thread_id: activeThreadId,
       thread_type: activeThreadType, sender_id: activeAccountId, content: '👍',
       msg_type: 'text', timestamp: Date.now(), is_sent: 1, status: 'sending',
       send_status: 'pending', temp_id: likeTempId, media_type: 'text',
+      ...(activeTopicId ? { topic_id: activeTopicId } : {}),
     });
     messageQueue.enqueue({
       tempId: likeTempId,
@@ -1809,8 +2042,17 @@ export default function MessageInput() {
       channel: ch as any,
       sendFn: async () => {
         try {
-          if (ch === 'facebook') {
-            const res = await channelIpc.sendMessage('facebook', { accountId: activeAccountId, threadId: activeThreadId, body: '👍', threadType: activeThreadType });
+          if (isTelegramUser(ch) && activeTopicId && !isTelegramForumGeneral(activeTopicId)) {
+            const result = await (getAdapter('telegram_user') as any).sendTopicMessage({
+              accountId: activeAccountId,
+              threadId: activeThreadId,
+              topicId: activeTopicId,
+              text: '👍',
+            });
+            if (!result?.success) return { success: false, error: result?.error || 'Gửi thất bại' };
+            return { success: true, msgId: result.messageId };
+          } else if (isNonZalo(ch)) {
+            const res = await channelIpc.sendMessage(ch, { accountId: activeAccountId, threadId: activeThreadId, body: '👍', threadType: activeThreadType });
             if (!res?.success) return { success: false, error: res?.error || 'Gửi thất bại' };
             return { success: true, msgId: res?.messageId };
           } else {
@@ -1833,7 +2075,7 @@ export default function MessageInput() {
     });
     if (result?.canceled || !result?.filePaths?.length) return;
     const quotePayload = buildQuotePayload(replyTo);
-    const ch = activeContact?.channel || 'zalo';
+    const ch = activeContact?.channel || CHANNEL.ZALO;
     const filePaths = result.filePaths;
 
     // ── Tạo 1 temp batch preview (hiển thị ngay khi đang upload) ──
@@ -1843,6 +2085,7 @@ export default function MessageInput() {
       thread_type: activeThreadType, sender_id: activeAccountId!, content: '',
       msg_type: 'image', timestamp: Date.now(), is_sent: 1, status: 'sending',
       send_status: 'sending', temp_id: batchTempId, media_type: 'image', channel: ch as any,
+      ...(activeTopicId ? { topic_id: activeTopicId } : {}),
       attachments: JSON.stringify(filePaths.map(fp => ({ type: 'image', localPath: fp }))),
       local_paths: JSON.stringify(filePaths.reduce((acc, fp, i) => ({ ...acc, [`img${i}`]: fp }), {})),
     });
@@ -1856,7 +2099,18 @@ export default function MessageInput() {
       channel: ch as any,
       sendFn: async () => {
         try {
-          if (ch === 'facebook') {
+          if (isTelegram(ch)) {
+            let messageId: string | undefined;
+            for (const filePath of filePaths) {
+              const result = await channelIpc.sendAttachment(ch, {
+                accountId: activeAccountId!, threadId: activeThreadId, threadType: activeThreadType,
+                topicRootMessageId: activeTopicId || undefined, filePath, fileType: 'image',
+              });
+              if (!result?.success) return { success: false, error: result?.error || 'Gửi ảnh Telegram thất bại' };
+              messageId = result.messageId;
+            }
+            return { success: true, msgId: messageId };
+          } else if (isNonZalo(ch)) {
             const batchRes = await ipc.fb?.sendAttachments({
               accountId: activeAccountId!, threadId: activeThreadId,
               filePaths, typeChat: activeThreadType === 0 ? 'user' : null,
@@ -1892,7 +2146,7 @@ export default function MessageInput() {
     if (result?.canceled || !result?.filePaths?.length) return;
     const filePath = result.filePaths[0];
     const quotePayload = buildQuotePayload(replyTo);
-    const ch = activeContact?.channel || 'zalo';
+    const ch = activeContact?.channel || CHANNEL.ZALO;
     const fileName = filePath.split(/[\\/]/).pop() || 'file';
     const tempId = generateTempId();
     addMessage(activeAccountId!, activeThreadId, {
@@ -1900,6 +2154,7 @@ export default function MessageInput() {
       thread_type: activeThreadType, sender_id: activeAccountId!, content: `📎 ${fileName}`,
       msg_type: 'file', timestamp: Date.now(), is_sent: 1, status: 'sending',
       send_status: 'pending', temp_id: tempId, media_type: 'file', channel: ch as any,
+      ...(activeTopicId ? { topic_id: activeTopicId } : {}),
       attachments: JSON.stringify([{ type: 'file', localPath: filePath, name: fileName }]),
     });
     messageQueue.enqueue({
@@ -1910,8 +2165,8 @@ export default function MessageInput() {
       channel: ch as any,
       sendFn: async () => {
         try {
-          if (ch === 'facebook') {
-            const fileRes = await channelIpc.sendAttachment('facebook', { accountId: activeAccountId!, threadId: activeThreadId, filePath, threadType: activeThreadType });
+          if (isNonZalo(ch)) {
+            const fileRes = await channelIpc.sendAttachment(ch, { accountId: activeAccountId!, threadId: activeThreadId, topicRootMessageId: activeTopicId || undefined, filePath, threadType: activeThreadType });
             if (!fileRes?.success) return { success: false, error: fileRes?.error || 'Gửi file Facebook thất bại' };
             return { success: true, msgId: (fileRes as any)?.messageId };
           } else {
@@ -1941,13 +2196,14 @@ export default function MessageInput() {
     if (result?.canceled || !result?.filePaths?.length) return;
     const videoPath = result.filePaths[0];
     const quotePayload = buildQuotePayload(replyTo);
-    const ch = activeContact?.channel || 'zalo';
+    const ch = activeContact?.channel || CHANNEL.ZALO;
     const tempId = generateTempId();
     addMessage(activeAccountId!, activeThreadId, {
       msg_id: tempId, owner_zalo_id: activeAccountId!, thread_id: activeThreadId,
       thread_type: activeThreadType, sender_id: activeAccountId!, content: '🎬 Video',
       msg_type: 'video', timestamp: Date.now(), is_sent: 1, status: 'sending',
       send_status: 'pending', temp_id: tempId, media_type: 'video', channel: ch as any,
+      ...(activeTopicId ? { topic_id: activeTopicId } : {}),
       attachments: JSON.stringify([{ type: 'video', localPath: videoPath }]),
     });
     messageQueue.enqueue({
@@ -1972,9 +2228,10 @@ export default function MessageInput() {
               if (saveRes?.success && saveRes?.filePath) thumbPath = saveRes.filePath;
             }
           }
-          if (ch === 'facebook') {
-            const r = await channelIpc.sendVideo('facebook', {
+          if (isNonZalo(ch)) {
+            const r = await channelIpc.sendVideo(ch, {
               accountId: activeAccountId!, threadId: activeThreadId, threadType: activeThreadType,
+              topicRootMessageId: activeTopicId || undefined,
               filePath: videoPath, body: '', quote: quotePayload || undefined,
             });
             if (!r.success) return { success: false, error: r.error || 'Gửi video Facebook thất bại' };
@@ -2501,12 +2758,13 @@ export default function MessageInput() {
           }
         }
 
-        const ch = activeContact?.channel || 'zalo';
-        if (ch === 'facebook') {
-          await channelIpc.sendVideo('facebook', {
+        const ch = activeContact?.channel || CHANNEL.ZALO;
+        if (isNonZalo(ch)) {
+          await channelIpc.sendVideo(ch, {
             accountId: activeAccountId!,
             threadId: activeThreadId,
             threadType: activeThreadType,
+            topicRootMessageId: activeTopicId || undefined,
             filePath: tempPath,
             body: '',
             quote: quotePayload || undefined,
@@ -2550,17 +2808,18 @@ export default function MessageInput() {
       setSending(true);
       try {
         const quotePayload = buildQuotePayload(replyTo);
-        const ch = activeContact?.channel || 'zalo';
-        if (ch === 'facebook') {
+        const ch = activeContact?.channel || CHANNEL.ZALO;
+        if (isNonZalo(ch)) {
           const fileName = file.name;
           const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
           addMessage(activeAccountId!, activeThreadId, {
             msg_id: tempId, owner_zalo_id: activeAccountId!, thread_id: activeThreadId,
             thread_type: activeThreadType, sender_id: activeAccountId!, content: `📎 ${fileName}`,
-            msg_type: 'file', timestamp: Date.now(), is_sent: 1, status: 'sending', channel: 'facebook',
+            msg_type: 'file', timestamp: Date.now(), is_sent: 1, status: 'sending', channel: ch as any,
+            ...(activeTopicId ? { topic_id: activeTopicId } : {}),
             attachments: JSON.stringify([{ type: 'file', localPath: tempPath, name: fileName }]),
           });
-          const fileRes = await channelIpc.sendAttachment('facebook', { accountId: activeAccountId!, threadId: activeThreadId, filePath: tempPath, threadType: activeThreadType });
+          const fileRes = await channelIpc.sendAttachment(ch, { accountId: activeAccountId!, threadId: activeThreadId, topicRootMessageId: activeTopicId || undefined, filePath: tempPath, threadType: activeThreadType });
           if (!fileRes?.success) {
             showNotification(fileRes?.error || 'Gửi file Facebook thất bại', 'error');
             removeMessage(activeAccountId!, activeThreadId, tempId);
@@ -2603,6 +2862,57 @@ export default function MessageInput() {
 
   const account = getActiveAccount();
   if (!activeThreadId) return null;
+  const telegramComposerBlocked = isTelegramUser(activeContact?.channel) && (
+    activeContact?.telegram_can_send === 0 ||
+    (activeContact?.telegram_peer_type === 'channel' && activeContact?.telegram_can_send !== 1) ||
+    (!!activeTelegramTopic?.isClosed && !groupInfoCache?.[activeAccountId || '']?.[activeThreadId || '']?.canManageTopics)
+  );
+  if (telegramComposerBlocked) {
+    const joinAction = activeContact?.telegram_join_action;
+    const canJoin = joinAction === 'join' || joinAction === 'request';
+    const handleJoin = async () => {
+      if (!activeAccountId || !activeThreadId || joiningTelegramGroup) return;
+      setJoiningTelegramGroup(true);
+      try {
+        const result = await ipc.telegramUser?.joinGroup({ accountId: activeAccountId, chatId: activeThreadId });
+        if (!result?.success) {
+          showNotification(result?.error || 'Không thể tham gia nhóm/kênh này', 'error');
+          return;
+        }
+        useChatStore.getState().updateContact(activeAccountId, {
+          contact_id: activeThreadId,
+          telegram_membership_state: result.requested ? 'pending' : 'member',
+          telegram_join_action: 'none',
+          ...(result.requested ? {} : {
+            telegram_can_send: result.info?.canSend ? 1 : 0,
+            telegram_send_reason: result.info?.sendReason || '',
+          }),
+        });
+        showNotification(result.requested ? 'Đã gửi yêu cầu tham gia' : 'Đã tham gia cuộc trò chuyện', 'success');
+      } catch (error: any) {
+        showNotification(error?.message || 'Không thể tham gia nhóm/kênh này', 'error');
+      } finally {
+        setJoiningTelegramGroup(false);
+      }
+    };
+    return (
+      <div className="border-t border-gray-700 bg-gray-800 px-4 py-3 text-center text-sm text-gray-400 flex-shrink-0">
+        <div>{activeTelegramTopic?.isClosed
+          ? 'Chủ đề này đã đóng; chỉ quản trị viên có quyền mới có thể gửi tin nhắn'
+          : activeContact.telegram_send_reason || 'Bạn không có quyền gửi tin nhắn trong cuộc trò chuyện này'}</div>
+        {canJoin && (
+          <button
+            type="button"
+            disabled={joiningTelegramGroup}
+            onClick={handleJoin}
+            className="mt-2 rounded-lg bg-sky-600 px-4 py-2 font-semibold text-white hover:bg-sky-500 disabled:cursor-wait disabled:opacity-60"
+          >
+            {joiningTelegramGroup ? 'Đang xử lý...' : joinAction === 'request' ? 'Yêu cầu tham gia' : 'Join Group'}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -2687,6 +2997,17 @@ export default function MessageInput() {
             })()}
           </div>
           <button onClick={() => setReplyTo(null)} className="text-gray-400 hover:text-white flex-shrink-0 text-lg leading-none">✕</button>
+        </div>
+      )}
+
+      {/* Edit mode indicator */}
+      {editingMsg && (
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-700 bg-gray-750">
+          <div className="flex-1 border-l-2 border-amber-500 pl-2 min-w-0">
+            <p className="text-xs text-amber-400 font-medium">Đang sửa tin nhắn</p>
+            <p className="text-xs text-gray-400 truncate">{editingMsg.content || ''}</p>
+          </div>
+          <button onClick={() => { setEditingMsg(null); }} className="text-gray-400 hover:text-white flex-shrink-0 text-lg leading-none">✕</button>
         </div>
       )}
 
@@ -2871,8 +3192,8 @@ export default function MessageInput() {
       {/* ── Toolbar row ── */}
       <div className="flex items-center gap-1 px-2 pt-2 pb-1 border-b border-gray-700/50">
         {/* Emoji / Biểu cảm */}
-        {/* Sticker (ẩn trong employee mode nếu không có permission) */}
-        {channelCap.supportsSticker && hasChatPermission && (
+        {/* Sticker (ẩn trong employee mode nếu không có permission, ẩn cho Telegram tạm thời) */}
+        {channelCap.supportsSticker && hasChatPermission && !isTelegramUser(activeContact?.channel) && !isTelegramBot(activeContact?.channel) && (
         <div className="relative">
           <ToolbarBtn onClick={handleSendSticker} title="Sticker" active={showStickerPicker}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2880,12 +3201,35 @@ export default function MessageInput() {
             </svg>
           </ToolbarBtn>
           {showStickerPicker && (
-            <StickerPicker
-              getAuth={getAuth}
-              onSelect={handleSendStickerItem}
-              onClose={() => setShowStickerPicker(false)}
-              onInsertEmoji={(emoji) => { insertEmoji(emoji); }}
-            />
+            isTelegramUser(activeContact?.channel) || isTelegramBot(activeContact?.channel)
+            ? <TelegramStickerPicker
+                accountId={activeAccountId || ''}
+                onSelect={async (sticker) => {
+                  setShowStickerPicker(false);
+                  if (!activeThreadId || sending) return;
+                  setSending(true);
+                  try {
+                    await ipc.telegramUser?.sendSticker({
+                      accountId: activeAccountId || '',
+                      chatId: activeThreadId,
+                      stickerId: sticker.id,
+                      accessHash: sticker.accessHash,
+                    });
+                    setText('');
+                  } catch (err: any) {
+                    showNotification('Gửi sticker thất bại: ' + err.message, 'error');
+                  } finally {
+                    setSending(false);
+                  }
+                }}
+                onClose={() => setShowStickerPicker(false)}
+              />
+            : <StickerPicker
+                getAuth={getAuth}
+                onSelect={handleSendStickerItem}
+                onClose={() => setShowStickerPicker(false)}
+                onInsertEmoji={(emoji) => { insertEmoji(emoji); }}
+              />
           )}
         </div>
         )}
@@ -3021,10 +3365,10 @@ export default function MessageInput() {
                     if (activeAccountId) {
                       const account = getActiveAccount();
                       if (account) {
-                        const isFb = account.channel === 'facebook';
+                        const channelCap = getCapability((account.channel || CHANNEL.ZALO) as any);
                         const auth = { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
-                        const mode = isFb ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || 'local');
-                        if (!isFb) invalidateZaloQuickMessageCache(activeAccountId);
+                        const mode = channelCap.quickMessageSyncMode === 'local' ? 'local' : ((localStorage.getItem(`qm_mode_${activeAccountId}`) as 'zalo' | 'local') || 'local');
+                        if (channelCap.quickMessageSyncMode !== 'local') invalidateZaloQuickMessageCache(activeAccountId);
                         fetchQuickMessages(auth, activeAccountId, mode, true).then(setQuickMessages).catch(() => {});
                       }
                     }
@@ -3106,9 +3450,9 @@ export default function MessageInput() {
             title="Gợi ý AI"
             active={aiSuggestionsEnabled && !(activeAccountId && activeThreadId && isAiSuggestDisabled(activeAccountId, activeThreadId))}
           >
-            <span className="text-sm leading-none relative">
-                <BotIcon className="w-4 h-4" />
-              <SparklesIcon className="absolute bottom-3 left-2 w-3 h-3" />
+            <span className="leading-none relative">
+                <BotIcon className="w-5 h-5" />
+              <SparklesIcon className="absolute bottom-4 left-2 w-3 h-3" />
             </span>
           </ToolbarBtn>
           {showAiMenu && (
@@ -3368,8 +3712,14 @@ export default function MessageInput() {
             className="absolute bottom-full left-3 right-3 mb-1 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl z-30 overflow-hidden"
             style={{ maxHeight: '15rem', overflowY: 'auto' }}
           >
-            <p className="text-xs text-gray-400 px-3 py-1.5 border-b border-gray-700 sticky top-0 bg-gray-800 z-10">
-              Nhắc đến thành viên{mentionSearch ? ` - "${mentionSearch}"` : ''}
+            <p className="text-xs text-gray-400 px-3 py-1.5 border-b border-gray-700 sticky top-0 bg-gray-800 z-10 flex items-center gap-2">
+              <span>Nhắc đến thành viên{mentionSearch ? ` - "${mentionSearch}"` : ''}</span>
+              {fetchingUsernames && (
+                <span className="flex items-center gap-1 text-cyan-400">
+                  <Spinner size={3} />
+                  <span className="text-[10px]">Đang tải @username...</span>
+                </span>
+              )}
             </p>
             {filteredMentions.map((member, idx) => (
               <button
@@ -3384,7 +3734,12 @@ export default function MessageInput() {
                     {(member.displayName || 'U').charAt(0).toUpperCase()}
                   </div>
                 )}
-                <p className="text-sm text-white truncate flex-1">{member.displayName}</p>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white truncate">{member.displayName}</p>
+                  {member.username && (
+                    <p className="text-[11px] text-cyan-400 truncate">@{member.username}</p>
+                  )}
+                </div>
               </button>
             ))}
           </div>
@@ -4122,9 +4477,9 @@ function StickerPicker({
   }, [tab]);
 
   const mainTabs = [
-    { key: 'recent' as const, label: <><ClockIcon className="w-3.5 h-3.5" /> Gần đây</> },
-    { key: 'store' as const, label: <><StoreIcon className="w-3.5 h-3.5" /> Kho sticker</> },
-    { key: 'emoji' as const, label: <><SmileIcon className="w-3.5 h-3.5" /> Emoji</> },
+    { key: 'recent' as const, label: <><ClockIcon className="w-3.5 h-3.5 mr-2" /> Gần đây</> },
+    { key: 'store' as const, label: <><StoreIcon className="w-3.5 h-3.5 mr-2" /> Kho sticker</> },
+    { key: 'emoji' as const, label: <><SmileIcon className="w-3.5 h-3.5 mr-2" /> Emoji</> },
   ];
 
   return (
@@ -4140,7 +4495,7 @@ function StickerPicker({
           <button
             key={t.key}
             onClick={() => { setTab(t.key); if (t.key === 'recent' || t.key === 'store' || t.key === 'emoji') setKeyword(''); }}
-            className={`flex-1 py-2 text-[11px] font-semibold tracking-wide transition-colors ${
+            className={`flex-1 py-2 text-[11px] font-semibold tracking-wide transition-colors place-content-center flex ${
               (tab === t.key || (tab === 'search' && t.key === 'recent'))
                 ? 'text-blue-400 border-b-2 border-blue-400'
                 : 'text-gray-400 hover:text-gray-200'
@@ -4547,5 +4902,314 @@ function ShortcutsPopup({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ─── TelegramStickerItem — download & cache sticker thumbnail ────────────────
+const stickerThumbCache = new Map<string, string>(); // stickerId → localUrl
 
+function TelegramStickerItem({
+  sticker,
+  accountId,
+  onSelect,
+}: {
+  sticker: any;
+  accountId: string;
+  onSelect: (s: any) => void;
+}) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(stickerThumbCache.get(sticker.id) || null);
 
+  React.useEffect(() => {
+    if (thumbUrl) return; // already cached
+    let cancelled = false;
+    // Download sticker thumbnail via Telegram API
+    (async () => {
+      try {
+        const res = await ipc.telegramUser?.downloadSticker?.({
+          accountId,
+          stickerId: sticker.id,
+          accessHash: sticker.accessHash,
+        });
+        if (!cancelled && res?.success && res.localPath) {
+          const url = (window as any).electronAPI?.file?.toLocalMediaUrl?.(res.localPath) || res.localPath;
+          stickerThumbCache.set(sticker.id, url);
+          setThumbUrl(url);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [sticker.id, sticker.accessHash, accountId, thumbUrl]);
+
+  return (
+    <button onClick={() => onSelect(sticker)}
+      className="p-1 rounded-lg hover:bg-gray-700 transition-colors flex items-center justify-center"
+      title={sticker.emoji || ''}>
+      {thumbUrl ? (
+        <img src={thumbUrl} alt="" className="w-12 h-12 object-contain" loading="lazy" />
+      ) : (
+        <div className="w-12 h-12 rounded-lg bg-gray-700/50 flex items-center justify-center text-xl">{sticker.emoji || '🎨'}</div>
+      )}
+    </button>
+  );
+}
+
+// ─── Telegram Sticker/GIF Cache ─────────────────────────────────────────────
+const tgStickerCache = {
+  recent: null as any[] | null,
+  sets: null as any[] | null,
+  setStickers: new Map<string, any[]>(),
+  gifs: null as any[] | null,
+  gifSearches: new Map<string, any[]>(),
+  clear() {
+    this.recent = null;
+    this.sets = null;
+    this.setStickers.clear();
+    this.gifs = null;
+    this.gifSearches.clear();
+  },
+};
+
+// ─── TelegramStickerPicker ──────────────────────────────────────────────────
+// Style: tất cả bộ sticker load sẵn, cuộn xuống lazy load, GIF search realtime
+function TelegramStickerPicker({
+  accountId,
+  onSelect,
+  onClose,
+}: {
+  accountId: string;
+  onSelect: (sticker: { id: string; emoji?: string; format?: string; accessHash?: string }) => void;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<'stickers' | 'gif'>('stickers');
+  const [stickerSets, setStickerSets] = useState<any[]>([]);
+  const [allStickers, setAllStickers] = useState<{ setId: string; title: string; stickers: any[] }[]>([]);
+  const [recentStickers, setRecentStickers] = useState<any[]>([]);
+  const [gifResults, setGifResults] = useState<any[]>([]);
+  const [gifSearch, setGifSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [gifLoading, setGifLoading] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(40);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  // Load all sticker sets + their stickers on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // 1. Load recent stickers
+        const recentRes = await ipc.telegramUser?.getRecentStickers({ accountId });
+        if (!cancelled && recentRes?.success) {
+          setRecentStickers(recentRes.stickers || []);
+        }
+
+        // 2. Load all sticker sets
+        const setsRes = await ipc.telegramUser?.getStickerSets({ accountId });
+        if (!cancelled && setsRes?.success) {
+          const sets = setsRes.sets || [];
+          setStickerSets(sets);
+
+          // 3. Load stickers for each set (in background, don't block UI)
+          const loaded: { setId: string; title: string; stickers: any[] }[] = [];
+          for (const set of sets) {
+            if (cancelled) break;
+            try {
+              const stickersRes = await ipc.telegramUser?.getStickerSetStickers({
+                accountId,
+                setId: set.id,
+                accessHash: set.accessHash,
+                shortName: set.shortName,
+              });
+              if (stickersRes?.success) {
+                loaded.push({ setId: set.id, title: set.title, stickers: stickersRes.stickers || [] });
+                if (!cancelled) setAllStickers([...loaded]); // Update incrementally
+              }
+            } catch {}
+          }
+        }
+      } catch {} finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accountId]);
+
+  // Search GIFs
+  const handleGifSearch = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      // Load trending GIFs
+      if (tgStickerCache.gifs) {
+        setGifResults(tgStickerCache.gifs);
+        return;
+      }
+      setGifLoading(true);
+      const res = await ipc.telegramUser?.getGifs({ accountId });
+      if (res?.success) {
+        const data = res.gifs || [];
+        tgStickerCache.gifs = data;
+        setGifResults(data);
+      }
+      setGifLoading(false);
+      return;
+    }
+    // Search by keyword
+    const cacheKey = q.trim().toLowerCase();
+    if (tgStickerCache.gifSearches.has(cacheKey)) {
+      setGifResults(tgStickerCache.gifSearches.get(cacheKey)!);
+      return;
+    }
+    setGifLoading(true);
+    const res = await ipc.telegramUser?.searchGifs({ accountId, query: q.trim() });
+    if (res?.success) {
+      const data = res.gifs || [];
+      tgStickerCache.gifSearches.set(cacheKey, data);
+      setGifResults(data);
+    }
+    setGifLoading(false);
+  }, [accountId]);
+
+  // Load trending GIFs on mount
+  useEffect(() => {
+    handleGifSearch('');
+  }, [handleGifSearch]);
+
+  // Lazy load on scroll
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
+      setVisibleCount(v => v + 30);
+    }
+  }, []);
+
+  // Reset visible count on tab change
+  useEffect(() => { setVisibleCount(40); }, [tab]);
+
+  // Flatten all stickers for display
+  const allFlatStickers = recentStickers.length > 0
+    ? [...recentStickers, ...allStickers.flatMap(s => s.stickers)]
+    : allStickers.flatMap(s => s.stickers);
+
+  return (
+    <div ref={pickerRef} className="absolute bottom-full left-0 mb-2 w-80 h-[28rem] bg-gray-800 border border-gray-600 rounded-2xl shadow-2xl z-50 flex flex-col overflow-hidden">
+      {/* Tabs */}
+      <div className="flex border-b border-gray-700 flex-shrink-0">
+        <button onClick={() => setTab('stickers')}
+          className={`flex-1 py-2 text-xs font-medium transition-colors ${tab === 'stickers' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'}`}>
+          Sticker
+        </button>
+        <button onClick={() => setTab('gif')}
+          className={`flex-1 py-2 text-xs font-medium transition-colors ${tab === 'gif' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-gray-400 hover:text-gray-200'}`}>
+          GIF
+        </button>
+      </div>
+
+      {/* Content */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto" onScroll={handleScroll}>
+        {loading && <div className="flex items-center justify-center h-full py-8"><Spinner size={5} /></div>}
+
+        {/* Stickers tab */}
+        {tab === 'stickers' && !loading && (
+          <div className="p-2">
+            {/* Recent stickers */}
+            {recentStickers.length > 0 && (
+              <div className="mb-3">
+                <p className="text-[11px] text-gray-400 font-medium px-1 mb-1.5">Gần đây</p>
+                <div className="grid grid-cols-5 gap-1">
+                  {recentStickers.slice(0, 10).map((s: any, i: number) => (
+                    <TelegramStickerItem
+                      key={`recent-${s.id || i}`}
+                      sticker={s}
+                      accountId={accountId}
+                      onSelect={onSelect}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* All sticker sets - loaded at once */}
+            {allStickers.map(set => (
+              <div key={set.setId} className="mb-3">
+                <p className="text-[11px] text-gray-400 font-medium px-1 mb-1.5">{set.title}</p>
+                <div className="grid grid-cols-5 gap-1">
+                  {set.stickers.slice(0, visibleCount).map((s: any, i: number) => (
+                    <TelegramStickerItem
+                      key={`${set.setId}-${s.id || i}`}
+                      sticker={s}
+                      accountId={accountId}
+                      onSelect={onSelect}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {/* Sticker sets still loading */}
+            {stickerSets.length > allStickers.length && (
+              <div className="flex items-center justify-center py-3">
+                <Spinner size={4} />
+                <span className="text-xs text-gray-400 ml-2">Đang tải thêm bộ sticker...</span>
+              </div>
+            )}
+
+            {allStickers.length === 0 && stickerSets.length === 0 && (
+              <p className="text-center text-gray-500 text-xs py-8">Chưa cài bộ sticker nào</p>
+            )}
+          </div>
+        )}
+
+        {/* GIF tab */}
+        {tab === 'gif' && (
+          <div className="p-2">
+            {/* Search bar */}
+            <div className="flex gap-1.5 mb-2 sticky top-0 bg-gray-800 py-1 z-10">
+              <input
+                value={gifSearch}
+                onChange={e => {
+                  setGifSearch(e.target.value);
+                  // Auto-search on typing (debounced)
+                  const q = e.target.value.trim();
+                  if (q.length >= 2) handleGifSearch(q);
+                  else if (!q) handleGifSearch('');
+                }}
+                onKeyDown={e => { if (e.key === 'Enter') handleGifSearch(gifSearch); }}
+                placeholder="Tìm GIF..."
+                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500"
+              />
+              <button onClick={() => handleGifSearch(gifSearch)}
+                className="px-3 py-1.5 bg-cyan-600 text-white text-xs rounded-lg hover:bg-cyan-700 transition-colors">
+                Tìm
+              </button>
+            </div>
+
+            {gifLoading && <div className="flex items-center justify-center py-8"><Spinner size={5} /></div>}
+
+            {!gifLoading && gifResults.length > 0 && (
+              <div className="grid grid-cols-3 gap-1.5">
+                {gifResults.slice(0, visibleCount).map((g, i) => (
+                  <button key={`${g.id}-${i}`} onClick={() => onSelect({ id: g.id, format: 'gif' })}
+                    className="aspect-square rounded-lg bg-gradient-to-br from-gray-700 to-gray-600 hover:from-gray-600 hover:to-gray-500 transition-colors flex items-center justify-center">
+                    <span className="text-2xl">🎬</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {!gifLoading && gifResults.length === 0 && (
+              <p className="text-center text-gray-500 text-xs py-8">
+                {gifSearch ? 'Không tìm thấy GIF' : 'Đang tải GIF trending...'}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -3,9 +3,13 @@ import ipc from '@/lib/ipc';
 import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import {ZaloIcon, FacebookIcon, TelegramIcon} from '../common/ChannelBadge';
+import { getChannelLabel } from '../../../configs/channelConfig';
+import { CHANNEL, isFacebook, isTelegramBot, isTelegramUser } from '@/lib/channelHelper';
 import cookieGuideImg from '../../../assets/login/hd_login_fb_cookie.png';
 import { Spinner } from '@/components/common/PageLoading';
 import { AlertIcon, BookIcon, CheckIcon, ClockIcon, CloseIcon, KeyIcon, LockIcon, PinIcon, PluginIcon, RefreshIcon, SmartphoneIcon, StarIcon, SunIcon, WrenchIcon } from '@/components/common/icons';
+import TelegramBotLoginStep from './TelegramBotLoginStep';
+import PhoneLoginTab from './PhoneLoginTab';
 
 interface AddAccountModalProps {
   onClose: () => void;
@@ -32,12 +36,23 @@ function TosFooter() {
   );
 }
 
-type Channel = 'zalo' | 'facebook';
-type Step = 'channel' | 'proxy' | 'detail';
+type Channel = 'zalo' | 'facebook' | 'telegram_bot' | 'telegram_user';
+type Step = 'channel' | 'proxy' | 'detail' | 'telegram' | 'telegram_user';
 
 export default function AddAccountModal({ onClose }: AddAccountModalProps) {
-  const [step, setStep] = useState<Step>('channel');
-  const [channel, setChannel] = useState<Channel>('zalo');
+  const { addAccountInitialChannel } = useAppStore();
+  const initialCh = addAccountInitialChannel as Channel | null;
+
+  // Nếu có initialChannel (re-login) → skip channel selection
+  const getInitialStep = (): Step => {
+    if (!initialCh) return 'channel';
+    if (isTelegramBot(initialCh)) return 'telegram';
+    if (isTelegramUser(initialCh)) return 'telegram_user';
+    return 'proxy';
+  };
+
+  const [step, setStep] = useState<Step>(getInitialStep());
+  const [channel, setChannel] = useState<Channel>(initialCh || 'zalo');
   const [tab, setTab] = useState<'qr' | 'cookie'>('qr');
   const [fbTab, setFbTab] = useState<'account' | 'cookie'>('account');
   const [selectedProxyId, setSelectedProxyId] = useState<number | null>(null);
@@ -56,7 +71,13 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
 
   const handleSelectChannel = (ch: Channel) => {
     setChannel(ch);
-    setStep('proxy');
+    if (isTelegramBot(ch)) {
+      setStep('telegram');
+    } else if (isTelegramUser(ch)) {
+      setStep('telegram_user');
+    } else {
+      setStep('proxy');
+    }
   };
 
   const handleBack = () => {
@@ -68,8 +89,10 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
   const headerTitle =
     step === 'channel' ? 'Thêm tài khoản'
     : step === 'proxy' ? 'Chọn Proxy (tuỳ chọn)'
-    : channel === 'zalo' ? 'Đăng nhập Zalo cá nhân'
-    : 'Đăng nhập Facebook cá nhân';
+    : step === 'telegram' ? 'Kết nối Telegram Bot'
+    : step === 'telegram_user' ? 'Đăng nhập Telegram cá nhân'
+    : channel === CHANNEL.ZALO ? `Đăng nhập ${getChannelLabel('zalo')} cá nhân`
+    : `Đăng nhập ${getChannelLabel('facebook')} cá nhân`;
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
@@ -121,7 +144,6 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
                 onClick={() => handleSelectChannel('facebook')}
                 className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl border-2 border-gray-600 hover:border-blue-400 hover:bg-blue-400/10 bg-gray-700/50 transition-all group relative"
               >
-                <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/40">Mới</span>
                 <div className="w-14 h-14 rounded-full bg-[#1877F2]/20 flex items-center justify-center group-hover:bg-[#1877F2]/30 transition-colors">
                   <FacebookIcon size={32} />
                 </div>
@@ -130,16 +152,32 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
                   <p className="text-gray-400 text-xs mt-0.5">Tài khoản hoặc Cookie</p>
                 </div>
               </button>
-              {/* Telegram */}
+              {/* Telegram User */}
               <button
+                onClick={() => handleSelectChannel('telegram_user')}
                 className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl border-2 border-gray-600 hover:border-blue-400 hover:bg-blue-400/10 bg-gray-700/50 transition-all group relative"
               >
-                <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/40">(Coming soon)</span>
-                <div className="w-14 h-14 rounded-full bg-[#1877F2]/10 flex items-center justify-center group-hover:bg-[#1877F2]/30 transition-colors">
+                <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/40">Beta</span>
+                <div className="w-14 h-14 rounded-full bg-[#0088CC]/20 flex items-center justify-center group-hover:bg-[#0088CC]/30 transition-colors">
                   <TelegramIcon size={32} />
                 </div>
                 <div className="text-center">
                   <p className="text-white font-semibold text-sm">Telegram</p>
+                  <p className="text-gray-400 text-xs mt-0.5">Đăng nhập bằng SĐT</p>
+                </div>
+              </button>
+              {/* Telegram Bot */}
+              <button
+                  onClick={() => handleSelectChannel('telegram_bot')}
+                  className="flex flex-col items-center justify-center gap-3 p-6 rounded-2xl border-2 border-gray-600 hover:border-blue-400 hover:bg-blue-400/10 bg-gray-700/50 transition-all group relative"
+              >
+                <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/40">Beta</span>
+                <div className="w-14 h-14 rounded-full bg-[#0088CC]/20 flex items-center justify-center group-hover:bg-[#0088CC]/30 transition-colors">
+                  <TelegramIcon size={32} />
+                </div>
+                <div className="text-center">
+                  <p className="text-white font-semibold text-sm">Telegram Bot</p>
+                  <p className="text-gray-400 text-xs mt-0.5">Nhập Bot Token</p>
                 </div>
               </button>
             </div>
@@ -162,7 +200,7 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
         )}
 
         {/* Step 3 - Login Detail */}
-        {step === 'detail' && channel === 'zalo' && (
+        {step === 'detail' && channel === CHANNEL.ZALO && (
           <>
             {/* Proxy indicator */}
             {selectedProxyId && proxies.length > 0 && (
@@ -205,7 +243,7 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
           </>
         )}
 
-        {step === 'detail' && channel === 'facebook' && (
+        {step === 'detail' && isFacebook(channel) && (
           <>
             {/* Proxy indicator */}
             {selectedProxyId && proxies.length > 0 && (
@@ -246,6 +284,22 @@ export default function AddAccountModal({ onClose }: AddAccountModalProps) {
               )}
             </div>
           </>
+        )}
+
+        {/* Step Telegram - Bot Token */}
+        {step === 'telegram' && (
+          <TelegramBotLoginStep
+            onSuccess={onClose}
+            onBack={() => setStep('channel')}
+          />
+        )}
+
+        {/* Step Telegram User - Phone Login */}
+        {step === CHANNEL.TELEGRAM_USER && (
+          <PhoneLoginTab
+            onSuccess={onClose}
+            onBack={() => setStep('channel')}
+          />
         )}
       </div>
     </div>

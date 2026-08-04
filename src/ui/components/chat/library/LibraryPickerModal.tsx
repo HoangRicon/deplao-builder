@@ -23,8 +23,10 @@ import ipc from '../../../lib/ipc';
 import * as channelIpc from '../../../lib/channelIpc';
 import DataAccessor, { refreshLibraryCache } from '../../../lib/data/DataAccessor';
 import { useChatStore } from '@/store/chatStore';
+import { useAccountStore } from '@/store/accountStore';
 import { messageQueue, generateTempId, extractMsgIdFromResponse } from '@/lib/MessageQueue';
 import { toLocalMediaUrl } from '@/lib/localMedia';
+import { isNonZalo, isTelegramUser, isTelegramBot, CHANNEL } from '@/lib/channelHelper';
 import { CloseIcon, EditIcon, FolderIcon, ImageIcon, MonitorIcon, RefreshIcon, SendIcon, StarIcon, TrashIcon } from '@/components/common/icons';
 
 interface LibraryItem {
@@ -382,60 +384,50 @@ export default function LibraryPickerModal({
   const sendItem = async (item: any) => {
     console.log('[Library] sendItem:', { uuid: item.uuid, type: item.type, hasLocalPath: !!item._localPath, localPath: item._localPath, fileUrl: item.fileUrl, zaloId, threadId });
     const auth = await getAuthForZaloId();
-    console.log('[Library] sendItem auth:', auth ? 'found' : 'null');
+    const account = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+    const channel = (account as any)?.channel || CHANNEL.ZALO;
+    const isTg = isTelegramUser(channel) || isTelegramBot(channel);
+    console.log('[Library] sendItem auth:', auth ? 'found' : 'null', 'channel:', channel);
+
     try {
+      const filePath = item._localPath || '';
+      if (!filePath) {
+        console.warn('[Library] sendItem: no local path available');
+        return;
+      }
+
+      // Telegram channels: use channelIpc
+      if (isTg) {
+        if (item.type === 'video') {
+          await channelIpc.sendVideo(channel, { accountId: zaloId, threadId, threadType, filePath });
+        } else {
+          await channelIpc.sendAttachment(channel, { accountId: zaloId, threadId, threadType, filePath, body: '' });
+        }
+        return;
+      }
+
+      // Zalo: existing flow
       if (item.type === "video") {
         // Video: cần 3-step upload (uploadVideoThumb → uploadVideoFile → sendVideo)
-        if (item._localPath) {
-          // Boss mode: dùng channelIpc.sendVideo với local file path
-          const metaRes: any = await ipc.file?.getVideoMeta?.({ filePath: item._localPath }).catch(() => ({})) || {};
-          await channelIpc.sendVideo('zalo', {
-            auth,
-            accountId: zaloId,
-            threadId,
-            threadType,
-            filePath: item._localPath,
-            thumbPath: metaRes.thumbPath || '',
-            duration: metaRes.duration || 0,
-            width: metaRes.width || 0,
-            height: metaRes.height || 0,
-          });
-        } else {
-          // Employee mode: boss proxy sẽ xử lý upload chain qua _libraryUuid
-          const res = await ipc.zalo.sendVideo({
-            auth: auth || {},
-            zaloId,
-            threadId,
-            threadType,
-            fileUrl: item.fileUrl,
-            _libraryUuid: item.uuid,
-          });
-          console.log('[Library] sendVideo result:', res);
-        }
+        const metaRes: any = await ipc.file?.getVideoMeta?.({ filePath }).catch(() => ({})) || {};
+        await channelIpc.sendVideo('zalo', {
+          auth,
+          accountId: zaloId,
+          threadId,
+          threadType,
+          filePath,
+          thumbPath: metaRes.thumbPath || '',
+          duration: metaRes.duration || 0,
+          width: metaRes.width || 0,
+          height: metaRes.height || 0,
+        });
       } else {
         // Image hoặc File
-        const opts: any = { auth: auth || {}, zaloId, threadId, threadType };
-        // Employee: fileUrl là full HTTP URL → dùng _libraryUuid để boss resolve path từ DB
-        // Boss: fileUrl là relative path → dùng _localPath trực tiếp
-        if (item.fileUrl && item.fileUrl.startsWith('http') && item.uuid) {
-          console.log('[Library] sendItem: EMPLOYEE path, fileUrl+uuid');
-          opts.fileUrl = item.fileUrl;
-          opts._libraryUuid = item.uuid;
-        } else if (item._localPath) {
-          console.log('[Library] sendItem: BOSS path, _localPath');
-          opts.filePath = item._localPath;
-        } else if (item.fileUrl && item.uuid) {
-          console.log('[Library] sendItem: FALLBACK path, fileUrl+uuid');
-          opts.fileUrl = item.fileUrl;
-          opts._libraryUuid = item.uuid;
-        }
-        console.log('[Library] sendItem opts:', { keys: Object.keys(opts), hasFilePath: !!opts.filePath, hasFileUrl: !!opts.fileUrl, hasLibraryUuid: !!opts._libraryUuid, threadId: opts.threadId });
+        const opts: any = { auth: auth || {}, zaloId, threadId, threadType, filePath };
         if (item.type === "image") {
-          const res = await ipc.zalo.sendImage(opts);
-          console.log('[Library] sendImage result:', res);
+          await ipc.zalo.sendImage(opts);
         } else {
-          const res = await ipc.zalo.sendFile(opts);
-          console.log('[Library] sendFile result:', res);
+          await ipc.zalo.sendFile(opts);
         }
       }
     } catch (err: any) {
@@ -456,6 +448,10 @@ export default function LibraryPickerModal({
     if (imageItems.length > 0) {
       const batchTempId = generateTempId();
       const previewPaths = imageItems.map(i => i._localPath || i.fileUrl || '').filter(Boolean);
+      const account = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+      const channel = ((account as any)?.channel || CHANNEL.ZALO) as 'zalo' | 'facebook' | 'telegram_bot' | 'telegram_user';
+      const isTg = isTelegramUser(channel) || isTelegramBot(channel);
+
       addMessage(zaloId, threadId, {
         msg_id: batchTempId, owner_zalo_id: zaloId, thread_id: threadId,
         thread_type: threadType, sender_id: zaloId, content: '',
@@ -467,9 +463,21 @@ export default function LibraryPickerModal({
       const auth = await getAuthForZaloId();
       const hasLocalPath = imageItems.every(i => i._localPath);
       messageQueue.enqueue({
-        tempId: batchTempId, zaloId, threadId, threadType, channel: 'zalo',
+        tempId: batchTempId, zaloId, threadId, threadType, channel,
         sendFn: async () => {
           try {
+            // Telegram: send each image via channelIpc
+            if (isTg) {
+              let lastMsgId = '';
+              for (const item of imageItems) {
+                const fp = item._localPath || '';
+                if (!fp) continue;
+                const res = await channelIpc.sendAttachment(channel, { accountId: zaloId, threadId, threadType, filePath: fp, body: '' });
+                if (res?.messageId) lastMsgId = res.messageId;
+              }
+              return { success: true, msgId: lastMsgId };
+            }
+            // Zalo: existing flow
             if (imageItems.length === 1) {
               const item = imageItems[0];
               const opts: any = { auth: auth || {}, zaloId, threadId, threadType };
@@ -501,6 +509,10 @@ export default function LibraryPickerModal({
     for (const item of [...videoItems, ...fileItems]) {
       const tempId = generateTempId();
       const previewPath = item._localPath || item.fileUrl || '';
+      const itemAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+      const itemChannel = ((itemAccount as any)?.channel || CHANNEL.ZALO) as 'zalo' | 'facebook' | 'telegram_bot' | 'telegram_user';
+      const itemIsTg = isTelegramUser(itemChannel) || isTelegramBot(itemChannel);
+
       addMessage(zaloId, threadId, {
         msg_id: tempId, owner_zalo_id: zaloId, thread_id: threadId,
         thread_type: threadType, sender_id: zaloId, content: '',
@@ -509,9 +521,22 @@ export default function LibraryPickerModal({
         attachments: JSON.stringify([{ type: item.type, localPath: previewPath }]),
       });
       messageQueue.enqueue({
-        tempId, zaloId, threadId, threadType, channel: 'zalo',
+        tempId, zaloId, threadId, threadType, channel: itemChannel,
         sendFn: async () => {
           try {
+            // Telegram: use channelIpc
+            if (itemIsTg) {
+              const fp = item._localPath || '';
+              if (!fp) return { success: false, error: 'No local file path' };
+              if (item.type === 'video') {
+                const res = await channelIpc.sendVideo(itemChannel, { accountId: zaloId, threadId, threadType, filePath: fp });
+                return { success: true, ...(res as any) };
+              } else {
+                const res = await channelIpc.sendAttachment(itemChannel, { accountId: zaloId, threadId, threadType, filePath: fp, body: '' });
+                return { success: true, ...(res as any) };
+              }
+            }
+            // Zalo: existing flow
             const auth = await getAuthForZaloId();
             if (item.type === 'video') {
               if (item._localPath) {

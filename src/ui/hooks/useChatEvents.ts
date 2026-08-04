@@ -537,7 +537,7 @@ export function useChatEvents(): void {
     });
     if (unsubGroupEvent) unsubscribers.push(unsubGroupEvent);
 
-    // ─── event:localPath → cập nhật local_paths cho FB message sau khi download ──
+    // ─── event:localPath → cập nhật local_paths cho message sau khi download ──
     const unsubLocalPath = ipc.on?.('event:localPath', (data: {
       zaloId: string;
       msgId: string;
@@ -549,11 +549,19 @@ export function useChatEvents(): void {
       const key = `${data.zaloId}_${data.threadId}`;
       const msgs = store.messages[key] || [];
       const found = msgs.find(m => String(m.msg_id) === String(data.msgId));
-      console.log(`[useChatEvents] event:localPath zaloId=${data.zaloId} msgId=${data.msgId} threadId=${data.threadId} key=${key} found=${!!found} localPaths=${JSON.stringify(data.localPaths)}`);
       if (found) {
         store.updateMessageLocalPath(data.zaloId, data.threadId, data.msgId, data.localPaths);
       } else {
-        console.warn(`[useChatEvents] event:localPath message NOT FOUND in store! key=${key} msgId=${data.msgId}`);
+        // Message might not be in store yet (race condition with event:message).
+        // Retry after delay to allow the message to be added.
+        setTimeout(() => {
+          const retryStore = useChatStore.getState();
+          const retryMsgs = retryStore.messages[key] || [];
+          const retryFound = retryMsgs.find(m => String(m.msg_id) === String(data.msgId));
+          if (retryFound) {
+            retryStore.updateMessageLocalPath(data.zaloId, data.threadId, data.msgId, data.localPaths);
+          }
+        }, 500);
       }
     });
     if (unsubLocalPath) unsubscribers.push(unsubLocalPath);

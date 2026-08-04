@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ipc from '@/lib/ipc';
+import { DataAccessor } from '@/lib/data/DataAccessor';
 
 const SUPPORT_GITHUB_URL = 'https://github.com/babyvibe/deplao-builder';
 import { useAppStore, FONT_SCALE_MIN, FONT_SCALE_MAX, FONT_SCALE_STEP } from '@/store/appStore';
@@ -15,6 +16,7 @@ import { useCurrentEmployeeId, useErpPermissions } from '@/hooks/erp/useErpConte
 import NotificationCenter from '@/features/erp/notifications/NotificationCenter';
 import { Spinner } from '@/components/common/PageLoading';
 import { AlertIcon, KeyIcon, MonitorIcon, PluginIcon, RefreshIcon, StarIcon } from '@/components/common/icons';
+import { isFacebook, isTelegram } from '@/lib/channelHelper';
 
 
 const APP_VERSION: string = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
@@ -243,11 +245,10 @@ export default function TopBar() {
 
     // Detect channel of active account
     const activeAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
-    const channel = activeAccount?.channel || 'zalo';
 
     setLoadingOldMsgs(true);
     try {
-      if (channel === 'facebook') {
+      if (isFacebook(activeAccount?.channel)) {
         // Facebook: force-refresh threads + reload contacts into store
         showNotification('Đang đồng bộ hội thoại Facebook...', 'success');
         const res = await ipc.fb?.getThreads({ accountId: activeAccountId, forceRefresh: true });
@@ -280,6 +281,46 @@ export default function TopBar() {
         } else {
           showNotification(res?.error || 'Không thể đồng bộ hội thoại Facebook', 'error');
         }
+      } else if (isTelegram(activeAccount?.channel)) {
+        // Telegram: drain update cursors and explicitly check each dialog's
+        // durable history checkpoint, then refresh the visible DB-backed state.
+        showNotification('Đang tải tin nhắn Telegram...', 'success');
+        const syncRes = await ipc.telegramUser?.refreshMessages({ accountId: activeAccountId });
+        if (!syncRes?.success) {
+          showNotification(syncRes?.error || 'Không thể đồng bộ tin nhắn Telegram', 'error');
+          return;
+        }
+
+        const conversationsRes = await DataAccessor.getConversations(activeAccountId, 500, 0);
+        const contacts = conversationsRes?.items ?? [];
+        useChatStore.getState().setContacts(activeAccountId, contacts);
+
+        const chatState = useChatStore.getState();
+        const threadId = chatState.activeThreadId;
+        const topicId = chatState.activeTopicId;
+        if (threadId) {
+          const messagesRes = await DataAccessor.getMessages({
+            zaloId: activeAccountId,
+            threadId,
+            topicId: topicId || undefined,
+            limit: topicId ? 50 : 20,
+            offset: 0,
+          });
+          const dbMessages = messagesRes?.messages ?? messagesRes?.items ?? [];
+          const latestState = useChatStore.getState();
+          const latestAccountId = useAccountStore.getState().activeAccountId;
+          if (
+            latestAccountId === activeAccountId &&
+            latestState.activeThreadId === threadId &&
+            latestState.activeTopicId === topicId
+          ) {
+            latestState.setMessages(activeAccountId, threadId, [...dbMessages].reverse(), topicId);
+          }
+        }
+
+        const insertedText = syncRes.inserted ? `, thêm ${syncRes.inserted} tin nhắn` : '';
+        const pendingText = syncRes.pending ? '. Phần còn lại đang tiếp tục tải nền' : '';
+        showNotification(`Đã đồng bộ ${contacts.length} hội thoại${insertedText}${pendingText}`, 'success');
       } else {
         // Zalo: request old messages as before
         const res = await ipc.login?.requestOldMessages(activeAccountId);
@@ -319,12 +360,22 @@ export default function TopBar() {
       <div className="flex items-center gap-2 px-3" style={{ WebkitAppRegion: 'no-drag' } as any}>
         <span className="text-blue-400 font-bold text-sm">Deplao</span>
         <span className="text-gray-400 text-xs">v{APP_VERSION}</span>
-        {updateInfo && updateStatus === 'available' && (
+        {updateInfo && (updateStatus === 'available' || updateStatus === 'downloading' || updateStatus === 'downloaded') && (
           <button onClick={openUpdatePopup}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 border border-orange-500/30 text-orange-600 text-[10px] font-semibold hover:bg-orange-500/25 transition-colors"
-            title={`Có bản mới v${updateInfo.version} - nhấn để cập nhật`}>
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors ${
+              updateStatus === 'downloaded'
+                ? 'bg-green-500/15 border border-green-500/30 text-green-500 hover:bg-green-500/25'
+                : updateStatus === 'downloading'
+                ? 'bg-blue-500/15 border border-blue-500/30 text-blue-400 hover:bg-blue-500/25'
+                : 'bg-orange-500/15 border border-orange-500/30 text-orange-600 hover:bg-orange-500/25'
+            }`}
+            title={updateStatus === 'downloaded'
+              ? `Đã tải xong v${updateInfo.version} — nhấn để cài đặt`
+              : updateStatus === 'downloading'
+              ? `Đang tải v${updateInfo.version}...`
+              : `Có bản mới v${updateInfo.version} - nhấn để cập nhật`}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2v13M5 12l7 7 7-7"/><line x1="3" y1="22" x2="21" y2="22"/></svg>
-            New v{updateInfo.version}
+            {updateStatus === 'downloaded' ? `Sẵn sàng v${updateInfo.version}` : `New v${updateInfo.version}`}
           </button>
         )}
 
@@ -454,9 +505,11 @@ export default function TopBar() {
             className={`w-9 h-9 flex items-center justify-center transition-colors ${loadingOldMsgs ? 'text-blue-400 bg-gray-700' : 'text-gray-400 hover:bg-gray-700 hover:text-white'}`}
             title={(() => {
               const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
-              return (acc?.channel || 'zalo') === 'facebook'
+              return isFacebook(acc?.channel)
                 ? 'Đồng bộ lại hội thoại Facebook'
-                : 'Tải tin nhắn cũ Zalo (theo phiên đăng nhập)';
+                : isTelegram(acc?.channel)
+                  ? 'Đồng bộ hội thoại và tin nhắn Telegram'
+                  : 'Tải tin nhắn cũ';
             })()}
           >
             {loadingOldMsgs ? (
@@ -687,8 +740,8 @@ export default function TopBar() {
                   <line x1="14" y1="1" x2="14" y2="4"/>
                 </svg>
                 <div>
-                  <p className="text-xs font-medium">☕ Donate Coffee</p>
-                  <p className="text-[10px] text-gray-400">Các bác có thể ủng hộ em mua token AI để fix bug nhé!</p>
+                  <p className="text-xs font-medium">Donate Coffee</p>
+                  <p className="text-[10px] text-gray-400">Các bạn thấy hữu ích có thể ủng hộ dự án nhé!</p>
                 </div>
               </button>
             </div>
@@ -738,4 +791,3 @@ export default function TopBar() {
     </>
   );
 }
-

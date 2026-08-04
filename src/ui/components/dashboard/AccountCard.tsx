@@ -10,9 +10,13 @@ import PhoneDisplay from '../common/PhoneDisplay';
 import { showConfirm } from '../common/ConfirmDialog';
 import { extractApiError } from '@/utils/apiError';
 import ChannelBadge from '../common/ChannelBadge';
+import { CHANNEL, isZalo, isFacebook, isTelegram, isTelegramUser, isTelegramBot } from '@/lib/channelHelper';
+import { toLocalMediaUrl } from '@/lib/localMedia';
 import { PhoneIcon } from '@/components/common/icons';
 import { Spinner } from '@/components/common/PageLoading';
 import type { Channel } from '@/../configs/channelConfig';
+import { channelSupports, resolveAccountChannel, getChannelLabel } from '@/../configs/channelConfig';
+import * as channelIpc from '@/lib/channelIpc';
 
 interface AccountCardProps {
   account: AccountInfo;
@@ -80,7 +84,9 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
   const [avatarFailed, setAvatarFailed] = useState(false);
   const avatarRetryDone = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const isFacebook = (acc.channel || 'zalo') === 'facebook';
+  const accountChannel = resolveAccountChannel(acc);
+  const isFacebookAcc = isFacebook(accountChannel);
+  const isZaloAcc = isZalo(accountChannel);
 
   // Close menu on outside click
   useEffect(() => {
@@ -96,18 +102,26 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
   const listenerDead = acc.listenerActive === false;
 
   const handleReconnect = async () => {
-    if (onReconnect && !isFacebook) { onReconnect(acc); return; }
+    if (onReconnect && isZaloAcc) { onReconnect(acc); return; }
     showNotification(`Đang kết nối ${acc.full_name || acc.zalo_id}...`, 'info');
     try {
-      if (isFacebook) {
-        const res = await ipc.fb?.connect({ accountId: acc.zalo_id });
+      if (!isZaloAcc) {
+        // Truyền auth phù hợp cho từng loại Telegram
+        // Telegram User: stringSession (lưu trong cookies column)
+        // Telegram Bot: botToken (lưu trong cookies column)
+        const auth = isTelegramUser(accountChannel)
+          ? { stringSession: acc.cookies }
+          : isTelegramBot(accountChannel)
+            ? { botToken: acc.cookies, botName: acc.full_name }
+            : undefined;
+        const res = await channelIpc.connectAccount(accountChannel, { accountId: acc.zalo_id, auth });
         if (res?.success) {
           updateAccountStatus(acc.zalo_id, true, true);
           updateListenerActive(acc.zalo_id, true);
-          showNotification('Kết nối Facebook thành công!', 'success');
+          showNotification(`Kết nối ${getChannelLabel(accountChannel)} thành công!`, 'success');
         } else {
           updateListenerActive(acc.zalo_id, false);
-          showNotification(res?.error || 'Kết nối Facebook thất bại', 'error');
+          showNotification(res?.error || `Kết nối ${getChannelLabel(accountChannel)} thất bại`, 'error');
         }
         return;
       }
@@ -129,8 +143,8 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
 
   const handleDisconnect = async () => {
     try {
-      if (isFacebook) {
-        await ipc.fb?.disconnect({ accountId: acc.zalo_id });
+      if (!isZaloAcc) {
+        await channelIpc.disconnectAccount(accountChannel, { accountId: acc.zalo_id });
       } else {
         await ipc.login?.disconnectAccount(acc.zalo_id);
       }
@@ -150,7 +164,7 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
       variant: 'danger',
     });
     if (!ok) return;
-    if (isFacebook) {
+    if (isFacebookAcc) {
       const res = await ipc.fb?.removeAccount({ accountId: acc.zalo_id });
       if (res?.success) {
         useAccountStore.getState().removeAccount(acc.zalo_id);
@@ -173,40 +187,63 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
     setMenuOpen(false);
     setUpdatingInfo(true);
     try {
-      const auth = buildZaloAuth(acc);
-      const res = await ipc.zalo?.getContext({ auth });
-      if (res?.success && res.response) {
-        const ctx = res.response;
-        const loginInfo = ctx.loginInfo || {};
-        const uid: string = ctx.uid || acc.zalo_id;
+      const channel = accountChannel;
 
-        // displayName: context không chứa tên, giữ nguyên hoặc lấy từ DB
-        const displayName: string = acc.full_name || acc.zalo_id;
-        const avatarUrl: string = acc.avatar_url || '';
+      if (isTelegram(channel)) {
+        // Telegram: reset avatar cache và fetch lại avatar
+        try {
+          const { resetAvatarCache } = await import('../../../utils/avatarFetchCache');
+          resetAvatarCache(acc.zalo_id, acc.zalo_id);
+        } catch {}
 
-        // SĐT: trường chính xác từ loginInfo là phone_number (vd: "84944767139")
-        const rawPhone: string =
-          loginInfo.phone_number ||
-          loginInfo.phoneNumber ||
-          loginInfo.phone ||
-          loginInfo.msisdn ||
-          '';
-        const phone: string = formatPhone(rawPhone) || acc.phone || '';
-
-        // Cập nhật DB
-        if (phone && phone !== acc.phone) {
-          // Cập nhật bảng contacts (để hiển thị trong chat)
-          await DataAccessor.updateContactProfile({ zaloId: uid, contactId: uid, displayName, avatarUrl, phone });
-          // Cập nhật bảng accounts (để lưu qua restart)
-          await DataAccessor.updateAccountPhone({ zaloId: uid, phone });
-          // Cập nhật store
-          useAccountStore.getState().updateAccount(uid, { phone });
-          showNotification('Đã cập nhật số điện thoại: ' + phone, 'success');
+        if (isTelegramUser(channel)) {
+          // Telegram User: fetch avatar qua IPC
+          try {
+            const res = await ipc.telegramUser?.fetchSelfAvatar?.(acc.zalo_id);
+            if (res?.success && res.avatarUrl) {
+              useAccountStore.getState().updateAccount(acc.zalo_id, { avatar_url: res.avatarUrl });
+              showNotification('Đã cập nhật avatar Telegram!', 'success');
+            } else {
+              showNotification(res?.error || 'Không thể tải avatar. Đảm bảo Telegram đang kết nối.', 'info');
+            }
+          } catch {
+            showNotification('Đảm bảo Telegram đang kết nối để cập nhật avatar.', 'info');
+          }
         } else {
-          showNotification('Thông tin đã cập nhật (SĐT không đổi)', 'info');
+          // Telegram Bot: bot không có avatar riêng
+          showNotification('Bot không có avatar. Thông tin được cập nhật tự động khi có tin nhắn mới.', 'info');
         }
       } else {
-        showNotification('Không thể tải thông tin: ' + (res?.error || 'Lỗi không xác định'), 'error');
+        // Zalo: existing logic
+        const auth = buildZaloAuth(acc);
+        const res = await ipc.zalo?.getContext({ auth });
+        if (res?.success && res.response) {
+          const ctx = res.response;
+          const loginInfo = ctx.loginInfo || {};
+          const uid: string = ctx.uid || acc.zalo_id;
+
+          const displayName: string = acc.full_name || acc.zalo_id;
+          const avatarUrl: string = acc.avatar_url || '';
+
+          const rawPhone: string =
+            loginInfo.phone_number ||
+            loginInfo.phoneNumber ||
+            loginInfo.phone ||
+            loginInfo.msisdn ||
+            '';
+          const phone: string = formatPhone(rawPhone) || acc.phone || '';
+
+          if (phone && phone !== acc.phone) {
+            await DataAccessor.updateContactProfile({ zaloId: uid, contactId: uid, displayName, avatarUrl, phone });
+            await DataAccessor.updateAccountPhone({ zaloId: uid, phone });
+            useAccountStore.getState().updateAccount(uid, { phone });
+            showNotification('Đã cập nhật số điện thoại: ' + phone, 'success');
+          } else {
+            showNotification('Thông tin đã cập nhật (SĐT không đổi)', 'info');
+          }
+        } else {
+          showNotification('Không thể tải thông tin: ' + (res?.error || 'Lỗi không xác định'), 'error');
+        }
       }
     } catch (err: any) {
       showNotification('Lỗi cập nhật: ' + err.message, 'error');
@@ -260,13 +297,13 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
       <div className="flex items-center gap-3 mb-3">
         <div className="relative flex-shrink-0">
           {acc.avatar_url && !avatarFailed ? (
-            <img src={acc.avatar_url} alt="" className="w-12 h-12 rounded-full object-cover"
+            <img src={toLocalMediaUrl(acc.avatar_url)} alt="" className="w-12 h-12 rounded-full object-cover"
               onError={() => {
                 setAvatarFailed(true);
                 // Retry: gọi API refresh avatar
                 if (!avatarRetryDone.current) {
                   avatarRetryDone.current = true;
-                  handleAvatarError({ ownerId: acc.zalo_id, contactId: acc.zalo_id, channel: acc.channel || 'zalo' })
+                  handleAvatarError({ ownerId: acc.zalo_id, contactId: acc.zalo_id, channel: acc.channel || CHANNEL.ZALO })
                     .then(newUrl => {
                       if (newUrl) {
                         useAccountStore.getState().updateAccount(acc.zalo_id, { avatar_url: newUrl });
@@ -276,8 +313,8 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
                 }
               }} />
           ) : (
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg ${isFacebook ? 'bg-blue-800' : 'bg-blue-600'}`}>
-              {isFacebook ? (
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg ${isFacebookAcc ? 'bg-blue-800' : 'bg-blue-600'}`}>
+              {isFacebookAcc ? (
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                 </svg>
@@ -288,12 +325,12 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
           <span className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-gray-800 ${statusBadge.dot}`} />
           {/* Channel badge */}
           <div className="absolute -top-0.5 -left-0.5 z-10">
-            <ChannelBadge channel={(acc.channel || 'zalo') as Channel} size="xs" />
+            <ChannelBadge channel={accountChannel} size="md" />
           </div>
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-gray-200 truncate flex items-center gap-1.5">
-            {acc.full_name || (isFacebook ? 'Facebook Account' : acc.zalo_id)}
+            {acc.full_name || `${getChannelLabel(accountChannel)} Account`}
             {listenerDead && (
               <span className="relative group flex-shrink-0">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400">
@@ -307,13 +344,15 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
             )}
           </p>
           <p className="text-xs text-gray-400 truncate">
-            {isFacebook ? `${acc.facebook_id || acc.zalo_id}` : acc.zalo_id}
+            {isFacebookAcc ? `${acc.facebook_id || acc.zalo_id}` : acc.zalo_id}
           </p>
-          {acc.phone && (
+          {acc.phone ? (
             <p className="text-xs text-gray-400 truncate mt-0.5">
               <PhoneIcon className="w-3 h-3 inline" /> <PhoneDisplay phone={acc.phone} className="text-xs text-gray-400" />
             </p>
-          )}
+          ) : acc.username ? (
+            <p className="text-xs text-gray-400 truncate mt-0.5">@{acc.username}</p>
+          ) : null}
         </div>
 
         {/* 3-dot menu */}
@@ -331,7 +370,7 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
 
           {menuOpen && (
             <div className="absolute right-0 top-8 w-52 bg-gray-800 border border-gray-600 rounded-xl shadow-xl z-50 py-1 overflow-hidden">
-              {isFacebook ? (
+              {isFacebookAcc ? (
                 <>
                 <button
                   onClick={handleUpdateFBInfo}
@@ -390,7 +429,7 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
               <button
                 onClick={() => {
                   setMenuOpen(false);
-                  const uid = isFacebook ? (acc.facebook_id || acc.zalo_id) : acc.zalo_id;
+                  const uid = isFacebookAcc ? (acc.facebook_id || acc.zalo_id) : acc.zalo_id;
                   navigator.clipboard.writeText(uid).then(() => {
                     showNotification('Đã sao chép UID: ' + uid, 'success');
                   }).catch(() => {
@@ -471,14 +510,28 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
               Reconnect
             </button>
             <button
-              onClick={() => isFacebook ? setFbCookieModalOpen(true) : setAddAccountModalOpen(true)}
+              onClick={() => {
+                if (isFacebookAcc) {
+                  setFbCookieModalOpen(true);
+                } else if (isTelegram(accountChannel)) {
+                  // Telegram: mở popup đăng nhập lại (giống thêm tài khoản mới)
+                  setAddAccountModalOpen(true, accountChannel);
+                } else {
+                  setAddAccountModalOpen(true);
+                }
+              }}
               className="flex-1 bg-blue-800 hover:bg-blue-700 text-white text-xs py-1.5 rounded-lg transition-colors font-medium flex items-center justify-center gap-1"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <rect x="3" y="3" width="5" height="5" /><rect x="16" y="3" width="5" height="5" />
-                <rect x="3" y="16" width="5" height="5" /><path d="M21 16h-3v3M21 21h-3v-3M16 21h-3v-3M13 16h3" />
+                {isFacebookAcc ? (
+                  <><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>
+                ) : isTelegram(accountChannel) ? (
+                  <><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></>
+                ) : (
+                  <><rect x="3" y="3" width="5" height="5" /><rect x="16" y="3" width="5" height="5" /><rect x="3" y="16" width="5" height="5" /><path d="M21 16h-3v3M21 21h-3v-3M16 21h-3v-3M13 16h3" /></>
+                )}
               </svg>
-              {isFacebook ? 'Cập nhật Cookie' : 'Quét QR mới'}
+              {isFacebookAcc ? 'Cập nhật Cookie' : isTelegram(accountChannel) ? 'Đăng nhập lại' : 'Quét QR mới'}
             </button>
           </div>
         )}

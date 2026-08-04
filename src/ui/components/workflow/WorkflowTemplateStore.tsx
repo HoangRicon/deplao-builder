@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import ReactFlow, { Background, Controls, MiniMap, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { v4 as uuidv4 } from 'uuid';
+import { Channel, getChannelLabel } from '../../../configs/channelConfig';
 import {
   WORKFLOW_TEMPLATES,
   TEMPLATE_CATEGORIES,
@@ -11,6 +12,7 @@ import {
 } from './templates/workflowTemplates';
 import { INTEGRATION_TEMPLATES } from './templates/integrationTemplates';
 import { nodeTypeGroup, getNodeLabel, GROUP_COLORS } from './workflowConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 import { TriggerNode, ActionNode, LogicNode, DataNode, OutputNode, IntegrationNode } from './nodes/WorkflowNodes';
 import ipc from '../../lib/ipc';
 import { useAppStore } from '@/store/appStore';
@@ -71,10 +73,16 @@ function TemplateCard({
   return (
     <div className="bg-gray-900 border border-gray-700/80 rounded-2xl p-5 hover:border-gray-600 transition-all group relative flex flex-col">
       {/* Channel badge */}
-      {(tpl.channel === 'facebook') && (
+      {(tpl.channel === CHANNEL.FACEBOOK) && (
         <div className="absolute top-3 right-3 flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#1877F2]/10 border border-[#1877F2]/30 text-[#1877F2] font-medium">
           <span className="w-1 h-1 rounded-full bg-[#1877F2]" />
           Facebook
+        </div>
+      )}
+      {(tpl.channel === CHANNEL.TELEGRAM_USER || tpl.channel === CHANNEL.TELEGRAM_BOT) && (
+        <div className="absolute top-3 right-3 flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#0088CC]/10 border border-[#0088CC]/30 text-[#0088CC] font-medium">
+          <span className="w-1 h-1 rounded-full bg-[#0088CC]" />
+          Telegram
         </div>
       )}
 
@@ -333,11 +341,18 @@ function InstallModal({
   onDone: (workflowId: string) => void;
 }) {
   const { showNotification } = useAppStore();
-  const channel = tpl.channel || 'zalo';
-  const channelLabel = channel === 'zalo' ? 'Zalo' : 'Facebook';
-  const filteredAccounts = channel === 'zalo'
-    ? accounts.filter(a => (a as any).channel === 'zalo' || !(a as any).channel)
-    : accounts.filter(a => (a as any).channel === 'facebook');
+  const channel = tpl.channel || CHANNEL.ZALO;
+  const channelLabel = getChannelLabel(channel as Channel);
+  const filteredAccounts = (() => {
+    const ch = channel;
+    if (ch === CHANNEL.ZALO) return accounts.filter(a => (a as any).channel === CHANNEL.ZALO || !(a as any).channel);
+    if (ch === CHANNEL.FACEBOOK) return accounts.filter(a => (a as any).channel === CHANNEL.FACEBOOK);
+    // Telegram: both telegram_user and telegram_bot accounts
+    if (ch === CHANNEL.TELEGRAM_USER || ch === CHANNEL.TELEGRAM_BOT) {
+      return accounts.filter(a => (a as any).channel === CHANNEL.TELEGRAM_USER || (a as any).channel === CHANNEL.TELEGRAM_BOT);
+    }
+    return accounts;
+  })();
   const [selectedPages, setSelectedPages] = useState<string[]>([]);
   const [wfName, setWfName] = useState(tpl.name);
   const [installing, setInstalling] = useState(false);
@@ -490,7 +505,7 @@ function InstallModal({
 export default function WorkflowTemplateStore({ onBack, onEdit }: Props) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<TemplateCategory | 'all'>('all');
-  const [channelFilter, setChannelFilter] = useState<'all' | 'zalo' | 'facebook'>('all');
+  const [channelFilter, setChannelFilter] = useState<'all' | typeof CHANNEL.ZALO | typeof CHANNEL.FACEBOOK | typeof CHANNEL.TELEGRAM_USER | typeof CHANNEL.TELEGRAM_BOT>('all');
   const [previewTpl, setPreviewTpl] = useState<WorkflowTemplate | null>(null);
   const [installTpl, setInstallTpl] = useState<WorkflowTemplate | null>(null);
   const [accounts, setAccounts] = useState<PageAccount[]>([]);
@@ -503,7 +518,7 @@ export default function WorkflowTemplateStore({ onBack, onEdit }: Props) {
         full_name: a.full_name || '',
         avatar_url: a.avatar_url || '',
         phone: a.phone || '',
-        channel: a.channel || 'zalo',
+        channel: a.channel || CHANNEL.ZALO,
       })));
     }).catch(() => {});
   }, []);
@@ -516,7 +531,17 @@ export default function WorkflowTemplateStore({ onBack, onEdit }: Props) {
     }
 
     if (channelFilter !== 'all') {
-      list = list.filter(t => (t.channel || 'zalo') === channelFilter);
+      list = list.filter(t => {
+        const tplChannel = t.channel || CHANNEL.ZALO;
+        if (tplChannel === channelFilter) return true;
+        // Telegram: both telegram_user and telegram_bot see tg.* templates
+        const isTelegramFilter = channelFilter === CHANNEL.TELEGRAM_USER || channelFilter === CHANNEL.TELEGRAM_BOT;
+        const isTelegramTemplate = tplChannel === CHANNEL.TELEGRAM_USER || tplChannel === CHANNEL.TELEGRAM_BOT;
+        if (isTelegramFilter && isTelegramTemplate) return true;
+        // Templates without channel restriction (both) are shown for all filters
+        if (!t.channel) return true;
+        return false;
+      });
     }
 
     if (search.trim()) {
@@ -641,7 +666,7 @@ export default function WorkflowTemplateStore({ onBack, onEdit }: Props) {
           <button
             onClick={() => setChannelFilter('zalo')}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-              channelFilter === 'zalo'
+              channelFilter === CHANNEL.ZALO
                 ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300'
             }`}
@@ -652,13 +677,24 @@ export default function WorkflowTemplateStore({ onBack, onEdit }: Props) {
           <button
             onClick={() => setChannelFilter('facebook')}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-              channelFilter === 'facebook'
+              channelFilter === CHANNEL.FACEBOOK
                 ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300'
             }`}
           >
             <span className="w-1.5 h-1.5 rounded-full bg-[#1877F2] inline-block mr-1" />
             Facebook
+          </button>
+          <button
+            onClick={() => setChannelFilter(CHANNEL.TELEGRAM_USER)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+              channelFilter === CHANNEL.TELEGRAM_USER || channelFilter === CHANNEL.TELEGRAM_BOT
+                ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-300'
+                : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-300'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-[#0088CC] inline-block mr-1" />
+            Telegram
           </button>
         </div>
       </div>

@@ -17,6 +17,8 @@ import { registerEmployeeIpc } from './ipc/employeeIpc';
 import { registerRelayIpc } from './ipc/relayIpc';
 import { registerWorkspaceIpc } from './ipc/workspaceIpc';
 import { registerFacebookIpc, reconnectAllFBAccounts } from './ipc/facebookIpc';
+import { registerTelegramIpc } from './ipc/telegramIpc';
+import { registerTelegramUserIpc } from './ipc/telegramUserIpc';
 import { registerProxyIpc } from './ipc/proxyIpc';
 import { registerErpTaskIpc } from './ipc/erpTaskIpc';
 import { registerErpCalendarIpc } from './ipc/erpCalendarIpc';
@@ -35,6 +37,9 @@ import CRMQueueService from '../src/services/crm/CRMQueueService';
 import FileStorageService from '../src/services/file/FileStorageService';
 import TrackingService from '../src/services/tracking/TrackingService';
 import { SHOW_DEV_TOOLS, IS_DEV_BUILD } from '../src/configs/BuildConfig';
+
+// CHANNEL constant — same as src/ui/lib/channelHelper.ts (electron build excludes src/ui/)
+const CHANNEL = { ZALO: 'zalo', FACEBOOK: 'facebook', TELEGRAM_BOT: 'telegram_bot', TELEGRAM_USER: 'telegram_user' } as const;
 
 const isDev = IS_DEV_BUILD;
 let isQuitting = false;
@@ -587,7 +592,7 @@ function handleDeepLink(url: string): void {
         const accountId = params.accountId || params.zaloId || '';
         const threadId = params.threadId || '';
         const threadType = parseInt(params.threadType || '0', 10);
-        const channel = params.channel || 'zalo';
+        const channel = params.channel || CHANNEL.ZALO;
 
         if (!accountId || !threadId) {
           console.warn('[handleDeepLink] Missing accountId or threadId');
@@ -621,6 +626,90 @@ function handleDeepLink(url: string): void {
   } catch (err: any) {
     console.error('[handleDeepLink] Failed to parse URL:', url, err.message);
   }
+}
+
+/**
+ * Auto-reconnect tất cả Telegram accounts khi app khởi động.
+ * Tương tự reconnectAllFBAccounts nhưng cho Telegram Bot + User.
+ */
+async function reconnectAllTelegramAccounts(): Promise<void> {
+  try {
+    const db = DatabaseService.getInstance();
+    if (!db) return;
+
+    const accounts = db.getAccounts();
+    const telegramAccounts = accounts.filter((a: any) => {
+      const ch = a.channel || 'zalo';
+      return (ch === 'telegram_bot' || ch === 'telegram_user') && a.is_active;
+    });
+
+    if (telegramAccounts.length === 0) return;
+
+    console.log(`[main] Auto-reconnecting ${telegramAccounts.length} Telegram account(s)...`);
+
+    for (const acc of telegramAccounts) {
+      const channel = acc.channel || 'zalo';
+      try {
+        if (channel === 'telegram_bot') {
+          const { startBot } = require('../src/services/telegram/TelegramBotChannelService');
+          startBot({
+            accountId: acc.zalo_id,
+            botToken: acc.cookies || '',
+            botUsername: (acc as any).username || '',
+            botFirstName: acc.full_name || '',
+          });
+          console.log(`[main] Telegram Bot ${acc.zalo_id} polling started`);
+        } else if (channel === 'telegram_user') {
+          const stringSession = acc.cookies || '';
+          if (!stringSession) {
+            console.warn(`[main] Telegram User ${acc.zalo_id} has no session - skipping`);
+            continue;
+          }
+          // Kiểm tra session hợp lệ (GramJS session là base64 decode thành JSON)
+          // Nếu session bắt đầu bằng "U2Fsd" = encrypted blob chưa decrypt được → skip
+          if (stringSession.trimStart().startsWith('U2Fsd')) {
+            console.warn(`[main] Telegram User ${acc.zalo_id} session is encrypted blob (decrypt failed) - needs re-login`);
+            continue;
+          }
+          const { startListener } = require('../src/services/telegram/TelegramUserListener');
+          const result = await startListener({
+            accountId: acc.zalo_id,
+            phoneNumber: acc.phone || '',
+            stringSession,
+          });
+          if (result?.success) {
+            console.log(`[main] Telegram User ${acc.zalo_id} listener started`);
+          } else {
+            console.warn(`[main] Telegram User ${acc.zalo_id} failed: ${result?.error}`);
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[main] Failed to reconnect Telegram ${acc.zalo_id}: ${err.message}`);
+      }
+    }
+  } catch (err: any) {
+    console.error('[main] reconnectAllTelegramAccounts error:', err.message);
+  }
+}
+
+/**
+ * Periodic health check for Telegram bots.
+ * Checks if registered bots are still polling; reconnects if not.
+ * Runs every 60 seconds.
+ */
+function startTelegramBotHealthCheck(): void {
+  setInterval(() => {
+    try {
+      const { isBotPolling, tryReconnectBot, getActiveBots } = require('../src/services/telegram/TelegramBotChannelService');
+      const activeBots = getActiveBots();
+      for (const bot of activeBots) {
+        if (!isBotPolling(bot.accountId)) {
+          console.log(`[main] Telegram Bot ${bot.accountId} not polling — attempting reconnect`);
+          tryReconnectBot(bot.accountId);
+        }
+      }
+    } catch {}
+  }, 60_000);
 }
 
 /**
@@ -696,51 +785,67 @@ async function startupAllWorkspaces(): Promise<void> {
 app.whenReady().then(async () => {
   // ── Register local-media:// protocol handler ───────────────────────────
   protocol.handle('local-media', (request) => {
-    let filePath = decodeURIComponent(new URL(request.url).pathname);
-    // Windows: strip leading slash → "D:/..." or "media/..."
-    if (process.platform === 'win32' && filePath.startsWith('/')) {
-      filePath = filePath.slice(1);
-    }
-
-    const configFolder = path.dirname(FileStorageService.getBaseDir());
-
-    if (!path.isAbsolute(filePath)) {
-      // Relative path: "media/zaloId/date/img.jpg" → configFolder/media/zaloId/...
-      filePath = path.join(configFolder, filePath);
-    } else if (!fs.existsSync(filePath)) {
-      // Absolute path but file not found (old drive/folder after move).
-      const normalized = filePath.replace(/\\/g, '/');
-      const mediaIdx = normalized.lastIndexOf('/media/');
-      if (mediaIdx >= 0) {
-        const relativePart = normalized.slice(mediaIdx + 1); // "media/zaloId/..."
-        filePath = path.join(configFolder, relativePart);
+    try {
+      let filePath = decodeURIComponent(new URL(request.url).pathname);
+      // Windows: strip leading slash → "D:/..." or "media/..."
+      if (process.platform === 'win32' && filePath.startsWith('/')) {
+        filePath = filePath.slice(1);
       }
+
+      const configFolder = path.dirname(FileStorageService.getBaseDir());
+
+      if (!path.isAbsolute(filePath)) {
+        // Relative path: "media/zaloId/date/img.jpg" → configFolder/media/zaloId/...
+        filePath = path.join(configFolder, filePath);
+      } else if (!fs.existsSync(filePath)) {
+        // Absolute path but file not found (old drive/folder after move).
+        const normalized = filePath.replace(/\\/g, '/');
+        const mediaIdx = normalized.lastIndexOf('/media/');
+        if (mediaIdx >= 0) {
+          const relativePart = normalized.slice(mediaIdx + 1); // "media/zaloId/..."
+          filePath = path.join(configFolder, relativePart);
+        }
+      }
+
+      if (!fs.existsSync(filePath)) {
+        // Fallback: check old Telegram media location (userData/telegram_media/)
+        const basename = path.basename(filePath);
+        const oldTelegramPath = path.join(app.getPath('userData'), 'telegram_media', basename);
+        if (fs.existsSync(oldTelegramPath)) {
+          filePath = oldTelegramPath;
+        }
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return new Response('Not Found', { status: 404 });
+      }
+
+      const absPath = path.resolve(filePath);
+      const ext = path.extname(absPath).toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp',
+      };
+      const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+      const data = fs.readFileSync(absPath);
+      // Use Uint8Array to ensure compatibility with Response constructor
+      const body = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      return new Response(body, {
+        status: 200,
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(data.length),
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    } catch (err: any) {
+      console.error('[local-media] Protocol handler error:', err.message);
+      return new Response('Internal Error', { status: 500 });
     }
-
-    if (!fs.existsSync(filePath)) {
-      return new Response('Not Found', { status: 404 });
-    }
-
-    const absPath = path.resolve(filePath);
-    const ext = path.extname(absPath).toLowerCase();
-    const mimeTypes: Record<string, string> = {
-      '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
-      '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
-      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-      '.gif': 'image/gif', '.webp': 'image/webp',
-    };
-    const contentType = mimeTypes[ext] || 'application/octet-stream';
-
-    const data = fs.readFileSync(absPath);
-    return new Response(data, {
-      status: 200,
-      headers: {
-        'Content-Type': contentType,
-        'Content-Length': String(data.length),
-        'Accept-Ranges': 'bytes',
-        'Access-Control-Allow-Origin': '*',
-      },
-    });
   });
 
   // Initialize workspace manager (must be BEFORE database init)
@@ -819,6 +924,8 @@ app.whenReady().then(async () => {
   registerRelayIpc();
   registerWorkspaceIpc(mainWindow);
   registerFacebookIpc();
+  registerTelegramIpc();
+  registerTelegramUserIpc();
   registerProxyIpc();
   registerErpTaskIpc();
   registerErpCalendarIpc();
@@ -831,6 +938,12 @@ app.whenReady().then(async () => {
   reconnectAllFBAccounts().catch(err => {
     console.error('[main] reconnectAllFBAccounts error:', err.message);
   });
+  // Auto-reconnect Telegram accounts - start ngay, không đợi 4s
+  reconnectAllTelegramAccounts().catch(err => {
+    console.error('[main] reconnectAllTelegramAccounts error:', err.message);
+  });
+  // Start periodic health check for Telegram bots (every 60s)
+  startTelegramBotHealthCheck();
   // Ordered startup: relay + Zalo for all local workspaces FIRST, then remote workspaces
   setTimeout(() => startupAllWorkspaces().catch(err => {
     console.error('[main] startupAllWorkspaces error:', err.message);
@@ -905,13 +1018,21 @@ app.whenReady().then(async () => {
   });
   console.log('[MediaCleanup] Scheduler initialized - runs daily at 3:00 AM');
 
-  // Check for updates (không tự động tải — user tự quyết định)
+  // Check for updates — đợi renderer sẵn sàng rồi mới check
   if (!isDev) {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
 
-    // Check lần đầu khi khởi động và mỗi 4 giờ (chỉ notify, không download)
-    autoUpdater.checkForUpdates();
+    // Đợi renderer load xong rồi mới check update (tránh race condition)
+    // IPC: renderer báo đã sẵn sàng nhận update events
+    ipcMain.once('update:renderer-ready', () => {
+      console.log('[AutoUpdate] Renderer ready — checking for updates');
+      autoUpdater.checkForUpdates();
+    });
+    // Fallback: nếu renderer không báo sau 10s, tự check
+    setTimeout(() => {
+      autoUpdater.checkForUpdates();
+    }, 10_000);
     setInterval(() => autoUpdater.checkForUpdates(), 4 * 60 * 60 * 1000);
 
     autoUpdater.on('update-available', (info) => {
@@ -1024,6 +1145,20 @@ app.on('before-quit', () => {
   try {
     // Disconnect all workspace socket connections
     HttpConnectionManager.getInstance().disconnectAll();
+  } catch {}
+
+  try {
+    // Stop all Telegram Bot polling and User listeners
+    const { stopAllBots } = require('../src/services/telegram/TelegramBotChannelService');
+    stopAllBots();
+  } catch {}
+  try {
+    const { stopAllListeners } = require('../src/services/telegram/TelegramUserListener');
+    stopAllListeners();
+  } catch {}
+  try {
+    const { stopAllPollers } = require('../src/services/workflow/TelegramBotPollingService');
+    stopAllPollers();
   } catch {}
 });
 

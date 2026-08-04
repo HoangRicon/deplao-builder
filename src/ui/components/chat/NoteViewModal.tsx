@@ -4,6 +4,7 @@ import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import ipc, { buildZaloAuth } from '@/lib/ipc';
 import { CloudIcon, HardDriveIcon } from '@/components/common/icons';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
 import type { PinnedNote } from './PinnedMessages';
 
 // ─── NoteViewModal ────────────────────────────────────────────────────────────
@@ -18,9 +19,17 @@ export function NoteViewModal({ topicId, initialTitle, groupId, onClose, onNoteP
   isGroup?: boolean;
   activeAccountId?: string;
 }) {
-  // Tab: 'zalo' only available for group conversations
-  const showZaloTab = !!isGroupProp;
+  const { getActiveAccount, accounts, activeAccountId } = useAccountStore();
+  const zaloId = activeAccountIdProp || activeAccountId || '';
+  const activeAccount = accounts.find(account => account.zalo_id === zaloId);
+  // Zalo group notes have no Telegram equivalent. On a standalone Telegram
+  // group, open the internal note tab directly and do not expose Zalo actions.
+  const showZaloTab = !!isGroupProp && isZalo(activeAccount?.channel);
   const [activeTab, setActiveTab] = React.useState<'zalo' | 'local'>(showZaloTab ? 'zalo' : 'local');
+
+  React.useEffect(() => {
+    if (!showZaloTab && activeTab !== 'local') setActiveTab('local');
+  }, [showZaloTab, activeTab]);
 
   // ── Local notes state ──
   const [localNotes, setLocalNotes] = React.useState<any[]>([]);
@@ -29,7 +38,6 @@ export function NoteViewModal({ topicId, initialTitle, groupId, onClose, onNoteP
   const [editNoteId, setEditNoteId] = React.useState<number | null>(null);
   const [editNoteText, setEditNoteText] = React.useState('');
   const [savingLocal, setSavingLocal] = React.useState(false);
-  const zaloId = activeAccountIdProp || useAccountStore.getState().activeAccountId || '';
 
   // Load local notes when tab = 'local'
   React.useEffect(() => {
@@ -81,7 +89,6 @@ export function NoteViewModal({ topicId, initialTitle, groupId, onClose, onNoteP
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState('');
   const { showNotification } = useAppStore();
-  const { getActiveAccount } = useAccountStore();
   const isEdit = !!topicId;
 
   const getAuth = () => {
@@ -163,7 +170,7 @@ export function NoteViewModal({ topicId, initialTitle, groupId, onClose, onNoteP
         {showZaloTab && (
           <div className="flex border-b border-gray-700 flex-shrink-0 px-4 pt-2 gap-1">
             <button onClick={() => setActiveTab('zalo')}
-              className={`px-4 py-1.5 rounded-t-lg text-sm font-medium transition-colors ${activeTab === 'zalo' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'}`}>
+              className={`px-4 py-1.5 rounded-t-lg text-sm font-medium transition-colors ${activeTab === CHANNEL.ZALO ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'}`}>
               <CloudIcon className="w-4 h-4 inline" /> Zalo
             </button>
             <button onClick={() => setActiveTab('local')}
@@ -173,7 +180,7 @@ export function NoteViewModal({ topicId, initialTitle, groupId, onClose, onNoteP
         )}
 
         {/* ── Zalo tab ── */}
-        {activeTab === 'zalo' && (
+        {activeTab === CHANNEL.ZALO && (
           <>
             {mode === 'view' ? (
               <>

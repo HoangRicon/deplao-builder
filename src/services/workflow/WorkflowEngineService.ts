@@ -6,6 +6,8 @@ import { FacebookService } from '../facebook/FacebookService';
 import { FacebookSendService } from '../facebook/FacebookSendService';
 import Logger from '../../utils/Logger';
 import IntegrationRegistry from '../integrations/IntegrationRegistry';
+import * as TelegramUser from '../telegram/TelegramUserListener';
+import * as TelegramBot from '../telegram/TelegramBotChannelService';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import * as cron from 'node-cron';
@@ -14,13 +16,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { google } from 'googleapis';
 import { parseStructuredResponse, isValidStructuredResponse } from '../../utils/aiUtils';
+import { CHANNEL } from '../../ui/lib/channelHelper';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type NodeType =
   | 'trigger.message' | 'trigger.friendRequest' | 'trigger.groupEvent'
   | 'trigger.reaction' | 'trigger.undo' | 'trigger.schedule' | 'trigger.manual'
-  | 'trigger.labelAssigned'
+  | 'trigger.labelAssigned' | 'trigger.telegramCommand'
   | 'zalo.sendMessage' | 'zalo.sendImage' | 'zalo.sendFile' | 'zalo.sendVoice'
   | 'zalo.forwardMessage' | 'zalo.addReaction' | 'zalo.undoMessage'
   | 'zalo.sendTyping'
@@ -55,9 +58,14 @@ export type NodeType =
   | 'fb.action.markAsRead' | 'fb.action.forward' | 'fb.action.pin' | 'fb.action.unpin'
   | 'fb.action.createPoll' | 'fb.action.block' | 'fb.action.unsend' | 'fb.action.editMessage'
   | 'fb.action.changeName' | 'fb.action.changeEmoji' | 'fb.action.changeNickname'
-  | 'fb.action.sendImage';
+  | 'fb.action.sendImage'
+  // Telegram
+  | 'tg.trigger.message'
+  | 'tg.sendMessage' | 'tg.sendPhoto' | 'tg.sendFile' | 'tg.forwardMessage'
+  | 'tg.deleteMessage' | 'tg.editMessage' | 'tg.addReaction' | 'tg.pinMessage'
+  | 'tg.sendPoll' | 'tg.banMember' | 'tg.promoteMember';
 
-export type WorkflowChannel = 'zalo' | 'facebook';
+export type WorkflowChannel = 'zalo' | 'facebook' | 'telegram_user' | 'telegram_bot';
 
 export interface WorkflowNode {
   id: string;
@@ -146,17 +154,27 @@ class WorkflowEngineService {
     this.loadWorkflows();
     this.registerZaloEventListeners();
     this.registerFacebookEventListeners();
+    this.registerTelegramEventListeners();
     this.registerCronJobs();
+    // Sync Telegram bot pollers for trigger.telegramCommand
+    try {
+      const { syncPollers } = require('./TelegramBotPollingService');
+      syncPollers();
+    } catch { /* ignore if module not available */ }
     Logger.log(`[WorkflowEngine] Initialized - ${this.workflows.size} workflows loaded`);
   }
 
   private normalizeWorkflowChannel(channel?: string): WorkflowChannel {
-    return channel === 'facebook' ? 'facebook' : 'zalo';
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { normalizeChannel } = require('../../configs/channelConfig');
+    // Legacy 'telegram' → default to 'telegram_user' (MTProto)
+    if (channel === 'telegram') return 'telegram_user';
+    return normalizeChannel(channel) as WorkflowChannel;
   }
 
   private isRunnableWorkflow(wf: Workflow): boolean {
     const ch = this.normalizeWorkflowChannel(wf.channel);
-    return ch === 'zalo' || ch === 'facebook';
+    return ch === 'zalo' || ch === 'facebook' || ch === 'telegram_user' || ch === 'telegram_bot';
   }
 
   /**
@@ -221,6 +239,11 @@ class WorkflowEngineService {
       this.workflows.set(wf.id, wf);
       this.unregisterCron(workflowId);
       if (wf.enabled && this.isRunnableWorkflow(wf)) this.registerCronForWorkflow(wf);
+      // Sync Telegram pollers when workflow is reloaded
+      try {
+        const { syncPollers } = require('./TelegramBotPollingService');
+        syncPollers();
+      } catch { /* ignore */ }
     } catch (e: any) {
       Logger.error(`[WorkflowEngine] reloadWorkflow ${workflowId}: ${e.message}`);
     }
@@ -231,6 +254,11 @@ class WorkflowEngineService {
     this.unregisterCron(workflowId);
     // Clean up debounce timers/buffers for this workflow
     this.clearDebounceForWorkflow(workflowId);
+    // Sync Telegram pollers when workflow is removed
+    try {
+      const { syncPollers } = require('./TelegramBotPollingService');
+      syncPollers();
+    } catch { /* ignore */ }
   }
 
   /** Clear all debounce timers and buffers whose key starts with workflowId: */
@@ -301,6 +329,18 @@ class WorkflowEngineService {
     });
   }
 
+  /** Bridge Telegram events to workflow triggers */
+  private registerTelegramEventListeners(): void {
+    // Telegram messages come through the unified 'event:message' channel
+    // We filter by channel field in triggerWorkflows → matchesTriggerFilter
+    EventBroadcaster.onBeforeSend('event:message', (data: any) => {
+      const ch = data?.channel || data?.message?.channel;
+      if (ch === 'telegram_user' || ch === 'telegram_bot') {
+        this.triggerWorkflows('tg.trigger.message', data);
+      }
+    });
+  }
+
   /**
    * Gọi từ main process khi renderer emit 'workflow:labelEvent'.
    * Bridge: renderer (ChatHeader) → ipcMain → engine.
@@ -366,7 +406,7 @@ class WorkflowEngineService {
 
       // ─── Debounce for message triggers: gom tin nhắn liên tiếp ────────
       const debounceSeconds = Number(triggerNode.config.debounceSeconds || 0);
-      if ((triggerType === 'trigger.message' || triggerType === 'fb.trigger.message') && debounceSeconds > 0) {
+      if ((triggerType === 'trigger.message' || triggerType === 'fb.trigger.message' || triggerType === 'tg.trigger.message') && debounceSeconds > 0) {
         const msg = eventData.data || eventData.message || {};
         const threadId = (msg as any).threadId || eventData.threadId || '';
         const debounceKey = `${wf.id}:${threadId}`;
@@ -450,6 +490,27 @@ class WorkflowEngineService {
       if (triggerNode.config?.webhookToken === token) return wf;
     }
     return null;
+  }
+
+  /**
+   * Find enabled workflows with trigger.telegramCommand matching the given bot integration + command.
+   */
+  public findWorkflowsByTelegramCommand(integrationId: string, command: string, chatId?: string): Workflow[] {
+    const results: Workflow[] = [];
+    for (const wf of this.workflows.values()) {
+      if (!wf.enabled) continue;
+      const triggerNode = wf.nodes.find(n => n.type === 'trigger.telegramCommand');
+      if (!triggerNode) continue;
+      const cfg = triggerNode.config || {};
+      // Match integration
+      if (cfg.integrationId && cfg.integrationId !== integrationId) continue;
+      // Match command (empty = any)
+      if (cfg.command && cfg.command !== command) continue;
+      // Match chatId filter (empty = any)
+      if (cfg.chatIdFilter && cfg.chatIdFilter !== chatId) continue;
+      results.push(wf);
+    }
+    return results;
   }
 
   /**
@@ -563,12 +624,12 @@ class WorkflowEngineService {
       if (cfg.action && cfg.action !== 'any' && data.action !== cfg.action) return false;
       // source filter: 'any' | 'local' | 'zalo'
       if (cfg.labelSource && cfg.labelSource !== 'any') {
-        const source = String(data.labelSource || 'zalo');
+        const source = String(data.labelSource || CHANNEL.ZALO);
         if (source !== String(cfg.labelSource)) return false;
       }
       // New: labelIds array - contains "source:id" strings
       if (Array.isArray(cfg.labelIds) && cfg.labelIds.length > 0) {
-        const eventSrc = String(data.labelSource || 'zalo');
+        const eventSrc = String(data.labelSource || CHANNEL.ZALO);
         const matches = cfg.labelIds.some((item: string) => {
           if (typeof item === 'string' && item.includes(':')) {
             const [src, id] = item.split(':');
@@ -603,6 +664,15 @@ class WorkflowEngineService {
     if (triggerNode.type === 'trigger.webhook') {
       // Method filter - already checked in handleWebhook, but double-check
       if (cfg.method && cfg.method !== 'ANY' && data.method !== cfg.method) return false;
+    }
+
+    if (triggerNode.type === 'trigger.telegramCommand') {
+      // Integration filter
+      if (cfg.integrationId && data.integrationId !== cfg.integrationId) return false;
+      // Command filter (empty = any)
+      if (cfg.command && cfg.command !== data.command) return false;
+      // Chat ID filter (empty = any)
+      if (cfg.chatIdFilter && cfg.chatIdFilter !== data.chatId) return false;
     }
 
     // ── Facebook trigger matching ───────────────────────────────────────────
@@ -673,6 +743,29 @@ class WorkflowEngineService {
     if (triggerNode.type === 'fb.trigger.groupEvent') {
       if (cfg.threadId && data.threadId !== cfg.threadId) return false;
       if (cfg.eventType && cfg.eventType !== 'all' && data.type !== cfg.eventType) return false;
+    }
+
+    // ── Telegram message trigger ──────────────────────────────────────────
+    if (triggerNode.type === 'tg.trigger.message') {
+      // Filter by chatId (empty = any)
+      if (cfg.chatId) {
+        const msgChatId = data.threadId || data.chatId || '';
+        if (msgChatId !== cfg.chatId) return false;
+      }
+      // Ignore own messages (default true)
+      if (cfg.ignoreOwn !== false) {
+        if (data.isSelf || (data.message || {}).isSelf) return false;
+      }
+      // Keyword filter
+      if (cfg.keyword) {
+        const content = String(data.content || data.message?.content || data.message?.text || '').toLowerCase();
+        const kws: string[] = String(cfg.keyword).split(',').map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+        const mode = cfg.keywordMode || 'contains_any';
+        if (mode === 'contains_any' && !kws.some(k => content.includes(k))) return false;
+        if (mode === 'contains_all' && !kws.every(k => content.includes(k))) return false;
+        if (mode === 'exact' && !kws.includes(content)) return false;
+        if (mode === 'starts_with' && !kws.some(k => content.startsWith(k))) return false;
+      }
     }
 
     return true;
@@ -905,7 +998,7 @@ class WorkflowEngineService {
         labelText:   data.labelText || '',
         labelColor:  data.labelColor || '',
         labelEmoji:  data.labelEmoji || '',
-        labelSource: data.labelSource || 'zalo',
+        labelSource: data.labelSource || CHANNEL.ZALO,
         action:      data.action || 'assigned',   // 'assigned' | 'removed'
       };
     }
@@ -981,6 +1074,26 @@ class WorkflowEngineService {
         emoji: data.emoji || '',
         timestamp: Number(msg.timestamp || data.timestamp || msg.timestamp_precise || Date.now()),
         typeChat: msg.type === 'user' ? 'user' : undefined,
+      };
+    }
+    // ── Telegram trigger flattening ─────────────────────────────────────────
+    if (triggerType === 'tg.trigger.message' || triggerType.startsWith('tg.trigger.')) {
+      const msg = data.message || data.data || {};
+      const ch = data.channel || msg.channel || '';
+      return {
+        accountId:  data.zaloId || data.accountId || '',
+        chatId:     data.threadId || msg.threadId || msg.chatId || '',
+        fromId:     msg.fromId || msg.senderId || data.fromId || '',
+        fromName:   msg.fromName || msg.senderName || data.fromName || '',
+        content:    msg.content || msg.text || data.content || '',
+        body:       msg.content || msg.text || '',
+        messageId:  msg.msgId || msg.messageId || data.msgId || '',
+        threadId:   data.threadId || msg.threadId || '',
+        isGroup:    !!(msg.isGroup || data.isGroup),
+        isSelf:     !!(msg.isSelf || data.isSelf),
+        channel:    ch,
+        timestamp:  Number(msg.timestamp || data.timestamp || Date.now()),
+        attachments: msg.attachments || null,
       };
     }
     return { ...data };
@@ -1837,13 +1950,30 @@ class WorkflowEngineService {
 
       // ── Notify: Telegram ─────────────────────────────────────────────────
       case 'notify.telegram': {
+        // Resolve botToken: ưu tiên Integration, fallback cfg.botToken (legacy)
+        let botToken = cfg.botToken || '';
+        if (cfg.integrationId) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const IntegrationRegistry = require('../integrations/IntegrationRegistry').default;
+            const integration = IntegrationRegistry.getIntegration(cfg.integrationId);
+            if (integration?.credentials?.botToken) {
+              botToken = integration.credentials.botToken;
+            }
+          } catch (err) {
+            Logger.warn(`[WorkflowEngine] Không tìm thấy Integration ${cfg.integrationId}: ${err}`);
+          }
+        }
+        if (!botToken) {
+          return { success: false, error: 'Thiếu Bot Token. Hãy cấu hình Integration Telegram Bot trong Settings.' };
+        }
         const payload: Record<string, any> = {
           chat_id: cfg.chatId,
           text: cfg.message,
         };
         if (cfg.parseMode) payload.parse_mode = cfg.parseMode;
         const res = await axios.post(
-          `https://api.telegram.org/bot${cfg.botToken}/sendMessage`,
+          `https://api.telegram.org/bot${botToken}/sendMessage`,
           payload,
           { timeout: 10000 }
         );
@@ -2157,6 +2287,10 @@ class WorkflowEngineService {
           trackingCode: tracking.label || cfg.trackingCode,
         };
       }
+
+      // ── Telegram ──────────────────────────────────────────────────────────────
+      case 'tg.trigger.message':
+        return { ...ctx.trigger };
 
       // ── Facebook ─────────────────────────────────────────────────────────────
       case 'fb.trigger.message':
@@ -2497,6 +2631,136 @@ class WorkflowEngineService {
         return { success: r10 };
       }
 
+      // ─── Telegram Actions ──────────────────────────────────────────────────
+
+      case 'tg.sendMessage': {
+        const tgAccountId = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAccountId) throw new Error('[tg.sendMessage] accountId required');
+        const tgChatId = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChatId) throw new Error('[tg.sendMessage] chatId required');
+        if (!cfg.message) throw new Error('[tg.sendMessage] message required');
+        // Parse structured AI response (same as zalo.sendMessage)
+        const tgSegments = parseStructuredResponse(cfg.message);
+        const tgMsg = tgSegments
+          ? tgSegments.filter((s: any) => s.type === 'text').map((s: any) => s.text).join('')
+          : cfg.message;
+        const tgSendResult = await this.sendTelegramMessage(tgAccountId, String(tgChatId), tgMsg);
+        return { success: tgSendResult.success, messageId: tgSendResult.messageId, ...(tgSendResult.error ? { error: tgSendResult.error } : {}) };
+      }
+
+      case 'tg.sendPhoto': {
+        const tgAcc2 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc2) throw new Error('[tg.sendPhoto] accountId required');
+        const tgChat2 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat2) throw new Error('[tg.sendPhoto] chatId required');
+        if (!cfg.filePath) throw new Error('[tg.sendPhoto] filePath required');
+        const tgPhotoResult = await this.sendTelegramPhoto(tgAcc2, String(tgChat2), String(cfg.filePath), cfg.caption || '');
+        return { success: tgPhotoResult.success, messageId: tgPhotoResult.messageId, ...(tgPhotoResult.error ? { error: tgPhotoResult.error } : {}) };
+      }
+
+      case 'tg.sendFile': {
+        const tgAcc3 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc3) throw new Error('[tg.sendFile] accountId required');
+        const tgChat3 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat3) throw new Error('[tg.sendFile] chatId required');
+        if (!cfg.filePath) throw new Error('[tg.sendFile] filePath required');
+        const tgFileResult = await this.sendTelegramFile(tgAcc3, String(tgChat3), String(cfg.filePath), cfg.caption || '');
+        return { success: tgFileResult.success, messageId: tgFileResult.messageId, ...(tgFileResult.error ? { error: tgFileResult.error } : {}) };
+      }
+
+      case 'tg.forwardMessage': {
+        const tgAcc4 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc4) throw new Error('[tg.forwardMessage] accountId required');
+        const fromChat = cfg.fromChatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!fromChat) throw new Error('[tg.forwardMessage] fromChatId required');
+        const toChat = cfg.toChatId;
+        if (!toChat) throw new Error('[tg.forwardMessage] toChatId required');
+        const fwdMsgId = cfg.messageId || ctx.trigger?.messageId;
+        if (!fwdMsgId) throw new Error('[tg.forwardMessage] messageId required');
+        const tgFwdResult = await this.forwardTelegramMessage(tgAcc4, String(fromChat), String(toChat), String(fwdMsgId));
+        return { success: tgFwdResult.success, ...(tgFwdResult.error ? { error: tgFwdResult.error } : {}) };
+      }
+
+      case 'tg.deleteMessage': {
+        const tgAcc5 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc5) throw new Error('[tg.deleteMessage] accountId required');
+        const tgChat5 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat5) throw new Error('[tg.deleteMessage] chatId required');
+        const delMsgId = cfg.messageId || ctx.trigger?.messageId;
+        if (!delMsgId) throw new Error('[tg.deleteMessage] messageId required');
+        const tgDelResult = await this.deleteTelegramMessage(tgAcc5, String(tgChat5), String(delMsgId));
+        return { success: tgDelResult.success, ...(tgDelResult.error ? { error: tgDelResult.error } : {}) };
+      }
+
+      case 'tg.editMessage': {
+        const tgAcc6 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc6) throw new Error('[tg.editMessage] accountId required');
+        const tgChat6 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat6) throw new Error('[tg.editMessage] chatId required');
+        const editMsgId = cfg.messageId || ctx.trigger?.messageId;
+        if (!editMsgId) throw new Error('[tg.editMessage] messageId required');
+        if (!cfg.text) throw new Error('[tg.editMessage] text required');
+        const tgEditResult = await this.editTelegramMessage(tgAcc6, String(tgChat6), String(editMsgId), String(cfg.text));
+        return { success: tgEditResult.success, ...(tgEditResult.error ? { error: tgEditResult.error } : {}) };
+      }
+
+      case 'tg.addReaction': {
+        const tgAcc7 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc7) throw new Error('[tg.addReaction] accountId required');
+        const tgChat7 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat7) throw new Error('[tg.addReaction] chatId required');
+        const reactMsgId = cfg.messageId || ctx.trigger?.messageId;
+        if (!reactMsgId) throw new Error('[tg.addReaction] messageId required');
+        const tgReactResult = await this.addTelegramReaction(tgAcc7, String(tgChat7), String(reactMsgId), cfg.emoji || '👍');
+        return { success: tgReactResult.success, ...(tgReactResult.error ? { error: tgReactResult.error } : {}) };
+      }
+
+      case 'tg.pinMessage': {
+        const tgAcc8 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc8) throw new Error('[tg.pinMessage] accountId required');
+        const tgChat8 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat8) throw new Error('[tg.pinMessage] chatId required');
+        const pinMsgId = cfg.messageId || ctx.trigger?.messageId;
+        if (!pinMsgId) throw new Error('[tg.pinMessage] messageId required');
+        const tgPinResult = await this.pinTelegramMessage(tgAcc8, String(tgChat8), String(pinMsgId));
+        return { success: tgPinResult.success, ...(tgPinResult.error ? { error: tgPinResult.error } : {}) };
+      }
+
+      case 'tg.sendPoll': {
+        const tgAcc9 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc9) throw new Error('[tg.sendPoll] accountId required');
+        const tgChat9 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat9) throw new Error('[tg.sendPoll] chatId required');
+        if (!cfg.question) throw new Error('[tg.sendPoll] question required');
+        const pollOptions: string[] = String(cfg.options || '').split('\n').map((x: string) => x.trim()).filter(Boolean);
+        if (pollOptions.length < 2) throw new Error('[tg.sendPoll] at least 2 options required');
+        const tgPollResult = await this.sendTelegramPoll(tgAcc9, String(tgChat9), String(cfg.question), pollOptions);
+        return { success: tgPollResult.success, messageId: tgPollResult.messageId, ...(tgPollResult.error ? { error: tgPollResult.error } : {}) };
+      }
+
+      case 'tg.banMember': {
+        const tgAcc10 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc10) throw new Error('[tg.banMember] accountId required');
+        const tgChat10 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat10) throw new Error('[tg.banMember] chatId required');
+        const banUserId = cfg.userId || ctx.trigger?.fromId;
+        if (!banUserId) throw new Error('[tg.banMember] userId required');
+        const tgBanResult = await this.banTelegramMember(tgAcc10, String(tgChat10), String(banUserId));
+        return { success: tgBanResult.success, ...(tgBanResult.error ? { error: tgBanResult.error } : {}) };
+      }
+
+      case 'tg.promoteMember': {
+        const tgAcc11 = cfg.accountId || ctx.trigger?.accountId || ctx.pageId;
+        if (!tgAcc11) throw new Error('[tg.promoteMember] accountId required');
+        const tgChat11 = cfg.chatId || ctx.trigger?.chatId || ctx.trigger?.threadId;
+        if (!tgChat11) throw new Error('[tg.promoteMember] chatId required');
+        const promoteUserId = cfg.userId || ctx.trigger?.fromId;
+        if (!promoteUserId) throw new Error('[tg.promoteMember] userId required');
+        const isAdmin = cfg.isAdmin === true || cfg.isAdmin === 'true';
+        const tgPromoteResult = await this.promoteTelegramMember(tgAcc11, String(tgChat11), String(promoteUserId), isAdmin);
+        return { success: tgPromoteResult.success, ...(tgPromoteResult.error ? { error: tgPromoteResult.error } : {}) };
+      }
+
       default:
         return {};
     }
@@ -2526,6 +2790,142 @@ class WorkflowEngineService {
     }
     if (!conn || !conn.api) throw new Error(`Account ${pageId || 'unknown'} không connected`);
     return conn.api;
+  }
+
+  // ─── Telegram Helpers ─────────────────────────────────────────────────────
+
+  /** Detect if account is telegram_bot (Bot API) or telegram_user (MTProto) */
+  private isTelegramBotAccount(accountId: string): boolean {
+    try {
+      const accounts = DatabaseService.getInstance().getAccounts?.() || [];
+      const acc = accounts.find((a: any) => a.zalo_id === accountId);
+      return acc?.channel === 'telegram_bot';
+    } catch {
+      return false;
+    }
+  }
+
+  private async sendTelegramMessage(accountId: string, chatId: string, text: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.sendMessage(accountId, chatId, text);
+      }
+      return await TelegramUser.sendMessage(accountId, chatId, text);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async sendTelegramPhoto(accountId: string, chatId: string, filePath: string, caption: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.sendPhoto(accountId, chatId, filePath, caption);
+      }
+      // MTProto: use sendFile which handles all media types
+      return await TelegramUser.sendFile(accountId, chatId, filePath, caption);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async sendTelegramFile(accountId: string, chatId: string, filePath: string, caption: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.sendDocument(accountId, chatId, filePath, caption);
+      }
+      return await TelegramUser.sendFile(accountId, chatId, filePath, caption);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async forwardTelegramMessage(accountId: string, fromChatId: string, toChatId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.forwardMessage(accountId, toChatId, fromChatId, messageId);
+      }
+      return await TelegramUser.forwardMessages(accountId, fromChatId, toChatId, [messageId]);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async deleteTelegramMessage(accountId: string, chatId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.deleteMessage(accountId, chatId, messageId);
+      }
+      return await TelegramUser.deleteMessages(accountId, chatId, [messageId]);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async editTelegramMessage(accountId: string, chatId: string, messageId: string, text: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.editMessage(accountId, chatId, messageId, text);
+      }
+      return await TelegramUser.editMessage(accountId, chatId, messageId, text);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async addTelegramReaction(accountId: string, chatId: string, messageId: string, emoji: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.addReaction(accountId, chatId, messageId, emoji);
+      }
+      return await TelegramUser.sendReaction(accountId, chatId, messageId, emoji);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async pinTelegramMessage(accountId: string, chatId: string, messageId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.pinMessage(accountId, chatId, messageId);
+      }
+      return await TelegramUser.pinMessage(accountId, chatId, messageId);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async sendTelegramPoll(accountId: string, chatId: string, question: string, options: string[]): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.sendPoll(accountId, chatId, question, options);
+      }
+      // MTProto: no direct sendPoll export, return not supported
+      return { success: false, error: 'sendPoll not supported for telegram_user yet' };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async banTelegramMember(accountId: string, chatId: string, userId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.banChatMember(accountId, chatId, userId);
+      }
+      return await TelegramUser.deleteChatUser(accountId, chatId, userId);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async promoteTelegramMember(accountId: string, chatId: string, userId: string, isAdmin: boolean): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.isTelegramBotAccount(accountId)) {
+        return await TelegramBot.promoteChatMember(accountId, chatId, userId);
+      }
+      return await TelegramUser.editChatAdmin(accountId, chatId, userId, isAdmin);
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   }
 
   private topologicalSort(wf: Workflow): string[] {

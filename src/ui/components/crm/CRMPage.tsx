@@ -26,6 +26,7 @@ import ScanPanel from './scan/ScanPanel';
 import ScanHistoryTab from './scan/ScanHistoryTab';
 import ScanStatsTab from './scan/ScanStatsTab';
 import { Spinner } from '@/components/common/PageLoading';
+import { CHANNEL, isFacebook } from '@/lib/channelHelper';
 import {
   CampaignIcon, ChartIcon, ClipboardListIcon, CloudIcon, HardDriveIcon, SearchIcon, SendIcon, UserIcon,
   UserPlusIcon, UsersIcon, WifiIcon
@@ -79,8 +80,8 @@ export default function CRMPage() {
   });
 
   const activeAccount = accounts.find(a => a.zalo_id === activeAccountId);
-  const isFacebookAccount = (activeAccount?.channel || 'zalo') === 'facebook';
-  const channelCap = getCapability((activeAccount?.channel || 'zalo') as Channel);
+  const isFacebookAccount = isFacebook(activeAccount?.channel);
+  const channelCap = getCapability((activeAccount?.channel || CHANNEL.ZALO) as Channel);
 
   const zaloLabels: LabelData[] = activeAccountId ? (labels[activeAccountId] || []) : [];
 
@@ -848,7 +849,7 @@ export default function CRMPage() {
 
       {/* Bulk action bar */}
       <BulkActionBar
-        channel={activeAccount?.channel || 'zalo'}
+        channel={activeAccount?.channel || CHANNEL.ZALO}
         selectedCount={store.selectedContactIds.size}
         hasGroupSelected={store.contacts.some(c => store.selectedContactIds.has(c.contact_id) && c.contact_type === 'group')}
         onClearSelection={store.clearSelection}

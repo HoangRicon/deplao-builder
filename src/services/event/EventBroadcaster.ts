@@ -115,6 +115,21 @@ class EventBroadcaster {
         this.beforeSendHooks.clear();
     }
 
+    /** Convert BigInt → string recursively để Electron IPC serialize được */
+    private static sanitizeBigInt(obj: any): any {
+        if (obj === null || obj === undefined) return obj;
+        if (typeof obj === 'bigint') return String(obj);
+        if (Array.isArray(obj)) return obj.map(EventBroadcaster.sanitizeBigInt);
+        if (typeof obj === 'object') {
+            const result: any = {};
+            for (const key of Object.keys(obj)) {
+                result[key] = EventBroadcaster.sanitizeBigInt(obj[key]);
+            }
+            return result;
+        }
+        return obj;
+    }
+
     private static send(channel: string, data: any): void {
         // Fire before-send hooks (sync, không chặn send)
         const hooks = this.beforeSendHooks.get(channel);
@@ -124,7 +139,9 @@ class EventBroadcaster {
             }
         }
         if (this.window && !this.window.isDestroyed()) {
-            this.window.webContents.send(channel, data);
+            // Sanitize BigInt trước khi gửi qua IPC
+            const safeData = EventBroadcaster.sanitizeBigInt(data);
+            this.window.webContents.send(channel, safeData);
         }
     }
 

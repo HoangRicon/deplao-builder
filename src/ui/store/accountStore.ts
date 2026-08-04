@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Channel } from '@/../configs/channelConfig';
+import { CHANNEL } from '@/lib/channelHelper';
 
 export interface AccountInfo {
   display_name: string | undefined;
@@ -17,12 +18,10 @@ export interface AccountInfo {
   isOnline?: boolean;
   isConnected?: boolean;
   listenerActive?: boolean;
-  /** Kênh chat: 'zalo' | 'facebook'. Default 'zalo' cho backward compat */
   channel?: Channel;
-  /** Real Facebook UID (only for FB accounts) */
   facebook_id?: string;
-  /** ID proxy đang gắn với tài khoản */
   proxy_id?: number | null;
+  username?: string; // @username telegram
 }
 
 interface AccountStore {
@@ -123,6 +122,6 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
   getAccountsByChannel: (channel) => {
     const { accounts } = get();
     if (channel === 'all') return accounts;
-    return accounts.filter((a) => (a.channel || 'zalo') === channel);
+    return accounts.filter((a) => (a.channel || CHANNEL.ZALO) === channel);
   },
 }));

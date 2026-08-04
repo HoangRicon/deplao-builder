@@ -18,6 +18,8 @@ import { toLocalMediaUrl } from '@/lib/localMedia';
 import { ensureMediaLocal } from '@/lib/employeeMediaSync';
 import MediaViewer, { MediaViewerImage } from './MediaViewer';
 import { ChartIcon, EditIcon, FileTextIcon } from '@/components/common/icons';
+import { getFirstAttachment, getFileMetadata, getRemoteMediaUrl, getLocalMediaPath, getVideoRemoteUrl } from '@/lib/mediaResolver';
+import { isFacebook, isTelegram as isTelegramCh } from '@/lib/channelHelper';
 
 
 const PAGE_SIZE = 50;
@@ -26,16 +28,12 @@ const PREVIEW_LIST  = 3;
 
 // ─── Helper utils ─────────────────────────────────────────────────────────────
 
-/** Extract CDN URL from FB-style attachments column */
+/** Extract CDN URL from FB-style attachments column — now uses MediaResolver */
 function extractFBAttachment(msg: any): { url: string; name: string; type: string } | null {
-  if (msg.channel !== 'facebook') return null;
-  try {
-    const atts = JSON.parse(msg.attachments || '[]');
-    if (!atts.length) return null;
-    const a = atts[0];
-    const url = a.url || a.href || a.preview_url || '';
-    return url ? { url, name: a.name || '', type: a.type || msg.msg_type || 'file' } : null;
-  } catch { return null; }
+  const att = getFirstAttachment(msg);
+  if (!att) return null;
+  const url = att.url || att.href || '';
+  return url ? { url, name: att.name || '', type: att.type || msg.msg_type || 'file' } : null;
 }
 
 function extractImgUrl(msg: any): string {
@@ -549,11 +547,11 @@ function MediaDetailPanel({ threadId, activeAccountId, tab, onBack }: {
 
 // ─── Image thumbnail cell ─────────────────────────────────────────────────────
 function ImageThumb({ msg, onClickImage }: { msg: any; onClickImage?: () => void }) {
-  const isFB = msg.channel === 'facebook';
+  const isFB = isFacebook(msg.channel);
   const isVideo = msg.msg_type === 'chat.video.msg' || msg.msg_type === 'video';
   const url = extractImgUrl(msg);
   const localFilePath = isVideo ? extractVideoFilePath(msg) : extractLocalFilePath(msg);
-  const remoteVideoUrl = isVideo ? (isFB ? (extractFBAttachment(msg)?.url || '') : extractVideoRemoteUrl(msg)) : '';
+  const remoteVideoUrl = isVideo ? (isFB ? (getRemoteMediaUrl(msg) || extractFBAttachment(msg)?.url || '') : extractVideoRemoteUrl(msg)) : '';
 
   // For FB videos, CDN URL is the remote video URL
   const fbAtt = isFB ? extractFBAttachment(msg) : null;
@@ -668,19 +666,19 @@ function ImageThumb({ msg, onClickImage }: { msg: any; onClickImage?: () => void
 
 // ─── File row ─────────────────────────────────────────────────────────────────
 function FileRow({ msg }: { msg: any }) {
-  const isFB = msg.channel === 'facebook';
+  const isFB = isFacebook(msg.channel);
+  const isTelegram = isTelegramCh(msg.channel);
+  const isNonZalo = isFB || isTelegram;
   let title = 'File', sizeStr = '', ext = '', localPath = '', href = '';
 
-  if (isFB) {
-    // FB: extract from attachments column
-    try {
-      const atts = JSON.parse(msg.attachments || '[]');
-      const a = atts[0] || {};
-      title = a.name || msg.content || 'File';
-      href  = a.url || a.href || '';
-      ext   = title.split('.').pop() || '';
-      if (a.size) sizeStr = formatFileSize(a.size);
-    } catch {}
+  if (isNonZalo) {
+    // FB/Telegram: extract from attachments via MediaResolver
+    const meta = getFileMetadata(msg);
+    title = meta.title || msg.content || 'File';
+    href  = meta.href || '';
+    ext   = meta.ext || title.split('.').pop() || '';
+    if (meta.fileSize) sizeStr = formatFileSize(meta.fileSize);
+    localPath = getLocalMediaPath(msg, 'file');
   } else {
     try {
       const p = JSON.parse(msg.content || '{}');

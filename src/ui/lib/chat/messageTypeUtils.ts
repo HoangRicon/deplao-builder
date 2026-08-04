@@ -19,9 +19,14 @@ export function isEcardType(msgType: string): boolean {
 }
 
 /** Kiểm tra tin nhắn có phải file đính kèm không (không phải ảnh, không phải card) */
-export function isFileType(msgType: string, content: string): boolean {
+export function isFileType(msgType: string, content: string, attachmentsStr?: string): boolean {
   if (isCardType(msgType, content)) return false;
-  if (['share.file', 'share.link', 'file'].includes(msgType)) return true;
+  if (['share.file', 'share.link'].includes(msgType)) return true;
+  if (msgType === 'file') {
+    // If it's actually an image (by MIME/extension), it's not a file
+    if (isMediaType(msgType, content, attachmentsStr)) return false;
+    return true;
+  }
   try {
     const parsed = JSON.parse(content);
     if (parsed && typeof parsed === 'object' && parsed.title && parsed.href &&
@@ -46,13 +51,29 @@ export function isRtfMsg(msgType: string, content: string): boolean {
 }
 
 /** Kiểm tra tin nhắn có phải media (ảnh) không - loại trừ file và card */
-export function isMediaType(msgType: string, content: string): boolean {
+export function isMediaType(msgType: string, content: string, attachmentsStr?: string): boolean {
   if (isCardType(msgType, content)) return false;
   if (isBankCardType(msgType, content)) return false;
-  if (['share.file', 'share.link', 'file'].includes(msgType)) return false;
+  if (['share.file', 'share.link'].includes(msgType)) return false;
   if (msgType === 'chat.video.msg') return false; // video được xử lý riêng
   if (msgType === 'chat.voice') return false; // voice được xử lý riêng
   if (msgType === 'photo' || msgType === 'image' || msgType === 'chat.photo') return true;
+
+  // Telegram/Facebook: file with image MIME type or image extension → treat as media
+  if (msgType === 'file' && attachmentsStr) {
+    try {
+      const atts = JSON.parse(attachmentsStr || '[]');
+      if (Array.isArray(atts) && atts.length > 0) {
+        const mime = (atts[0].mime_type || '').toLowerCase();
+        const fileName = (atts[0].file_name || '').toLowerCase();
+        const imageMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/svg', 'image/tiff'];
+        const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.ico'];
+        if (imageMimes.some(m => mime.startsWith(m))) return true;
+        if (imageExts.some(ext => fileName.endsWith(ext))) return true;
+      }
+    } catch {}
+  }
+
   try {
     const parsed = JSON.parse(content);
     if (parsed && typeof parsed === 'object') {

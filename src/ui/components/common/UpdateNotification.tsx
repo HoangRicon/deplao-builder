@@ -1,4 +1,5 @@
 ﻿import { useEffect, useRef, useCallback, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { useAppStore } from '@/store/appStore';
 import { useUpdateStore, UpdateInfo, ProgressInfo, UpdateError } from '@/store/updateStore';
 
@@ -20,13 +21,29 @@ async function fetchAggregatedNotes(currentVersion: string, targetVersion: strin
       // Include if v > currentVersion and v <= targetVersion
       if (compareVersions(v, currentVersion) > 0 && compareVersions(v, targetVersion) <= 0) {
         const body = (r.body || '').trim();
-        notes.push(`## v${v}\n${body || '_Không có ghi chú_'}`);
+        notes.push(`<h2>v${v}</h2>\n${body ? mdToHtml(body) : '<em>Không có ghi chú</em>'}`);
       }
     }
-    return notes.length > 0 ? notes.join('\n\n---\n\n') : '';
+    return notes.length > 0 ? notes.join('\n<hr/>\n') : '';
   } catch {
     return '';
   }
+}
+
+/** Minimal markdown → HTML (headers, lists, bold, italic, links, code) */
+function mdToHtml(md: string): string {
+  return md
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`)
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/^(?!<[hulop]|<em|<str|<hr)(.+)$/gm, '<p>$1</p>');
 }
 
 /** Simple semver compare: returns 1 if a > b, -1 if a < b, 0 if equal */
@@ -60,7 +77,11 @@ export function UpdateNotification() {
     // If we already have releaseNotes from electron-updater, use that
     // Otherwise fetch from GitHub for all skipped versions
     if (updateInfo.releaseNotes) {
-      setAggregatedNotes(updateInfo.releaseNotes);
+      // releaseNotes có thể là string hoặc array (electron-updater)
+      const notes = Array.isArray(updateInfo.releaseNotes)
+        ? updateInfo.releaseNotes.map((n: any) => n.note || n).join('\n')
+        : updateInfo.releaseNotes;
+      setAggregatedNotes(typeof notes === 'string' ? notes : String(notes));
       return;
     }
     setNotesLoading(true);
@@ -80,10 +101,15 @@ export function UpdateNotification() {
     const api = (window as any).electronAPI;
     if (!api?.on) return;
 
+    // Báo cho main process biết renderer đã sẵn sàng nhận update events
+    try { api.update?.rendererReady?.(); } catch {}
+
     const offAvailable = api.on('update:available', (info: UpdateInfo) => {
       setUpdateInfo(info);
       setStatus('available');
       setError(null);
+      // Tự hiện popup thông báo có bản mới (giống như click nút TopBar)
+      setShowPopup(true);
     });
 
     const offProgress = api.on('update:progress', (p: ProgressInfo) => {
@@ -132,6 +158,19 @@ export function UpdateNotification() {
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => { if (status !== 'downloading') dismiss(); }}>
+      <style>{`
+        .release-notes h1, .release-notes h2, .release-notes h3 { font-weight: 700; margin: 0.5em 0 0.25em; }
+        .release-notes h1 { font-size: 1.1em; }
+        .release-notes h2 { font-size: 1em; }
+        .release-notes h3 { font-size: 0.95em; }
+        .release-notes ul, .release-notes ol { padding-left: 1.2em; margin: 0.25em 0; }
+        .release-notes li { margin: 0.15em 0; }
+        .release-notes a { color: #60a5fa; text-decoration: underline; }
+        .release-notes a:hover { color: #93bbfc; }
+        .release-notes p { margin: 0.25em 0; }
+        .release-notes code { background: rgba(255,255,255,0.1); padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.95em; }
+        .release-notes hr { border: none; border-top: 1px solid rgba(255,255,255,0.15); margin: 0.75em 0; }
+      `}</style>
       <div className={`w-[420px] rounded-2xl shadow-2xl p-6 ${isLight ? 'bg-white border border-gray-200 text-gray-800' : 'bg-gray-800 border border-gray-600 text-white'}`} onClick={e => e.stopPropagation()}>
         <div className="flex items-start justify-between mb-4">
           <div>
@@ -153,7 +192,8 @@ export function UpdateNotification() {
             <span className="animate-pulse">Đang tải danh sách thay đổi...</span>
           </div>
         ) : aggregatedNotes ? (
-          <div className={`mb-4 p-3 rounded-xl text-xs leading-relaxed whitespace-pre-line max-h-48 overflow-y-auto ${isLight ? 'bg-gray-50 text-gray-600' : 'bg-gray-900/50 text-gray-300'}`}>{aggregatedNotes}</div>
+          <div className={`release-notes mb-4 p-3 rounded-xl text-xs leading-relaxed max-h-48 overflow-y-auto ${isLight ? 'bg-gray-50 text-gray-600' : 'bg-gray-900/50 text-gray-300'}`}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(aggregatedNotes) }} />
         ) : null}
 
         {status === 'available' && !error && (

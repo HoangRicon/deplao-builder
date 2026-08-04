@@ -1,11 +1,12 @@
 import { useCallback } from 'react';
-import { useChatStore, MessageItem, ContactItem } from '@/store/chatStore';
+import { getMessageCacheKey, useChatStore, MessageItem, ContactItem } from '@/store/chatStore';
 import { useAccountStore } from '@/store/accountStore';
 import { useEmployeeStore } from '@/store/employeeStore';
 import { useAppStore } from '@/store/appStore';
 import ipc, { buildZaloAuth } from '../lib/ipc';
 import * as channelIpc from '../lib/channelIpc';
 import { sendSeenForThread } from '@/lib/sendSeenHelper';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
 import DataAccessor from '../lib/data/DataAccessor';
 
 /**
@@ -17,6 +18,7 @@ export function useChat() {
     messages,
     activeThreadId,
     activeThreadType,
+    activeTopicId,
     setContacts,
     setMessages,
     addMessage,
@@ -60,14 +62,14 @@ export function useChat() {
       // Determine channel from contact data
       const currentContacts = useChatStore.getState().contacts[activeAccountId] || [];
       const contact = currentContacts.find(c => c.contact_id === contactId);
-      const channel = (contact?.channel || 'zalo') as string;
+      const channel = (contact?.channel || CHANNEL.ZALO) as string;
 
       // Mark as read in DB
       await DataAccessor.markAsRead({ zaloId: activeAccountId, contactId });
-      // Gửi sự kiện đã đọc: Zalo uses sendSeenForThread, Facebook uses channelIpc
-      if (channel === 'facebook') {
-        channelIpc.markAsRead('facebook', { accountId: activeAccountId, threadId: contactId }).catch(() => {});
-      } else {
+      // Mark as read: route through channelIpc facade
+      channelIpc.markAsRead((channel as any) || CHANNEL.ZALO, { accountId: activeAccountId, threadId: contactId }).catch(() => {});
+      // Also send seen event for Zalo (backward compat)
+      if (isZalo(channel)) {
         sendSeenForThread(activeAccountId, contactId, threadType);
       }
 
@@ -163,7 +165,7 @@ export function useChat() {
   /** Lấy messages của thread hiện tại */
   const currentMessages = (): MessageItem[] => {
     if (!activeAccountId || !activeThreadId) return [];
-    return messages[`${activeAccountId}_${activeThreadId}`] || [];
+    return messages[getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId)] || [];
   };
 
   /** Lấy contacts của account hiện tại */

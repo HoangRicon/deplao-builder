@@ -1,6 +1,6 @@
 import { Spinner } from '@/components/common/PageLoading';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useChatStore } from '@/store/chatStore';
+import { getMessageCacheKey, useChatStore } from '@/store/chatStore';
 import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import MediaViewer, { MediaViewerImage } from './MediaViewer';
@@ -10,9 +10,12 @@ import ChatHistoryList from './ChatHistoryList';
 import SharedMessageContent from './SharedMessageContent';
 import * as channelIpc from '../../lib/channelIpc';
 import { getCapability, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL, isNonZalo, isZalo, isFacebook, isTelegram as isTelegramCh, isTelegramForumGeneral } from '@/lib/channelHelper';
 import { ManagePanel } from './GroupInfoPanel';
 import { UserProfilePopup } from '../common/UserProfilePopup';
 import { RecalledBubble, BankCardBubble } from './MessageBubbles';
+import { getLocalMediaPath, getTelegramPostMeta } from '@/lib/mediaResolver';
+import { getAdapter } from '@/lib/adapters/registry';
 import FBVideoThumb from './FBVideoThumb';
 import DataAccessor from '@/lib/data/DataAccessor';
 import ipc, { buildZaloAuth } from '@/lib/ipc';
@@ -27,7 +30,7 @@ import { NoteViewModal } from './NoteViewModal';
 import ForwardMessageModal from './ForwardMessageModal';
 import PollBubble from './PollBubble';
 import FriendRequestBar from './FriendRequestBar';
-import { ReactionContextMenu, ReactionPopup, parseReactions, parseReactionsFull } from './ReactionComponents';
+import { ReactionContextMenu, ReactionPopup, parseReactions, parseReactionsFull, displayReactionEmoji } from './ReactionComponents';
 import {
   EmployeeAvatar, FileBubble, MediaBubble, VideoBubble, VoiceBubble,
   QuotedStickerPreview, StickerGroupBubble, getGroupLayoutId, MediaGroupBubble,
@@ -37,7 +40,7 @@ import {
 } from './ChatWindowBubbles';
 
 export default function ChatWindow() {
-  const { messages, activeThreadId, prependMessages, setMessages, contacts, setReplyTo, removeMessage, typingUsers, seenInfo, updateContact, messagesLoading } = useChatStore();
+  const { messages, activeThreadId, prependMessages, setMessages, contacts, setReplyTo, editingMsg, setEditingMsg, removeMessage, typingUsers, seenInfo, updateContact, messagesLoading, activeTopicId, activeForumTopicId, activeTopicTitle } = useChatStore();
   const { activeAccountId, getActiveAccount } = useAccountStore();
   const { showNotification, groupInfoCache, searchHighlightQuery } = useAppStore();
 
@@ -46,7 +49,7 @@ export default function ChatWindow() {
     return (contacts[activeAccountId] || []).find(c => c.contact_id === activeThreadId);
   }, [activeAccountId, activeThreadId, contacts]);
   const channelCap = React.useMemo(() =>
-    getCapability((activeContact?.channel || 'zalo') as Channel),
+    getCapability((activeContact?.channel || CHANNEL.ZALO) as Channel),
   [activeContact]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -100,6 +103,8 @@ export default function ChatWindow() {
   // Track Facebook avatars that failed to load in message bubbles (per sender)
   const [failedMsgAvatars, setFailedMsgAvatars] = useState<Set<string>>(new Set());
   const avatarRefreshAttempted = useRef<Set<string>>(new Set());
+  const quoteRepairAttemptedRef = useRef<Set<string>>(new Set());
+  const emptyMessageRepairAttemptedRef = useRef<Set<string>>(new Set());
   const [manageGroupOpen, setManageGroupOpen] = useState(false);
   const [noteModal, setNoteModal] = useState<{ topicId?: string; title?: string; creatorName?: string; createTime?: number } | null>(null);
   // Drag-and-drop state (forward to MessageInput)
@@ -161,7 +166,7 @@ export default function ChatWindow() {
   }, [activeAccountId, activeThreadId, typingNow]);
 
   // ─── Pinned messages + notes (OPTIMIZED: 1 IPC call thay vì 2) ──────────────
-  const { pins, setPins, pinnedNotes, setPinnedNotes, ready: pinsReady } = usePinnedData(activeAccountId, activeThreadId);
+  const { pins, setPins, pinnedNotes, setPinnedNotes, ready: pinsReady } = usePinnedData(activeAccountId, activeThreadId, activeContact?.channel);
 
   // ─── Thread ready gate: chỉ hiển thị UI khi messages + pins đều đã load ──
   const [threadReady, setThreadReady] = useState(false);
@@ -173,9 +178,242 @@ export default function ChatWindow() {
   // Track threadId đã scroll - tránh race condition giữa useLayoutEffect vs useEffect
   const lastScrolledThreadRef = useRef<string | null>(null);
 
-  const threadKey = activeAccountId && activeThreadId ? `${activeAccountId}_${activeThreadId}` : '';
+  // ─── Telegram Forum: load topic messages when activeTopicId changes ─────────
+  // Pattern: DB-first (instant) → API background sync (slow)
+  useEffect(() => {
+    if (!activeAccountId || !activeThreadId || !activeTopicId) return;
+    const channel = activeContact?.channel || CHANNEL.ZALO;
+    if (channel !== 'telegram_user') return;
+    const isGeneralTopic = isTelegramForumGeneral(activeTopicId);
+
+    let cancelled = false;
+
+    (async () => {
+      // 1. Load from DB first — instant, no network
+      try {
+        const dbRes = await DataAccessor.getMessages({
+          zaloId: activeAccountId,
+          threadId: activeThreadId,
+          limit: 50,
+          offset: 0,
+          topicId: activeTopicId,
+        });
+        if (cancelled) return;
+        const dbMessages = dbRes?.messages || dbRes?.items || [];
+        if (dbMessages.length > 0) {
+          setMessages(activeAccountId, activeThreadId, [...dbMessages].reverse(), activeTopicId);
+        }
+      } catch {}
+      // Don't set messagesLoading=false yet — API sync below
+
+      // General is the normal supergroup timeline, not a reply thread.
+      if (isGeneralTopic) {
+        if (!cancelled) useChatStore.getState().setMessagesLoading(false);
+        return;
+      }
+
+      // 2. Fetch from API in background — updates with fresh data
+      try {
+        const { getAdapter } = await import('@/lib/adapters/registry');
+        const adapter = getAdapter('telegram_user');
+        const res = await (adapter as any).getForumTopicMessages?.({
+          accountId: activeAccountId,
+          threadId: activeThreadId,
+          topicId: activeTopicId,
+          limit: 50,
+        });
+        if (cancelled) return;
+        if (!res?.success || !Array.isArray(res.messages)) {
+          useChatStore.getState().setMessagesLoading(false);
+          return;
+        }
+
+        const mapped = res.messages.map((m: any) => ({
+          msg_id: String(m.id),
+          owner_zalo_id: activeAccountId,
+          thread_id: activeThreadId,
+          thread_type: 1,
+          sender_id: m.senderId || '',
+          content: m.text || (m.msgType === 'sticker' ? '🎨 Sticker' : m.media ? `[${m.media.type}]` : ''),
+          msg_type: m.msgType || (m.media?.type === 'MessageMediaPhoto' ? 'photo' : m.media?.type === 'MessageMediaDocument' ? 'file' : 'text'),
+          timestamp: (m.date || 0) * 1000,
+          is_sent: m.isOut ? 1 : 0,
+          attachments: JSON.stringify(m.attachments || []),
+          ...(m.localPaths && Object.keys(m.localPaths).length > 0
+            ? { local_paths: JSON.stringify(m.localPaths) }
+            : {}),
+          status: 'received',
+          channel: 'telegram_user',
+          reply_to_id: m.replyToId || null,
+          quote_data: m.quoteData || null,
+          topic_id: m.topicRootMessageId || activeTopicId,
+          _senderName: m.senderName || '',
+        }));
+
+        if (!cancelled && mapped.length > 0) {
+          setMessages(activeAccountId, activeThreadId, mapped, activeTopicId);
+        }
+      } catch (err: any) {
+        console.error('[ChatWindow] API topic messages failed:', err.message);
+      } finally {
+        if (!cancelled) useChatStore.getState().setMessagesLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeAccountId, activeThreadId, activeTopicId, activeContact?.channel]);
+
+  const threadKey = activeAccountId && activeThreadId
+    ? getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId)
+    : '';
   const msgs = threadKey ? (messages[threadKey] || []) : [];
   msgsRef.current = msgs;
+
+  useEffect(() => {
+    quoteRepairAttemptedRef.current.clear();
+    emptyMessageRepairAttemptedRef.current.clear();
+  }, [activeAccountId, activeThreadId]);
+
+  // Legacy Telegram rows can lack quote_data because the original message was
+  // outside the synced page. Forum routing also used to be stored as a quote
+  // when reply_to_id was only the topic root. Repair visible rows in one batch
+  // and keep safe identifiers in the console for field diagnosis.
+  useEffect(() => {
+    if (!activeAccountId || !activeThreadId || activeContact?.channel !== 'telegram_user') return;
+    const repair = ipc.telegramUser?.repairMessageQuotes;
+    if (!repair) return;
+
+    const needsQuoteRepair = (message: any): boolean => {
+      if (!message?.reply_to_id) return false;
+      if (!message.quote_data) return true;
+      try {
+        const quote = JSON.parse(message.quote_data);
+        const quoteType = String(quote?.msgType || 'text');
+        const quoteAttach = typeof quote?.attach === 'string' ? quote.attach.trim() : quote?.attach;
+        const hasAttachment = !!quoteAttach && quoteAttach !== '[]' && quoteAttach !== '{}';
+        if (['photo', 'image', 'chat.photo'].includes(quoteType)) {
+          return !quote?.imageUrl && !quote?.imageLocalPath;
+        }
+        return !String(quote?.msg || '').trim() &&
+          (quoteType === 'text' || quoteType === 'chat.text') &&
+          !quote?.imageUrl && !hasAttachment;
+      } catch {
+        return true;
+      }
+    };
+
+    const batch: Array<{ messageId: string; replyToId: string }> = [];
+    for (const message of msgs) {
+      if (!needsQuoteRepair(message)) continue;
+      const key = `${activeAccountId}:${activeThreadId}:${message.msg_id}:${message.reply_to_id}`;
+      if (quoteRepairAttemptedRef.current.has(key)) continue;
+      quoteRepairAttemptedRef.current.add(key);
+      batch.push({ messageId: String(message.msg_id), replyToId: String(message.reply_to_id) });
+      if (batch.length >= 100) break;
+    }
+    if (batch.length === 0) return;
+
+    void repair({ accountId: activeAccountId, chatId: activeThreadId, items: batch })
+      .then(response => {
+        const results = response?.results || [];
+        console.info('[TelegramQuoteRepair]', {
+          accountId: activeAccountId,
+          threadId: activeThreadId,
+          requested: batch.length,
+          repaired: results.filter(item => item.status === 'repaired').length,
+          topicRouting: results.filter(item => item.status === 'topic_routing').length,
+          deferred: results.filter(item => item.status === 'deferred').map(item => ({
+            messageId: item.messageId,
+            replyToId: item.replyToId,
+          })),
+          notFound: results.filter(item => item.status === 'not_found').map(item => ({
+            messageId: item.messageId,
+            replyToId: item.replyToId,
+          })),
+        });
+        if (results.length === 0) return;
+        const resultMap = new Map(results.map(item => [item.messageId, item]));
+        const store = useChatStore.getState();
+        const current = store.messages[threadKey] || [];
+        let changed = false;
+        const repairedMessages = current.map(message => {
+          const result = resultMap.get(String(message.msg_id));
+          if (!result) return message;
+          if (result.status === 'topic_routing') {
+            changed = true;
+            return { ...message, reply_to_id: null };
+          }
+          if (result.status === 'repaired' && result.quoteData) {
+            changed = true;
+            return { ...message, quote_data: result.quoteData };
+          }
+          return message;
+        });
+        if (changed) store.setMessages(activeAccountId, activeThreadId, repairedMessages, activeTopicId);
+      })
+      .catch(error => {
+        console.warn('[TelegramQuoteRepair] failed', {
+          accountId: activeAccountId,
+          threadId: activeThreadId,
+          messageIds: batch.map(item => item.messageId),
+          error: error?.message || String(error),
+        });
+      });
+  }, [activeAccountId, activeThreadId, activeTopicId, activeContact?.channel, msgs, threadKey]);
+
+  // Legacy normalizers stored unknown Telegram MessageMedia classes as an
+  // empty text row. Re-fetch exact visible IDs, persist the real class/type,
+  // and log safe identifiers so unsupported cases are diagnosable.
+  useEffect(() => {
+    if (!activeAccountId || !activeThreadId || activeContact?.channel !== 'telegram_user') return;
+    const candidates = msgs.filter(message => {
+      if (String(message.content || '').trim() || message.msg_type !== 'text') return false;
+      try {
+        const attachments = JSON.parse(message.attachments || '[]');
+        return !Array.isArray(attachments) || attachments.length === 0;
+      } catch {
+        return true;
+      }
+    }).filter(message => {
+      const key = `${activeAccountId}:${activeThreadId}:${message.msg_id}`;
+      if (emptyMessageRepairAttemptedRef.current.has(key)) return false;
+      emptyMessageRepairAttemptedRef.current.add(key);
+      return /^\d+$/.test(String(message.msg_id));
+    }).slice(0, 100);
+    if (!candidates.length) return;
+
+    const messageIds = candidates.map(message => String(message.msg_id));
+    console.warn('[TelegramEmptyMessage] REPAIR_REQUESTED', {
+      accountId: activeAccountId, threadId: activeThreadId, messageIds,
+    });
+    ipc.telegramUser?.repairEmptyMessages({ accountId: activeAccountId, chatId: activeThreadId, messageIds })
+      .then(response => {
+        if (!response?.success) throw new Error(response?.error || 'repair failed');
+        const results = response.results || [];
+        console.info('[TelegramEmptyMessage] REPAIR_COMPLETED', {
+          accountId: activeAccountId, threadId: activeThreadId,
+          results: results.map(result => ({
+            messageId: result.messageId, resolved: result.resolved,
+            msgType: result.msgType, mediaClass: result.mediaClass,
+          })),
+        });
+        const byId = new Map(results.filter(result => result.resolved).map(result => [result.messageId, result]));
+        if (!byId.size) return;
+        const current = useChatStore.getState().messages[threadKey] || [];
+        const repaired = current.map(message => {
+          const result = byId.get(String(message.msg_id));
+          return result ? {
+            ...message, content: result.content, msg_type: result.msgType,
+            attachments: JSON.stringify(result.attachments || []),
+          } : message;
+        });
+        useChatStore.getState().setMessages(activeAccountId, activeThreadId, repaired, activeTopicId);
+      })
+      .catch(error => console.warn('[TelegramEmptyMessage] REPAIR_FAILED', {
+        accountId: activeAccountId, threadId: activeThreadId, messageIds,
+        error: error?.message || String(error),
+      }));
+  }, [activeAccountId, activeThreadId, activeTopicId, activeContact?.channel, msgs, threadKey]);
 
   const contactList = activeAccountId ? (contacts[activeAccountId] || []) : [];
 
@@ -195,10 +433,10 @@ export default function ChatWindow() {
   // OPTIMIZATION: Group member lookup O(1) với Map
   const groupMemberMap = React.useMemo(() => {
     const map = new Map<string, any>();
-    groupMembers.forEach(m => map.set(m.userId, m));
+    groupMembers.forEach(m => map.set(String(m.userId), m));
     return map;
   }, [groupMembers]);
-  const getGroupMember = (senderId: string) => groupMemberMap.get(senderId);
+  const getGroupMember = (senderId: string) => groupMemberMap.get(String(senderId));
 
   // Check if current user is group owner or deputy - can recall any member's message
   const isGroupAdmin = React.useMemo(() => {
@@ -239,7 +477,7 @@ export default function ChatWindow() {
       const existingLayoutId = getGroupLayoutId(msg);
       if (existingLayoutId) { commitFbGroup(); continue; }
       // Chỉ gom media message Facebook
-      const isFbMedia = msg.channel === 'facebook' && isMediaType(msg.msg_type, msg.content);
+      const isFbMedia = isFacebook(msg.channel) && isMediaType(msg.msg_type, msg.content, msg.attachments);
       if (!isFbMedia) { commitFbGroup(); continue; }
 
       if (fbCurrentGroup.length === 0) {
@@ -381,9 +619,9 @@ export default function ChatWindow() {
       const isPoll = mt === 'group.poll';
       const isVideo = isVideoType(mt);
       const isVoice = mt === 'chat.voice' || mt === 'audio';
-      const isGroupMedia = !isPoll && !isVideo && !isVoice && !!groupedFirstMsgs[msg.msg_id];
-      const isMedia = !isCard && !isEcard && !isSticker && !isGroupMedia && !isRtf && !isPoll && !isVideo && !isVoice && isMediaType(mt, mc);
-      const isFile = !isCard && !isEcard && !isSticker && !isMedia && !isRtf && !isPoll && !isVideo && !isVoice && isFileType(mt, mc);
+      const isGroupMedia = !isPoll && !isVoice && !!groupedFirstMsgs[msg.msg_id];
+      const isMedia = !isCard && !isEcard && !isSticker && !isGroupMedia && !isRtf && !isPoll && !isVideo && !isVoice && isMediaType(mt, mc, msg.attachments);
+      const isFile = !isCard && !isEcard && !isSticker && !isMedia && !isRtf && !isPoll && !isVideo && !isVoice && isFileType(mt, mc, msg.attachments);
 
       // Parse content 1 lần
       const content = (isMedia || isFile || isCard || isEcard || isSticker || isGroupMedia || isRtf || isPoll || isVideo || isVoice)
@@ -834,20 +1072,40 @@ export default function ChatWindow() {
 
     const buildAndSetGroupInfo = (members: any[], name?: string, avatar?: string, creatorId?: string, adminIds?: string[]) => {
       const c = useChatStore.getState().contacts[accountId]?.find(x => x.contact_id === groupId);
+      // Telegram's GetParticipants(Recent) is only a partial page for large
+      // groups. Never replace exact/history senders already present in the
+      // cache with that page, otherwise their name/avatar regresses to UID.
+      const current = useAppStore.getState().groupInfoCache?.[accountId]?.[groupId];
+      const membersById = new Map<string, any>();
+      for (const member of current?.members || []) {
+        if (member?.userId != null) membersById.set(String(member.userId), member);
+      }
+      for (const m of members) {
+        const userId = String(m.member_id || m.memberId || m.userId || '');
+        if (!userId) continue;
+        const previous = membersById.get(userId);
+        membersById.set(userId, {
+          ...previous,
+          userId,
+          displayName: m.display_name || m.displayName || previous?.displayName || '',
+          avatar: m.avatar || previous?.avatar || '',
+          role: m.role ?? previous?.role ?? 0,
+          status: m.status || previous?.status || '',
+          statusText: m.statusText || previous?.statusText || '',
+          lastSeenAt: m.lastSeenAt ?? previous?.lastSeenAt,
+          onlineUntil: m.onlineUntil ?? previous?.onlineUntil,
+        });
+      }
+      const mergedMembers = Array.from(membersById.values());
       setGroupInfo(accountId, groupId, {
         groupId,
-        name: name || c?.display_name || groupId,
-        avatar: avatar || c?.avatar_url || '',
-        memberCount: members.length,
-        members: members.map((m: any) => ({
-          userId: m.member_id || m.memberId || m.userId,
-          displayName: m.display_name || m.displayName || '',
-          avatar: m.avatar || '',
-          role: m.role ?? 0,
-        })),
-        creatorId: creatorId || '',
-        adminIds: adminIds || [],
-        settings: undefined,
+        name: name || current?.name || c?.display_name || groupId,
+        avatar: avatar || current?.avatar || c?.avatar_url || '',
+        memberCount: Math.max(Number(current?.memberCount || 0), mergedMembers.length),
+        members: mergedMembers,
+        creatorId: creatorId || current?.creatorId || '',
+        adminIds: adminIds || current?.adminIds || [],
+        settings: current?.settings,
         fetchedAt: Date.now(),
       });
     };
@@ -858,11 +1116,71 @@ export default function ChatWindow() {
         if (res?.members?.length) {
           // DB có members → dùng luôn
           buildAndSetGroupInfo(res.members);
+          const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === accountId);
+          const needsTelegramHydration = isTelegramCh(acc?.channel)
+            && res.members.some((member: any) =>
+              !member?.avatar
+              || !member?.display_name
+              || String(member.display_name) === String(member.member_id)
+            );
+          if (needsTelegramHydration) {
+            const adapter = getAdapter('telegram_user') as any;
+            const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: 200 });
+            if (memberRes?.success) {
+              const hydratedMembers = (memberRes.members || [])
+                .map((member: any) => ({
+                  memberId: String(member.id || member.userId || ''),
+                  displayName: [member.firstName, member.lastName].filter(Boolean).join(' ')
+                    || member.username || member.displayName || '',
+                  avatar: member.avatar || '',
+                  role: Number(member.role || 0),
+                  status: member.status || '', statusText: member.statusText || '',
+                  lastSeenAt: member.lastSeenAt, onlineUntil: member.onlineUntil,
+                }))
+                .filter((member: any) => member.memberId);
+              if (hydratedMembers.length) {
+                await DataAccessor.saveGroupMembers({ zaloId: accountId, groupId, members: hydratedMembers });
+                buildAndSetGroupInfo(hydratedMembers);
+              }
+            }
+          }
         } else {
           // DB không có members → fallback gọi API getGroupInfo
           try {
             const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === accountId);
-            if (!acc || (acc.channel || 'zalo') !== 'zalo') return;
+            if (!acc) return;
+
+            if (isTelegramCh(acc.channel)) {
+              const adapter = getAdapter('telegram_user') as any;
+              const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: 200 });
+              if (!memberRes?.success) return;
+
+              const rawMembers = (memberRes.members || [])
+                .map((member: any) => {
+                  const memberId = String(member.id || member.userId || '');
+                  const displayName = [member.firstName, member.lastName].filter(Boolean).join(' ')
+                    || member.username
+                    || member.displayName
+                    || '';
+                  return {
+                    memberId,
+                    displayName,
+                    avatar: member.avatar || '',
+                    role: Number(member.role || 0),
+                    status: member.status || '', statusText: member.statusText || '',
+                    lastSeenAt: member.lastSeenAt, onlineUntil: member.onlineUntil,
+                  };
+                })
+                .filter((member: any) => member.memberId);
+
+              if (rawMembers.length) {
+                DataAccessor.saveGroupMembers({ zaloId: accountId, groupId, members: rawMembers }).catch(() => {});
+              }
+              buildAndSetGroupInfo(rawMembers);
+              return;
+            }
+
+            if (isNonZalo(acc.channel)) return;
             const auth = buildZaloAuth(acc, accountId);
             const infoRes = await ipc.zalo?.getGroupInfo({ auth, groupId });
             const info = infoRes?.response?.gridInfoMap?.[groupId] || infoRes?.response;
@@ -919,30 +1237,116 @@ export default function ChatWindow() {
   useEffect(() => {
     if (!activeAccountId || !activeThreadId) return;
     const contactList = useChatStore.getState().contacts[activeAccountId] || [];
-    const isGroup = contactList.find(c => c.contact_id === activeThreadId)?.contact_type === 'group' ||
-                    contactList.find(c => c.contact_id === activeThreadId)?.contact_type === '1';
+    const threadContact = contactList.find(c => c.contact_id === activeThreadId);
+    const isGroup = threadContact?.contact_type === 'group'
+      || String(threadContact?.contact_type) === '1'
+      || msgs.some(message => Number(message.thread_type) === 1);
     if (!isGroup) return;
 
     const unknownSenders = new Set<string>();
     for (const msg of msgs) {
       if (msg.is_sent === 1 || !msg.sender_id) continue;
-      const senderKey = `${activeAccountId}__${msg.sender_id}__${activeThreadId}`;
+      const senderId = String(msg.sender_id);
+      const senderKey = `${activeAccountId}__${senderId}__${activeThreadId}`;
+
+      const ct = getContact(senderId);
+      if (ct?.display_name && ct.display_name !== senderId && !/^-?\d+$/.test(ct.display_name) && ct.avatar_url) {
+        continue; // contacts already has both identity and avatar
+      }
+      const gm = getGroupMember(senderId);
+      if (gm?.displayName && gm.displayName !== senderId && !/^-?\d+$/.test(gm.displayName) && gm.avatar) {
+        continue; // group cache already has both identity and avatar
+      }
       if (requestedMemberInfoRef.current.has(senderKey)) continue;
 
-      const ct = getContact(msg.sender_id);
-      if (ct?.display_name && ct.display_name !== msg.sender_id && !/^\d+$/.test(ct.display_name)) {
-        continue; // đã có tên trong contacts → skip
-      }
-      const gm = getGroupMember(msg.sender_id);
-      if (gm?.displayName && gm.displayName !== msg.sender_id && !/^\d+$/.test(gm.displayName)) {
-        continue; // đã có tên trong group cache → skip
-      }
-
-      unknownSenders.add(msg.sender_id);
+      unknownSenders.add(senderId);
     }
 
     if (unknownSenders.size === 0) return;
 
+    // Telegram: batch fetch group members to resolve names
+    const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
+    if (acc && isTelegramCh(acc.channel)) {
+      // Mark before awaiting. Updating groupInfoCache reruns this effect; doing
+      // it afterwards used to launch many identical getGroupMembers requests.
+      for (const senderId of unknownSenders) {
+        requestedMemberInfoRef.current.add(`${activeAccountId}__${senderId}__${activeThreadId}`);
+      }
+      const senderMessageIds = msgs
+        .filter(message => unknownSenders.has(String(message.sender_id)) && /^\d+$/.test(String(message.msg_id)))
+        .map(message => String(message.msg_id));
+      const senderIds = Array.from(unknownSenders);
+      (async () => {
+        const resolvedSenderIds = new Set<string>();
+        const resolvedAvatarIds = new Set<string>();
+        try {
+          console.log('[TG_MEMBER_HYDRATE_REQUEST]', {
+            accountId: activeAccountId, threadId: activeThreadId,
+            senderIds, messageIds: senderMessageIds,
+          });
+          const res = await ipc.telegramUser?.hydrateMessageSenders({
+            accountId: activeAccountId,
+            chatId: activeThreadId,
+            messageIds: senderMessageIds,
+            senderIds,
+          });
+          console.log('[TG_MEMBER_HYDRATE_RESULT]', {
+            accountId: activeAccountId, threadId: activeThreadId,
+            requestedSenderIds: senderIds,
+            resolvedSenderIds: (res?.members || []).map((member: any) => String(member.id || member.userId || '')),
+            success: !!res?.success, error: res?.error || '',
+          });
+          if (res?.success && res.members) {
+            let resolved = 0;
+            const currentCache = useAppStore.getState().groupInfoCache?.[activeAccountId!]?.[activeThreadId!];
+            const membersById = new Map((currentCache?.members || []).map(member => [String(member.userId), member]));
+            for (const m of res.members) {
+              const mId = String(m.id || '');
+              const mName = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.username || '';
+              if (mId && mName) {
+                resolvedSenderIds.add(mId);
+                const previous = membersById.get(mId);
+                if (m.avatar || previous?.avatar) resolvedAvatarIds.add(mId);
+                membersById.set(mId, {
+                  ...previous,
+                  userId: mId, displayName: mName, avatar: m.avatar || previous?.avatar || '',
+                  role: Number(m.role ?? previous?.role ?? 0), status: m.status || '',
+                  statusText: m.statusText || '', lastSeenAt: m.lastSeenAt,
+                  onlineUntil: m.onlineUntil,
+                });
+                resolved++;
+              }
+            }
+            console.log(`[ChatWindow] Resolved ${resolved}/${res.members.length} Telegram sender names`);
+            // Save to groupInfoCache so getGroupMember() works
+            if (resolved > 0) {
+              useAppStore.getState().setGroupInfo(activeAccountId!, activeThreadId!, {
+                ...currentCache,
+                name: currentCache?.name || activeContact?.display_name || '',
+                avatar: currentCache?.avatar || activeContact?.avatar_url || '',
+                members: Array.from(membersById.values()),
+                fetchedAt: Date.now(),
+                groupId: activeThreadId!,
+                memberCount: currentCache?.memberCount || membersById.size,
+              });
+            }
+            // Force re-render
+            useChatStore.setState({ messagesLoading: false });
+          }
+        } catch (err: any) {
+          console.error(`[ChatWindow] Telegram getGroupMembers error:`, err.message);
+        } finally {
+          for (const senderId of unknownSenders) {
+            const retryKey = `${activeAccountId}__${senderId}__${activeThreadId}`;
+            if (!resolvedSenderIds.has(senderId)) requestedMemberInfoRef.current.delete(retryKey);
+            else setTimeout(() => requestedMemberInfoRef.current.delete(retryKey), resolvedAvatarIds.has(senderId) ? 5 * 60_000 : 60_000);
+          }
+        }
+      })();
+      return;
+    }
+
+    // Zalo: fetch individual user info
     for (const senderId of unknownSenders) {
       const senderKey = `${activeAccountId}__${senderId}__${activeThreadId}`;
       requestedMemberInfoRef.current.add(senderKey);
@@ -951,7 +1355,7 @@ export default function ChatWindow() {
       const load = async () => {
         try {
           const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
-          if (!acc || (acc.channel || 'zalo') !== 'zalo') return;
+          if (!acc || isNonZalo(acc.channel)) return;
           const auth = buildZaloAuth(acc, activeAccountId);
           const res = await ipc.zalo?.getUserInfo({ auth, userId: senderId });
           if (!res?.success || !res.response) return;
@@ -1038,11 +1442,16 @@ export default function ChatWindow() {
     const el = messagesContainerRef.current;
     if (!el || !activeThreadId) return;
     let rafId = 0;
+    // Preload threshold: trigger when user scrolls within 800px of top
+    // (~10-15 messages depending on message height)
+    const SCROLL_THRESHOLD = 800;
     const onScroll = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = 0;
-        if (el.scrollTop < 200 && hasMoreRef.current && !loadingMoreRef.current) {
+        // Only trigger loadMore if container is actually scrollable (content > viewport)
+        const isScrollable = el.scrollHeight > el.clientHeight + 10;
+        if (el.scrollTop < SCROLL_THRESHOLD && hasMoreRef.current && !loadingMoreRef.current && isScrollable) {
           loadMoreFnRef.current();
         }
       });
@@ -1078,10 +1487,40 @@ export default function ChatWindow() {
       if (!shouldRestoreScrollRef.current) {
         const isInitial = isInitialThreadLoadRef.current;
         isInitialThreadLoadRef.current = false;
-        const isFb = activeContact?.channel === 'facebook';
         if (isInitial) {
-          const realCount = msgs.filter(m => !m.msg_id.startsWith('temp_')).length;
-          if (realCount < 20) setHasMore(false);
+          const realMsgs = msgs.filter(m => !m.msg_id.startsWith('temp_'));
+          const realCount = realMsgs.length;
+          if (realCount < 20) {
+            setHasMore(false);
+          } else if (realCount === 20 && activeAccountId && activeThreadId) {
+            // Exactly 20 items → probe if there are actually more
+            const minTs = realMsgs.reduce((min, m) => {
+              const ts = m.timestamp || 0;
+              return ts > 0 && ts < min ? ts : min;
+            }, Infinity);
+            if (minTs < Infinity) {
+              DataAccessor.getMessages({
+                zaloId: activeAccountId,
+                threadId: activeThreadId,
+                limit: 1,
+                before: minTs,
+                topicId: activeTopicId || undefined,
+              }).then(probeRes => {
+                if (!probeRes?.messages?.length) setHasMore(false);
+              }).catch(() => {});
+            }
+          }
+          // After initial load, check if viewport needs more messages
+          // This handles the case where initial 20 messages don't fill the viewport
+          setTimeout(() => {
+            const el = messagesContainerRef.current;
+            if (el && hasMoreRef.current && !loadingMoreRef.current) {
+              const needsMore = el.scrollHeight <= el.clientHeight + 100;
+              if (needsMore) {
+                loadMoreFnRef.current();
+              }
+            }
+          }, 500);
           return; // initial scroll handled by consolidated effect
         }
         // Realtime messages
@@ -1097,34 +1536,66 @@ export default function ChatWindow() {
   }, [msgs, activeAccountId, activeContact?.channel, scrollToBottom]);
 
   // Sau khi prepend tin cũ: khôi phục vị trí scroll để không bị nhảy lên đầu
+  // useLayoutEffect chạy ĐỒNG BỘ sau DOM update nhưng TRƯỚC khi paint → không bao giờ nhảy
   useLayoutEffect(() => {
-    if (shouldRestoreScrollRef.current && messagesContainerRef.current) {
-      const delta = messagesContainerRef.current.scrollHeight - savedScrollHeightRef.current;
-      messagesContainerRef.current.scrollTop = delta > 0 ? delta : 0;
-      shouldRestoreScrollRef.current = false;
+    if (!shouldRestoreScrollRef.current || !messagesContainerRef.current) return;
+    shouldRestoreScrollRef.current = false;
+    const el = messagesContainerRef.current;
+    const savedHeight = savedScrollHeightRef.current;
+    if (savedHeight > 0) {
+      const delta = el.scrollHeight - savedHeight;
+      if (delta > 0) {
+        el.scrollTop = delta;
+      }
     }
   }, [msgs.length]);
 
   const getAuth = () => {
     const acc = getActiveAccount();
     if (!acc) return null;
-    if ((acc.channel || 'zalo') !== 'zalo') return buildZaloAuth(acc, activeAccountId);
+    if (isNonZalo(acc.channel)) return buildZaloAuth(acc, activeAccountId);
     return buildZaloAuth(acc, activeAccountId);
   };
 
   // Tải thêm tin nhắn cũ dùng timestamp cursor (tránh lỗi offset khi có tin real-time)
   const handleLoadMore = async () => {
-    if (!activeAccountId || !activeThreadId || loadingMore || !hasMore) return;
+    // Double-guard: check refs to prevent race conditions
+    if (!activeAccountId || !activeThreadId || loadingMoreRef.current || !hasMoreRef.current) return;
     setLoadingMore(true);
+    loadingMoreRef.current = true;
     setLoadError(false);
 
-    // Lấy timestamp của tin nhắn CŨ nhất đang hiển thị (bỏ qua temp)
-    const oldest = msgs.find(m => !m.msg_id.startsWith('temp_'));
-    const before = oldest?.timestamp;
-    if (!before) {
-      // Không có tin nhắn thực → không có thêm gì để tải
+    // Safety: reset loadingMore if it's been stuck for > 10 seconds
+    const safetyTimer = setTimeout(() => {
+      if (loadingMoreRef.current) {
+        console.warn('[LOADMORE] Safety reset: loadingMore stuck for >10s');
+        setLoadingMore(false);
+        loadingMoreRef.current = false;
+      }
+    }, 10000);
+
+    // Re-read msgs from store to get the freshest oldest message
+    // IMPORTANT: Use reduce to find MIN timestamp, not array order (array might not be sorted)
+    const currentMsgs = useChatStore.getState().messages[getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId)] || [];
+    const realMsgs = currentMsgs.filter(m => !m.msg_id.startsWith('temp_'));
+    if (realMsgs.length === 0) {
+      // Store is empty — might be a race condition with initial load.
+      // Do NOT set hasMore=false here; just abort and let the initial load handle it.
+      setLoadingMore(false);
+      loadingMoreRef.current = false;
+      return;
+    }
+    // Find the message with the minimum timestamp (oldest)
+    const oldestTimestamp = realMsgs.reduce((min, m) => {
+      const ts = m.timestamp || 0;
+      return ts > 0 && ts < min ? ts : min;
+    }, Infinity);
+    const before = oldestTimestamp < Infinity ? oldestTimestamp : 0;
+    if (!before || before <= 0) {
+      // Không có tin nhắn thực hoặc timestamp invalid → không có thêm gì để tải
       setHasMore(false);
       setLoadingMore(false);
+      loadingMoreRef.current = false;
       return;
     }
 
@@ -1144,6 +1615,7 @@ export default function ChatWindow() {
           threadId: activeThreadId,
           limit: 20,
           before,
+          topicId: activeTopicId || undefined,
         });
         res = { messages: restResult?.items || [] };
       } else {
@@ -1152,6 +1624,7 @@ export default function ChatWindow() {
           threadId: activeThreadId,
           limit: 20,
           before,
+          topicId: activeTopicId || undefined,
         });
       }
       if (res?.messages?.length > 0) {
@@ -1164,7 +1637,7 @@ export default function ChatWindow() {
         // Convert reply_to_id → quote_data for Facebook messages so reply previews render
         const missingLookup: Array<{ msgId: string; replyToId: string }> = [];
         const mapped = res.messages.map((m: any) => {
-          if (m.reply_to_id && !m.quote_data) {
+          if (m.channel !== 'telegram_user' && m.reply_to_id && !m.quote_data) {
             const orig = msgLookup.get(m.reply_to_id);
             if (orig) {
               return { ...m, quote_data: JSON.stringify({ msgId: m.reply_to_id, msg: orig.content || '', senderId: '', msgType: orig.type || 'text' }) };
@@ -1174,14 +1647,22 @@ export default function ChatWindow() {
           }
           return m;
         });
-        prependMessages(activeAccountId, activeThreadId, [...mapped].reverse());
+        // Count messages BEFORE prepend to detect if any new messages were added
+        const storeKey = getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId);
+        const countBefore = (useChatStore.getState().messages[storeKey] || []).length;
+        prependMessages(activeAccountId, activeThreadId, [...mapped].reverse(), activeTopicId);
+        const countAfter = (useChatStore.getState().messages[storeKey] || []).length;
+        // If NO new messages were added (all duplicates), set hasMore = false
+        if (countAfter === countBefore) {
+          setHasMore(false);
+          return;
+        }
         // Async fixup: query DB for original messages not in the loaded batch
-        const storeKey = `${activeAccountId}_${activeThreadId}`;
         if (missingLookup.length > 0 && activeAccountId && activeThreadId) {
           (async () => {
             for (const item of missingLookup) {
               try {
-                const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, msgId: item.replyToId });
+                const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, threadId: activeThreadId, msgId: item.replyToId });
                 const origMsg = dbRes?.message;
                 if (origMsg?.msg_type || origMsg?.content) {
                   const store = useChatStore.getState();
@@ -1197,18 +1678,82 @@ export default function ChatWindow() {
                         msgType: origMsg.msg_type || 'text',
                       }),
                     };
-                    store.setMessages(activeAccountId!, activeThreadId, msgs);
+                    store.setMessages(activeAccountId!, activeThreadId, msgs, activeTopicId);
                   }
                 }
               } catch {}
             }
           })();
         }
-        if (res.messages.length < 20) setHasMore(false);
+        // Edge case: exactly 20 items returned → probe if there are actually more
+        if (res.messages.length === 20) {
+          const probeRes = await DataAccessor.getMessages({
+            zaloId: activeAccountId,
+            threadId: activeThreadId,
+            limit: 1,
+            before: res.messages[res.messages.length - 1].timestamp,
+            topicId: activeTopicId || undefined,
+          });
+          if (!probeRes?.messages?.length) setHasMore(false);
+        } else if (res.messages.length < 20) {
+          setHasMore(false);
+        }
         return;
       }
 
-      // Step 2: (Temporarily disabled) Facebook API fallback - fetchThreadMessages đang lỗi 500
+      // Step 2: Telegram API fallback — fetch older messages từ Telegram khi DB hết
+      const activeAcc = getActiveAccount();
+      if (activeAcc?.channel === 'telegram_user') {
+        // Re-read oldest msg ID from fresh store state (use MIN timestamp, not array order)
+        const freshMsgs = useChatStore.getState().messages[getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId)] || [];
+        const freshReal = freshMsgs.filter(m => !m.msg_id.startsWith('temp_'));
+        let oldestMsgId = '';
+        let minTs = Infinity;
+        for (const m of freshReal) {
+          const ts = m.timestamp || 0;
+          if (ts > 0 && ts < minTs) {
+            minTs = ts;
+            oldestMsgId = m.msg_id;
+          }
+        }
+        if (oldestMsgId) {
+          try {
+            const tgRes = await ipc.telegramUser?.getMessages({
+              accountId: activeAccountId,
+              chatId: activeThreadId,
+              offsetId: Number(oldestMsgId),
+              limit: 20,
+              topicRootMessageId: activeTopicId || undefined,
+            });
+            if (tgRes?.success && tgRes.messages?.length > 0) {
+              // Re-read the updated oldest timestamp after Telegram API persisted messages
+              const updatedMsgs = useChatStore.getState().messages[getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId)] || [];
+              const updatedOldest = updatedMsgs.find(m => !m.msg_id.startsWith('temp_'));
+              const updatedBefore = updatedOldest?.timestamp || before;
+              // Telegram API đã persist vào DB, query lại từ DB
+              const dbRes = await DataAccessor.getMessages({
+                zaloId: activeAccountId,
+                threadId: activeThreadId,
+                limit: 20,
+                before: updatedBefore,
+                topicId: activeTopicId || undefined,
+              });
+              if (dbRes?.messages?.length > 0) {
+                useChatStore.getState().prependMessages(activeAccountId!, activeThreadId, dbRes.messages, activeTopicId);
+                if (dbRes.messages.length < 20) setHasMore(false);
+                return;
+              }
+            }
+            // Telegram API returned empty — might be temporary, don't permanently disable
+            // setHasMore(false) is NOT called here to allow retry on next scroll
+          } catch {
+            // API error — don't disable hasMore, allow retry
+          }
+        }
+        shouldRestoreScrollRef.current = false;
+        return;
+      }
+
       // Step 3: Không có thêm tin nhắn
       setHasMore(false);
       shouldRestoreScrollRef.current = false;
@@ -1216,7 +1761,9 @@ export default function ChatWindow() {
       shouldRestoreScrollRef.current = false;
       setLoadError(true);
     } finally {
+      clearTimeout(safetyTimer);
       setLoadingMore(false);
+      loadingMoreRef.current = false;
     }
   };
 
@@ -1234,15 +1781,15 @@ export default function ChatWindow() {
       // Detect channel from the message or contact
       const contactList = contacts[activeAccountId || ''] || [];
       const contact = contactList.find(c => c.contact_id === msg.thread_id);
-      const ch = msg.channel || contact?.channel || 'zalo';
+      const ch = msg.channel || contact?.channel || CHANNEL.ZALO;
 
-      if (ch === 'facebook') {
-        await channelIpc.unsendMessage('facebook', {
+      if (isNonZalo(ch)) {
+        await channelIpc.unsendMessage(ch, {
           accountId: activeAccountId || '',
           messageId: msg.msg_id,
           threadId: msg.thread_id,
         });
-      } else {
+      } else if (isZalo(ch)) {
       const isMsgSent = !!msg.is_sent;
       const messagePayload = JSON.stringify({
         data: {
@@ -1271,12 +1818,19 @@ export default function ChatWindow() {
     const auth = getAuth();
     if (!auth) return;
     try {
+      const contactList = contacts[activeAccountId || ''] || [];
+      const contact = contactList.find(c => c.contact_id === msg.thread_id);
+      const ch = msg.channel || contact?.channel || CHANNEL.ZALO;
+      if (isNonZalo(ch)) {
+        await (channelIpc as any).unsendMessage(ch, { accountId: activeAccountId || '', messageId: msg.msg_id, threadId: msg.thread_id });
+      } else {
       const messagePayload = JSON.stringify({
         data: { msgId: msg.msg_id, cliMsgId: msg.cli_msg_id || msg.msg_id, uidFrom: msg.sender_id },
         threadId: msg.thread_id,
         type: msg.thread_type,
       });
       await ipc.zalo?.deleteMessage({ auth, message: messagePayload, onlyMe: true });
+      }
       // Đánh dấu đã xoá trong DB (recalled) thay vì xoá hẳn - nhất quán với thu hồi
       if (activeAccountId) {
         useChatStore.getState().recallMessage(activeAccountId, msg.msg_id, msg.thread_id);
@@ -1303,21 +1857,24 @@ export default function ChatWindow() {
     try {
       const contactList = contacts[activeAccountId || ''] || [];
       const contact = contactList.find(c => c.contact_id === msg.thread_id);
-      const ch = msg.channel || contact?.channel || 'zalo';
+      const ch = msg.channel || contact?.channel || CHANNEL.ZALO;
 
       // Optimistic update: show reaction immediately in UI
       const accId = activeAccountId || '';
       useChatStore.getState().updateMessageReaction(accId, msg.thread_id, msg.msg_id, accId, emoji);
 
-      if (ch === 'facebook') {
-        await channelIpc.addReaction('facebook', {
+      // Persist reaction to DB immediately (so it survives conversation switch)
+      DataAccessor.updateReaction?.({ zaloId: accId, msgId: msg.msg_id, userId: accId, emoji }).catch(() => {});
+
+      if (isNonZalo(ch)) {
+        await channelIpc.addReaction(ch, {
           accountId: accId,
           messageId: msg.msg_id,
           emoji,
           threadId: msg.thread_id,
           action: 'add',
         });
-      } else {
+      } else if (isZalo(ch)) {
         const auth = getAuth();
         if (!auth) return;
         const reactionKey = EMOJI_TO_REACTION[emoji] || 'HEART';
@@ -1337,21 +1894,21 @@ export default function ChatWindow() {
     try {
       const contactList = contacts[activeAccountId || ''] || [];
       const contact = contactList.find(c => c.contact_id === msg.thread_id);
-      const ch = msg.channel || contact?.channel || 'zalo';
+      const ch = msg.channel || contact?.channel || CHANNEL.ZALO;
 
       // Optimistic update: remove reaction immediately in UI
       const accId = activeAccountId || '';
       useChatStore.getState().updateMessageReaction(accId, msg.thread_id, msg.msg_id, accId, '');
 
-      if (ch === 'facebook') {
-        await channelIpc.addReaction('facebook', {
+      if (isNonZalo(ch)) {
+        await channelIpc.addReaction(ch, {
           accountId: accId,
           messageId: msg.msg_id,
           emoji: '',
           threadId: msg.thread_id,
           action: 'remove',
         });
-      } else {
+      } else if (isZalo(ch)) {
         const auth = getAuth();
         if (!auth) return;
         const messagePayload = JSON.stringify({
@@ -1380,7 +1937,11 @@ export default function ChatWindow() {
       const contact = getContact(msg.sender_id);
       const groupMember = getGroupMember(msg.sender_id);
       // Không dùng sender_id (UID dài) làm tên - fallback về 'Người dùng'
-      senderName = contact?.alias || contact?.display_name || groupMember?.displayName || 'Người dùng';
+      const contactName = contact?.alias || contact?.display_name || '';
+      senderName = (contactName && contactName !== msg.sender_id ? contactName : '')
+        || groupMember?.displayName
+        || contactName
+        || 'Người dùng';
     }
     const pin = buildPinFromMsg(msg, senderName);
 
@@ -1389,6 +1950,16 @@ export default function ChatWindow() {
     const overLimit = !alreadyPinned && pins.length >= 3;
 
     try {
+      // Server-side pin for Telegram
+      const ch = msg.channel || 'zalo';
+      if (ch === 'telegram_user') {
+        const res = await ipc.telegramUser?.pinMessage({ accountId: activeAccountId, chatId: activeThreadId, messageId: String(msg.msg_id) });
+        if (!res?.success) {
+          showNotification('Ghim trên Telegram thất bại: ' + (res?.error || 'Unknown'), 'error');
+          return;
+        }
+      }
+
       await ipc.db?.pinMessage({ zaloId: activeAccountId, threadId: activeThreadId, pin });
       // Reload pins
       const res = await ipc.db?.getPinnedMessages({ zaloId: activeAccountId, threadId: activeThreadId });
@@ -1442,14 +2013,30 @@ export default function ChatWindow() {
     // 2. Message not in DOM - fetch its info to get timestamp, then load messages around it
     if (!activeAccountId || !activeThreadId) return;
     try {
-      const msgRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, msgId });
-      const targetMsg = msgRes?.message;
-      if (!targetMsg?.timestamp) return;
+      const msgRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, threadId: activeThreadId, msgId });
+      let targetMsg = msgRes?.message;
+      if (!targetMsg?.timestamp && isTelegramCh(activeContact?.channel)) {
+        showNotification('Đang tải tin nhắn từ Telegram...', 'info');
+        const ensured = await ipc.telegramUser?.ensureMessageAvailable({
+          accountId: activeAccountId,
+          chatId: activeThreadId,
+          messageId: msgId,
+        });
+        if (!ensured?.success) {
+          showNotification(ensured?.error || 'Không tải được tin nhắn đã ghim', 'error');
+          return;
+        }
+        targetMsg = ensured.message;
+      }
+      if (!targetMsg?.timestamp) {
+        showNotification('Không tìm thấy tin nhắn trong hội thoại này', 'error');
+        return;
+      }
 
       const aroundRes = await DataAccessor.getMessagesAround({
         zaloId: activeAccountId,
         threadId: activeThreadId,
-        msgId: String(targetMsg.msg_id || targetMsg.timestamp),
+        timestamp: Number(targetMsg.timestamp),
         limit: 200,
       });
       const aroundMsgs = aroundRes?.messages;
@@ -1460,7 +2047,7 @@ export default function ChatWindow() {
       for (const m of aroundMsgs) msgLookup2.set(m.msg_id, { content: m.content || '', type: m.msg_type || 'text' });
       const missingLookup2: Array<{ msgId: string; replyToId: string }> = [];
       const mappedAround = aroundMsgs.map((m: any) => {
-        if (m.reply_to_id && !m.quote_data) {
+        if (m.channel !== 'telegram_user' && m.reply_to_id && !m.quote_data) {
           const orig = msgLookup2.get(m.reply_to_id);
           if (orig) {
             return { ...m, quote_data: JSON.stringify({ msgId: m.reply_to_id, msg: orig.content || '', senderId: '', msgType: orig.type || 'text' }) };
@@ -1472,17 +2059,17 @@ export default function ChatWindow() {
       });
 
       // Replace current messages with the "around" set
-      setMessages(activeAccountId, activeThreadId, mappedAround);
+      setMessages(activeAccountId, activeThreadId, mappedAround, activeTopicId);
       // Async fixup: query DB for original messages not in the loaded batch
       if (missingLookup2.length > 0 && activeAccountId && activeThreadId) {
         (async () => {
           for (const item of missingLookup2) {
             try {
-              const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, msgId: item.replyToId });
+              const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, threadId: activeThreadId, msgId: item.replyToId });
               const origMsg = dbRes?.message;
               if (origMsg?.msg_type || origMsg?.content) {
                 const store = useChatStore.getState();
-                const key = `${activeAccountId}_${activeThreadId}`;
+                const key = getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId);
                 const msgs = (store.messages[key] || []).slice();
                 const idx = msgs.findIndex((m2: any) => m2.msg_id === item.msgId);
                 if (idx >= 0 && !msgs[idx].quote_data) {
@@ -1495,7 +2082,7 @@ export default function ChatWindow() {
                       msgType: origMsg.msg_type || 'text',
                     }),
                   };
-                  store.setMessages(activeAccountId!, activeThreadId, msgs);
+                  store.setMessages(activeAccountId!, activeThreadId, msgs, activeTopicId);
                 }
               }
             } catch {}
@@ -1521,6 +2108,16 @@ export default function ChatWindow() {
     }
   };
 
+  useEffect(() => {
+    const handleJumpRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountId?: string; threadId?: string; messageId?: string }>).detail;
+      if (!detail?.messageId || detail.accountId !== activeAccountId || detail.threadId !== activeThreadId) return;
+      void handleScrollToMsg(detail.messageId);
+    };
+    window.addEventListener('chat:jumpToMessage', handleJumpRequest);
+    return () => window.removeEventListener('chat:jumpToMessage', handleJumpRequest);
+  });
+
   // Tải lại tin nhắn mới nhất và cuộn xuống cuối - dùng khi đang xem tin nhắn cũ (isViewingHistory)
   const handleReturnToLatest = async () => {
     if (!activeAccountId || !activeThreadId || loadingLatest) return;
@@ -1531,6 +2128,7 @@ export default function ChatWindow() {
         threadId: activeThreadId,
         limit: 50,
         offset: 0,
+        topicId: activeTopicId || undefined,
       });
       if (res?.messages?.length) {
         // Build reply lookup map for reply_to_id → quote_data
@@ -1538,7 +2136,7 @@ export default function ChatWindow() {
         for (const m of res.messages) msgLookup3.set(m.msg_id, { content: m.content || '', type: m.msg_type || 'text' });
         const missingLookup3 = [];
         const mappedLatest = res.messages.map((m: any) => {
-          if (m.reply_to_id && !m.quote_data) {
+          if (m.channel !== 'telegram_user' && m.reply_to_id && !m.quote_data) {
             const orig = msgLookup3.get(m.reply_to_id);
             if (orig) {
               return { ...m, quote_data: JSON.stringify({ msgId: m.reply_to_id, msg: orig.content || '', senderId: '', msgType: orig.type || 'text' }) };
@@ -1549,18 +2147,18 @@ export default function ChatWindow() {
           return m;
         });
         const sorted = [...mappedLatest].reverse();
-        setMessages(activeAccountId, activeThreadId, sorted);
+        setMessages(activeAccountId, activeThreadId, sorted, activeTopicId);
         setHasMore(res.messages.length >= 50);
         // Async fixup: query DB for original messages not in the loaded batch
         if (missingLookup3.length > 0 && activeAccountId && activeThreadId) {
           (async () => {
             for (const item of missingLookup3) {
               try {
-                const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, msgId: item.replyToId });
+                const dbRes = await DataAccessor.getMessageById({ zaloId: activeAccountId, threadId: activeThreadId, msgId: item.replyToId });
                 const origMsg = dbRes?.message;
                 if (origMsg?.msg_type || origMsg?.content) {
                   const store = useChatStore.getState();
-                  const mkey = activeAccountId + '_' + activeThreadId;
+                  const mkey = getMessageCacheKey(activeAccountId, activeThreadId, activeTopicId);
                   const msgs = (store.messages[mkey] || []).slice();
                   const idx = msgs.findIndex((m2) => m2.msg_id === item.msgId);
                   if (idx >= 0 && !msgs[idx].quote_data) {
@@ -1573,7 +2171,7 @@ export default function ChatWindow() {
                         msgType: origMsg.msg_type || 'text',
                       }),
                     };
-                    store.setMessages(activeAccountId, activeThreadId, msgs);
+                    store.setMessages(activeAccountId, activeThreadId, msgs, activeTopicId);
                   }
                 }
               } catch {}
@@ -1596,7 +2194,7 @@ export default function ChatWindow() {
   const buildImageEntry = React.useCallback((msg: any): MediaViewerImage | null => {
     const mt = msg?.msg_type || '';
     const mc = msg?.content || '';
-    if (!isMediaType(mt, mc) || isVideoType(mt)) return null;
+    if (!isMediaType(mt, mc, msg?.attachments) || isVideoType(mt)) return null;
 
     let localUrl = '';
     let remoteUrl = '';
@@ -1812,6 +2410,31 @@ export default function ChatWindow() {
         </div>
       )}
 
+      {/* ── Telegram Forum topic bar — shows active topic with back-to-topics ── */}
+      {activeTopicId && activeTopicTitle && activeContact?.channel === 'telegram_user' && (
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/80 border-b border-gray-700/50 text-xs">
+          <button
+            onClick={() => {
+              // Return to topic list: clear activeTopicId → ConversationList shows ForumTopicsPanel
+              useChatStore.setState({
+                activeTopicId: null,
+                activeForumTopicId: null,
+                activeTopicTitle: null,
+              });
+            }}
+            className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+            title="Quay lại danh sách chủ đề"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            <span>{activeForumTopicId ? 'Chủ đề' : 'Bài đăng'}</span>
+          </button>
+          <span className="text-gray-600">/</span>
+          <span className="text-gray-200 font-medium truncate">{activeTopicTitle}</span>
+        </div>
+      )}
+
       {/* ── Pinned messages + notes bar - chỉ hiện khi ready ── */}
       {threadReady && activeAccountId && activeThreadId && (
         <div ref={pinnedBarWrapperRef}>
@@ -1824,6 +2447,7 @@ export default function ChatWindow() {
               onScrollToMsg={handleScrollToMsg}
               pinnedNotes={pinnedNotes}
               onNoteClick={(note) => setNoteModal({ topicId: note.topicId, title: note.title, creatorName: note.creatorName, createTime: note.createTime })}
+              channel={activeContact?.channel}
             />
           )}
         </div>
@@ -1968,7 +2592,13 @@ export default function ChatWindow() {
           }
 
           // ── System / group-event notification ─────────────────────────
-          if (msg.msg_type === 'system') {
+          // Older Telegram history rows accidentally stored pin events as
+          // `deleted`. They have sender_id=system and must stay an emote-like
+          // centered notice, not fall through to a user message bubble.
+          const isTelegramPinnedNotice = msg.channel === 'telegram_user'
+            && String(msg.sender_id || '') === 'system'
+            && /tin nhắn\s+đã được ghim/i.test(String(msg.content || ''));
+          if (msg.msg_type === 'system' || isTelegramPinnedNotice) {
             // Parse updateMembers từ attachments nếu có
             let sysMembers: Array<{id: string; dName: string; avatar: string}> = [];
             try {
@@ -2014,6 +2644,7 @@ export default function ChatWindow() {
             return (
               <div key={msg.msg_id + idx} className="flex justify-center my-2 px-4">
                 <span className="text-xs text-gray-400 bg-gray-700/60 px-3 py-1.5 rounded-full text-center max-w-sm leading-relaxed inline-flex items-center flex-wrap gap-x-0.5 justify-center">
+                  {isTelegramPinnedNotice && <span aria-hidden="true" className="mr-0.5">📌</span>}
                   {renderSysContent()}
                 </span>
               </div>
@@ -2028,9 +2659,13 @@ export default function ChatWindow() {
 
           // Contact/display info - needed for recalled bubble too
           const contact = !isSent ? getContact(msg.sender_id) : null;
-          const groupMember = (!isSent && !contact) ? getGroupMember(msg.sender_id) : null;
+          // A sparse contact row is common for a Telegram group sender. It must
+          // not hide the richer parent-group member cache (especially in forums).
+          const groupMember = !isSent ? getGroupMember(msg.sender_id) : null;
+          const contactName = contact?.alias || contact?.display_name || '';
+          const preferredContactName = contactName && contactName !== msg.sender_id ? contactName : '';
           const avatarUrl = toLocalMediaUrl(contact?.avatar_url || groupMember?.avatar || '');
-          const displayName = contact?.alias || contact?.display_name || groupMember?.displayName || msg.sender_id;
+          const displayName = preferredContactName || groupMember?.displayName || contactName || msg.sender_id;
 
           const isRecalled = msg.is_recalled === 1 || msg.status === 'recalled' || msg.msg_type === 'recalled';
 
@@ -2070,7 +2705,7 @@ export default function ChatWindow() {
                                 if (activeAccountId && !avatarRefreshAttempted.current.has(msg.sender_id)) {
                                   avatarRefreshAttempted.current.add(msg.sender_id);
                                   const contact = getContact(msg.sender_id);
-                                  handleAvatarError({ ownerId: activeAccountId, contactId: msg.sender_id, channel: contact?.channel || 'zalo' })
+                                  handleAvatarError({ ownerId: activeAccountId, contactId: msg.sender_id, channel: contact?.channel || CHANNEL.ZALO })
                                     .then(newUrl => {
                                       if (newUrl) {
                                         updateContact(activeAccountId!, { contact_id: msg.sender_id, avatar_url: newUrl });
@@ -2109,10 +2744,11 @@ export default function ChatWindow() {
           const isVoiceMsg = cached?.isVoice ?? (msg.msg_type === 'chat.voice' || msg.msg_type === 'audio');
           const isBankCardMsg = isBankCardType(msg.msg_type, msg.content);
           const isLocationMsg = msg.msg_type === 'chat.location.new';
-          const isGroupMedia = cached?.isGroupMedia ?? (!isPollMsg && !isVideoMsg && !isVoiceMsg && !!groupedFirstMsgs[msg.msg_id]);
+          const telegramPostMeta = getTelegramPostMeta(msg);
+          const isGroupMedia = cached?.isGroupMedia ?? (!isPollMsg && !isVoiceMsg && !!groupedFirstMsgs[msg.msg_id]);
           const groupMediaMsgs = isGroupMedia ? groupedFirstMsgs[msg.msg_id] : null;
-          const isMediaMsg = cached?.isMedia ?? (!isCardMsg && !isEcardMsg && !isStickerMsg && !isGroupMedia && !isRtf && !isPollMsg && !isVideoMsg && !isVoiceMsg && !isBankCardMsg && !isLocationMsg && isMediaType(msg.msg_type, msg.content));
-          const isFileMsg = cached?.isFile ?? (!isCardMsg && !isEcardMsg && !isStickerMsg && !isMediaMsg && !isRtf && !isPollMsg && !isVideoMsg && !isVoiceMsg && !isBankCardMsg && !isLocationMsg && isFileType(msg.msg_type, msg.content));
+          const isMediaMsg = cached?.isMedia ?? (!isCardMsg && !isEcardMsg && !isStickerMsg && !isGroupMedia && !isRtf && !isPollMsg && !isVideoMsg && !isVoiceMsg && !isBankCardMsg && !isLocationMsg && isMediaType(msg.msg_type, msg.content, msg.attachments));
+          const isFileMsg = cached?.isFile ?? (!isCardMsg && !isEcardMsg && !isStickerMsg && !isMediaMsg && !isRtf && !isPollMsg && !isVideoMsg && !isVoiceMsg && !isBankCardMsg && !isLocationMsg && isFileType(msg.msg_type, msg.content, msg.attachments));
           const content = cached?.content ?? (isMediaMsg || isFileMsg || isCardMsg || isEcardMsg || isStickerMsg || isGroupMedia || isRtf || isPollMsg || isVideoMsg || isVoiceMsg || isBankCardMsg || isLocationMsg ? '' : parseContent(msg.content, msg.msg_type));
 
           // Sticker nhóm: nhiều sticker liền nhau từ cùng người gửi trong 30 phút
@@ -2121,7 +2757,7 @@ export default function ChatWindow() {
 
 
           // Reactions: parse new PHP-like format or legacy format
-          const reactionCounts = parseReactions(msg.reactions);
+          const reactionCounts = parseReactions(msg.reactions, msg.channel);
           const hasReactions = Object.keys(reactionCounts).length > 0;
 
           // Selection state for this message
@@ -2218,7 +2854,7 @@ export default function ChatWindow() {
                                 if (activeAccountId && !avatarRefreshAttempted.current.has(msg.sender_id)) {
                                   avatarRefreshAttempted.current.add(msg.sender_id);
                                   const contact = getContact(msg.sender_id);
-                                  handleAvatarError({ ownerId: activeAccountId, contactId: msg.sender_id, channel: contact?.channel || 'zalo' })
+                                  handleAvatarError({ ownerId: activeAccountId, contactId: msg.sender_id, channel: contact?.channel || CHANNEL.ZALO })
                                     .then(newUrl => {
                                       if (newUrl) {
                                         updateContact(activeAccountId!, { contact_id: msg.sender_id, avatar_url: newUrl });
@@ -2259,13 +2895,24 @@ export default function ChatWindow() {
                     {!isSent && !isEcardMsg && msg.thread_type === 1 && showTime && displayName && displayName !== msg.sender_id && (
                       <p className="text-xs text-gray-400 mb-0.5 px-1 truncate max-w-full">{displayName}</p>
                     )}
-                    <div className={`rounded-2xl text-sm break-words min-w-0 overflow-hidden ${
+                    <div className={`rounded-2xl text-sm break-words min-w-0 max-w-full overflow-hidden ${
+                      telegramPostMeta ? 'max-w-[520px] bg-[#202b3c] border border-sky-500/25 shadow-lg rounded-xl' :
                       isMediaMsg || isGroupMedia || isFileMsg || isCardMsg || isEcardMsg || isStickerMsg || isBankCardMsg ? '' : isSent
                         ? 'px-3 py-2 bg-blue-400/40 text-white border border-blue-200 dark:border-blue-600/50 rounded-br-sm'
                         : 'px-3 py-2 bg-gray-700 text-gray-200 border border-gray-200 dark:border-gray-600 rounded-bl-sm'
                     } ${useEmployeeStore.getState().mode === 'employee' && (msg.send_status === 'pending' ? 'opacity-60' : msg.send_status === 'sending' ? 'opacity-80' : '')}`}>
+                    {telegramPostMeta && (
+                      <div className="flex items-center justify-between gap-3 border-b border-sky-500/15 px-3 py-2 text-[11px] text-sky-300">
+                        <span className="font-semibold uppercase tracking-wide">Bài đăng kênh</span>
+                        {telegramPostMeta.postAuthor && <span className="truncate text-gray-400">{telegramPostMeta.postAuthor}</span>}
+                      </div>
+                    )}
+                    <div className={telegramPostMeta ? 'px-3 py-2' : undefined}>
                     {/* Quote preview - supports both pre-built quote_data and reply_to_id fallback */}
-                    {(msg.quote_data || msg.reply_to_id) && (() => {
+                    {(msg.quote_data || (msg.reply_to_id && !(
+                      msg.channel === 'telegram_user' && msg.topic_id != null &&
+                      String(msg.reply_to_id) === String(msg.topic_id)
+                    ))) && (() => {
                       // Build quote object from quote_data or fallback to reply_to_id + msgs lookup
                       let q: any;
                       if (msg.quote_data) {
@@ -2283,7 +2930,9 @@ export default function ChatWindow() {
 
                       try {
                       //  Ưu tiên imageUrl đã lưu, sau đó extract từ msg/attach
-                        const quotedImgUrl = q.imageUrl || extractQuoteImage(q.msg, q.attach, q.msgType);
+                        const quotedImgUrl = q.imageUrl
+                          || (q.imageLocalPath ? toLocalMediaUrl(q.imageLocalPath) : '')
+                          || extractQuoteImage(q.msg, q.attach, q.msgType);
                         // Nếu vẫn không có URL, tìm trong danh sách tin nhắn theo msgId
                         let lookupImgUrl = '';
                         // Khi q.msg rỗng (ví dụ Zalo gửi TQuote với msg="" cho chat.recommended/cliMsgType=38)
@@ -2300,7 +2949,7 @@ export default function ChatWindow() {
                             if (origMsg.msg_type && origMsg.msg_type !== 'text') {
                               q.msgType = origMsg.msg_type;
                             }
-                            if (!quotedImgUrl && isMediaType(origMsg.msg_type, origMsg.content)) {
+                            if (!quotedImgUrl && isMediaType(origMsg.msg_type, origMsg.content, origMsg.attachments)) {
                               lookupImgUrl = extractMediaUrl(origMsg);
                             }
                             // Lấy content từ tin nhắn gốc nếu q.msg rỗng
@@ -2424,11 +3073,8 @@ export default function ChatWindow() {
                             if (attKey) videoPath = lp[attKey];
                           }
                         } catch {}
-                        if (!videoPath && msg.channel === 'facebook') {
-                          try {
-                            const atts = JSON.parse(msg.attachments || '[]');
-                            if (atts[0]?.localPath) videoPath = atts[0].localPath;
-                          } catch {}
+                        if (!videoPath && isFacebook(msg.channel)) {
+                          videoPath = getLocalMediaPath(msg, 'video') || getLocalMediaPath(msg);
                         }
                         return <FBVideoThumb videoPath={videoPath} />;
                       }}
@@ -2464,7 +3110,7 @@ export default function ChatWindow() {
                       )}
                       renderText={() => (
                         <>
-                          <TextWithMentions text={content} allContacts={contactList} groupMembersList={groupMembers}
+                          <TextWithMentions text={content} channel={msg.channel} allContacts={contactList} groupMembersList={groupMembers}
                             highlight={searchHighlightQuery}
                             onMentionClick={(uid, e) => setUserProfilePopup({ userId: uid, x: e.clientX, y: e.clientY })} />
                           {msg.is_edited === 1 && (
@@ -2484,7 +3130,7 @@ export default function ChatWindow() {
                                         else next.add(msg.msg_id);
                                         return next;
                                       })}
-                                      className="ml-1 text-[10px] font-medium text-blue-300/70 hover:text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
+                                      className="ml-1 text-[10px] font-medium text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
                                     >
                                       {revealedEditIds.has(msg.msg_id) ? 'Ẩn' : 'Xem nội dung cũ'}
                                     </button>
@@ -2519,12 +3165,37 @@ export default function ChatWindow() {
                         </>
                       )}
                     />
+                    </div>
+                    {telegramPostMeta && (
+                      <div className="flex items-center gap-4 border-t border-sky-500/15 px-3 py-2 text-[11px] text-gray-400">
+                        {telegramPostMeta.views > 0 && <span>◉ {telegramPostMeta.views.toLocaleString('vi-VN')} lượt xem</span>}
+                        {telegramPostMeta.forwards > 0 && <span>↗ {telegramPostMeta.forwards.toLocaleString('vi-VN')}</span>}
+                        <button
+                          type="button"
+                          disabled={telegramPostMeta.comments <= 0}
+                          className={telegramPostMeta.comments > 0 ? 'font-medium text-sky-400 hover:text-sky-300' : 'cursor-default'}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (!activeAccountId || !activeThreadId || telegramPostMeta.comments <= 0) return;
+                            useChatStore.getState().setMessages(activeAccountId, activeThreadId, [], msg.msg_id);
+                            useChatStore.setState({
+                              activeTopicId: String(msg.msg_id),
+                              activeForumTopicId: null,
+                              activeTopicTitle: `Bình luận bài đăng`,
+                              messagesLoading: true,
+                            });
+                          }}
+                        >
+                          💬 {telegramPostMeta.comments.toLocaleString('vi-VN')} bình luận
+                        </button>
+                      </div>
+                    )}
                   </div>
 
 
                   {/* Single reaction button - position absolute at bottom corner (side matching bubble alignment) */}
                   {channelCap.supportsReaction && !isEcardMsg && !isGroupedStickerFirst && (() => {
-                    const rFull = parseReactionsFull(msg.reactions);
+                    const rFull = parseReactionsFull(msg.reactions, msg.channel);
                     const myEmoji = activeAccountId
                       ? (Object.entries(rFull.emoji || {}).find(([, d]) => (d as any).users?.[activeAccountId] > 0)?.[0] || null)
                       : null;
@@ -2542,7 +3213,9 @@ export default function ChatWindow() {
                         {reactionPickerMsgId === msg.msg_id && (
                           <div className={`absolute bottom-full flex flex-col bg-gray-800 border border-gray-600 rounded-2xl shadow-2xl z-30 p-1.5${isSent ? ' right-0' : ' left-0'}`}>
                             <div className="flex items-center gap-0.5">
-                              {(['❤️', '😄', '😮', '😢', '😡', '👍'] as const).map((e) => (
+                              {(isTelegramCh(msg.channel)
+                                ? ['👍', '👎', '❤️', '🔥', '🥰', '👏', '😁', '🤔', '🤯', '😢', '🎉']
+                                : ['❤️', '😄', '😮', '😢', '😡', '👍']).map((e) => (
                                 <button key={e}
                                   onClick={() => { handleReact(msg, e); setReactionPickerMsgId(null); }}
                                   className={`text-xl p-1 rounded-lg hover:bg-gray-700 hover:scale-125 transition-all ${myEmoji === e ? 'bg-gray-700 ring-1 ring-blue-400' : ''}`}
@@ -2558,12 +3231,29 @@ export default function ChatWindow() {
                           </div>
                         )}
                         {/* Button: reaction badge when reacted, 👍 when not */}
-                        {hasReactions ? (
+                        {hasReactions && isTelegramCh(msg.channel) ? (
+                          <div className="flex items-center gap-1 select-none">
+                            {Object.entries(reactionCounts).sort((a, b) => b[1] - a[1]).map(([emoji, count]) => (
+                              <button
+                                key={emoji}
+                                onClick={() => setReactionPopup({ msg, activeEmoji: emoji })}
+                                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs shadow-sm transition-colors ${
+                                  myEmoji === emoji
+                                    ? 'border-blue-600 bg-gray-700 text-gray-200 hover:bg-gray-600'
+                                    : 'border-gray-600 bg-gray-700 text-gray-200 hover:bg-gray-600'
+                                }`}
+                              >
+                                <span>{displayReactionEmoji(emoji)}</span>
+                                <span className="font-medium">{count}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : hasReactions ? (
                           <button
                             onClick={() => setReactionPopup({ msg, activeEmoji: 'all' })}
                             className="flex items-center gap-0.5 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-full px-1.5 py-0.5 text-xs shadow-sm select-none transition-colors"
                           >
-                            {sortedEmojis.map(e => <span key={e}>{e}</span>)}
+                            {sortedEmojis.map(e => <span key={e}>{displayReactionEmoji(e)}</span>)}
                             {totalReactions > 1 && <span className="text-gray-300 ml-0.5 text-[11px]">{totalReactions}</span>}
                           </button>
                         ) : (
@@ -2614,7 +3304,7 @@ export default function ChatWindow() {
                                 // Retry text: xóa msg cũ, gửi lại
                                 removeMessage(activeAccountId!, activeThreadId, msg.msg_id);
                                 const retryTempId = `retry_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-                                const isFb = msg.channel === 'facebook';
+                                const channel = (msg.channel || CHANNEL.ZALO) as any;
                                 useChatStore.getState().addMessage(activeAccountId!, activeThreadId, {
                                   msg_id: retryTempId, owner_zalo_id: activeAccountId!, thread_id: activeThreadId,
                                   thread_type: msg.thread_type, sender_id: activeAccountId!, content: msg.content,
@@ -2622,7 +3312,7 @@ export default function ChatWindow() {
                                   send_status: 'pending', temp_id: retryTempId, media_type: 'text',
                                   ...(msg.quote_data ? { quote_data: msg.quote_data } : {}),
                                 });
-                                import('@/lib/MessageQueue').then(({ messageQueue, extractMsgIdFromResponse }) => {
+                                import('@/lib/MessageQueue').then(({ messageQueue }) => {
                                   const auth = (() => {
                                     const acc = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
                                     return acc ? { cookies: acc.cookies, imei: acc.imei, userAgent: acc.user_agent, accountId: activeAccountId } : null;
@@ -2630,16 +3320,18 @@ export default function ChatWindow() {
                                   if (!auth) return;
                                   messageQueue.enqueue({
                                     tempId: retryTempId, zaloId: activeAccountId!, threadId: activeThreadId,
-                                    threadType: msg.thread_type, channel: isFb ? 'facebook' : 'zalo',
+                                    threadType: msg.thread_type, channel,
                                     sendFn: async () => {
                                       try {
-                                        if (isFb) {
-                                          const r = await ipc.fb?.sendMessage({ accountId: activeAccountId!, threadId: activeThreadId, body: msg.content });
-                                          return { success: !!r?.success, msgId: (r as any)?.messageId, error: r?.error };
-                                        } else {
-                                          const res = await ipc.zalo?.sendMessage({ auth, threadId: activeThreadId, type: msg.thread_type, message: msg.content });
-                                          return { success: true, ...extractMsgIdFromResponse(res, 'zalo') };
-                                        }
+                                        const adapter = getAdapter(channel);
+                                        const result = await adapter.sendMessage({
+                                          accountId: activeAccountId!,
+                                          threadId: activeThreadId,
+                                          body: msg.content,
+                                          threadType: msg.thread_type,
+                                          auth,
+                                        });
+                                        return { success: result.success, msgId: result.messageId, error: result.error };
                                       } catch (err: any) { return { success: false, error: err?.message || String(err) }; }
                                     },
                                   });
@@ -2765,7 +3457,9 @@ export default function ChatWindow() {
 
         const firstUid = typingUids[0];
         const firstContact = contactList.find(c => c.contact_id === firstUid);
-        const firstAvatar = firstContact?.avatar_url || '';
+        const firstMember = groupCache?.members?.find((m: any) => m.userId === firstUid);
+        const rawAvatar = firstContact?.avatar_url || firstMember?.avatar || '';
+        const firstAvatar = rawAvatar ? toLocalMediaUrl(rawAvatar, activeAccountId) : '';
         const firstInitial = (resolveName(firstUid) || '?').charAt(0).toUpperCase();
 
         return (
@@ -2866,6 +3560,10 @@ export default function ChatWindow() {
           onDeleteFromDb={handleDeleteFromDb}
           onReact={handleReact}
           onPin={handlePin}
+          onEdit={(m) => {
+            setEditingMsg(m);
+            setContextMenu(null);
+          }}
           showNotification={showNotification}
         />
       )}
@@ -2883,7 +3581,7 @@ export default function ChatWindow() {
             // Detect channel from forwarded message
             const forwardContact = contacts[activeAccountId || '']?.find((c: any) =>
               messages[0] ? c.contact_id === messages[0].thread_id : false);
-            const forwardChannel = messages[0]?.channel || forwardContact?.channel || 'zalo';
+            const forwardChannel = messages[0]?.channel || forwardContact?.channel || CHANNEL.ZALO;
             // Chạy lần lượt ở background, không block UI
             (async () => {
               const total = messages.length * targets.length;
@@ -2934,6 +3632,7 @@ export default function ChatWindow() {
           groupMembers={groupMembers}
           currentUserId={activeAccountId || ''}
           onClose={() => setReactionPopup(null)}
+          ownerZaloId={activeAccountId || undefined}
         />
       )}
 
@@ -3021,8 +3720,8 @@ async function sendOneForward(
   const msgType = msg.msg_type || '';
   const content = msg.content || '';
   const isVideo = msgType === 'chat.video.msg';
-  const isFile = !isVideo && isFileType(msgType, content);
-  const isImage = !isVideo && !isFile && isMediaType(msgType, content);
+  const isFile = !isVideo && isFileType(msgType, content, msg.attachments);
+  const isImage = !isVideo && !isFile && isMediaType(msgType, content, msg.attachments);
   let localPath = '';
   try {
     const raw = typeof msg.local_paths === 'string' ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
@@ -3031,18 +3730,38 @@ async function sendOneForward(
     }
   } catch {}
 
-  if (channel === 'facebook' && accountId) {
+  if (isFacebook(channel) && accountId) {
     if ((isFile || isVideo || isImage) && localPath) {
-      await channelIpc.sendAttachment('facebook', { accountId, threadId: target.threadId, filePath: localPath, threadType: target.threadType });
+      await channelIpc.sendAttachment(channel as Channel, { accountId, threadId: target.threadId, filePath: localPath, threadType: target.threadType });
     } else if ((isFile || isVideo || isImage) && !localPath && msg.msg_id) {
       // Media không có file local → gửi native forward
       await ipc.fb?.forwardMessage({ accountId, messageId: String(msg.msg_id), targetThreadId: target.threadId, isGroup: target.threadType === 1 });
     } else {
       const text = composeText || extractMsgText(msg);
-      await channelIpc.sendMessage('facebook', { accountId, threadId: target.threadId, body: text, threadType: target.threadType });
+      await channelIpc.sendMessage(channel as Channel, { accountId, threadId: target.threadId, body: text, threadType: target.threadType });
     }
     if (composeText && (isFile || isVideo || isImage) && localPath) {
-      await channelIpc.sendMessage('facebook', { accountId, threadId: target.threadId, body: composeText, threadType: target.threadType });
+      await channelIpc.sendMessage(channel as Channel, { accountId, threadId: target.threadId, body: composeText, threadType: target.threadType });
+    }
+    return;
+  }
+
+  if (isTelegramCh(channel) && accountId) {
+    // Telegram forward: use native forwardMessages for media without local file,
+    // otherwise re-send content through adapter.
+    const adapter = getAdapter(channel as Channel);
+    const sourceThreadId = msg.thread_id; // source conversation for native forward
+    if ((isFile || isVideo || isImage) && localPath) {
+      await adapter.sendAttachment({ accountId, threadId: target.threadId, filePath: localPath, threadType: target.threadType });
+    } else if ((isFile || isVideo || isImage) && !localPath && msg.msg_id && sourceThreadId) {
+      // Media without local file → native Telegram forward
+      await adapter.forwardMessage({ accountId, messageId: String(msg.msg_id), targetThreadId: target.threadId, sourceThreadId, threadType: target.threadType });
+    } else {
+      const text = composeText || extractMsgText(msg);
+      await adapter.sendMessage({ accountId, threadId: target.threadId, body: text, threadType: target.threadType });
+    }
+    if (composeText && (isFile || isVideo || isImage) && localPath) {
+      await adapter.sendMessage({ accountId, threadId: target.threadId, body: composeText, threadType: target.threadType });
     }
     return;
   }

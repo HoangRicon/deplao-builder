@@ -8,12 +8,124 @@ import {useChatStore} from '@/store/chatStore';
 import {useAccountStore} from '@/store/accountStore';
 import {useAppStore} from '@/store/appStore';
 import ipc from '@/lib/ipc';
+import { getFileMetadata, getLocalMediaPath, getStatusDisplay, extractAttachments, getTelegramStickerMedia } from '@/lib/mediaResolver';
+import { isFacebook, isTelegram, isTelegramUser, isNonZalo, isZalo } from '@/lib/channelHelper';
 import DataAccessor from '@/lib/data/DataAccessor';
 import {toLocalMediaUrl} from '@/lib/localMedia';
 import {formatPhone} from '@/utils/phoneUtils';
 import PhoneDisplay from '../common/PhoneDisplay';
 import {convertZaloEmojis} from '@/lib/chat/emojiUtils';
+import {linkifyText} from '@/lib/chat/messageParser';
 import {isMediaType} from '@/lib/chat/messageTypeUtils';
+import {TgsBubble} from './MessageBubbles';
+
+type TelegramMediaRepairResult = {
+    success: boolean;
+    localPaths?: Record<string, string>;
+    attachments?: any[];
+    msgType?: string;
+    error?: string;
+};
+
+const telegramMediaRepairInFlight = new Map<string, Promise<TelegramMediaRepairResult>>();
+
+/** Lazy-hydrate old Telegram media rows without replaying unread/UI events. */
+function useTelegramMediaRepair(msg: any, shouldAutoRepair: boolean) {
+    const [repairing, setRepairing] = React.useState(false);
+    const attemptedKeyRef = React.useRef('');
+    const accountId = String(msg?.owner_zalo_id || msg?.zaloId || '');
+    const threadId = String(msg?.thread_id || msg?.threadId || '');
+    const messageId = String(msg?.msg_id || msg?.id || '');
+    const repairKey = `${accountId}:${threadId}:${messageId}`;
+    const attachmentsValue = typeof msg?.attachments === 'string'
+        ? msg.attachments
+        : JSON.stringify(msg?.attachments || []);
+    const localPathsValue = typeof msg?.local_paths === 'string'
+        ? msg.local_paths
+        : JSON.stringify(msg?.local_paths || {});
+
+    React.useEffect(() => {
+        attemptedKeyRef.current = '';
+    }, [repairKey]);
+
+    const requestRepair = React.useCallback(async (
+        reason: 'missing_source' | 'image_load_error' | 'manual_retry',
+        force = false,
+    ) => {
+        if (!isTelegramUser(msg?.channel) || !accountId || !threadId || !messageId) return;
+        if (!force && attemptedKeyRef.current === repairKey) return;
+        attemptedKeyRef.current = repairKey;
+
+        let attachmentTypes: string[] = [];
+        let localPathState = 'empty';
+        try {
+            const parsedAttachments = JSON.parse(attachmentsValue || '[]');
+            attachmentTypes = Array.isArray(parsedAttachments)
+                ? parsedAttachments.map((attachment: any) => String(attachment?.type || '-'))
+                : [];
+        } catch {
+            attachmentTypes = ['invalid_json'];
+        }
+        try {
+            const parsedPaths = JSON.parse(localPathsValue || '{}');
+            localPathState = Object.values(parsedPaths || {}).some(Boolean) ? 'present' : 'empty';
+        } catch {
+            localPathState = 'invalid_json';
+        }
+
+        console.warn('[TelegramMedia] PHOTO_UNAVAILABLE', {
+            accountId,
+            threadId,
+            messageId,
+            msgType: msg?.msg_type || '-',
+            reason,
+            attachmentTypes,
+            localPathState,
+        });
+
+        setRepairing(true);
+        try {
+            let request = telegramMediaRepairInFlight.get(repairKey);
+            if (!request) {
+                request = ipc.telegramUser.repairMessageMedia({accountId, chatId: threadId, messageId})
+                    .finally(() => telegramMediaRepairInFlight.delete(repairKey));
+                telegramMediaRepairInFlight.set(repairKey, request);
+            }
+            const result = await request;
+            if (result?.success && result.localPaths) {
+                useChatStore.getState().updateMessageLocalPath(accountId, threadId, messageId, result.localPaths);
+                console.info('[TelegramMedia] PHOTO_REPAIRED', {
+                    accountId,
+                    threadId,
+                    messageId,
+                    msgType: result.msgType || msg?.msg_type || '-',
+                });
+            } else {
+                console.warn('[TelegramMedia] PHOTO_REPAIR_FAILED', {
+                    accountId,
+                    threadId,
+                    messageId,
+                    reason: result?.error || 'unknown',
+                });
+            }
+        } catch (error: any) {
+            console.warn('[TelegramMedia] PHOTO_REPAIR_FAILED', {
+                accountId,
+                threadId,
+                messageId,
+                reason: error?.message || String(error),
+            });
+        } finally {
+            setRepairing(false);
+        }
+    }, [accountId, attachmentsValue, localPathsValue, messageId, msg?.channel, msg?.msg_type, repairKey, threadId]);
+
+    React.useEffect(() => {
+        if (shouldAutoRepair) void requestRepair('missing_source');
+    }, [requestRepair, shouldAutoRepair]);
+
+    return {repairing, requestRepair};
+}
 
 // ─── EmployeeAvatar ────────────────────────────────────────────────
 // Hiển thị avatar của nhân viên trong bong bóng chat (bên phải).
@@ -46,6 +158,27 @@ export function EmployeeAvatar({name, avatarUrl}: { name: string; avatarUrl?: st
 /** FileBubble - hiển thị tin nhắn file đính kèm (share.file) */
 export function FileBubble({msg, isSent}: { msg: any; isSent: boolean }) {
     const [opening, setOpening] = React.useState(false);
+    const repairAttemptedRef = React.useRef(false);
+
+    // Auto-repair: tải file từ Telegram nếu chưa có local_paths
+    React.useEffect(() => {
+        if (repairAttemptedRef.current) return;
+        if (!isTelegramUser(msg?.channel)) return;
+        const lp = typeof msg?.local_paths === 'string' ? (() => { try { return JSON.parse(msg.local_paths); } catch { return {}; } })() : (msg?.local_paths || {});
+        if (lp.file || lp.main) return; // đã có file
+        repairAttemptedRef.current = true;
+        const accountId = msg.owner_zalo_id;
+        const chatId = msg.thread_id;
+        const messageId = msg.msg_id;
+        if (!accountId || !chatId || !messageId) return;
+        ipc.telegramUser?.repairMessageMedia({ accountId, chatId, messageId })
+            .then((result: any) => {
+                if (result?.success && result.localPaths) {
+                    useChatStore.getState().updateMessageLocalPath(accountId, chatId, messageId, result.localPaths);
+                }
+            })
+            .catch(() => {});
+    }, [msg?.msg_id, msg?.local_paths]);
 
     let fileTitle = '';
     let fileHref = '';
@@ -61,27 +194,29 @@ export function FileBubble({msg, isSent}: { msg: any; isSent: boolean }) {
     } catch {
     }
 
-    // Facebook: extract metadata from attachments column
-    if (msg.channel === 'facebook' && (!fileTitle || fileTitle === 'File')) {
+    // Facebook: extract metadata from attachments via MediaResolver
+    if (isFacebook(msg.channel) && (!fileTitle || fileTitle === 'File')) {
+        const fbMeta = getFileMetadata(msg);
+        if (fbMeta.title && fbMeta.title !== 'File') fileTitle = fbMeta.title;
+        if (fbMeta.href && !fileHref) fileHref = fbMeta.href;
+        if (fbMeta.fileSize && !fileSize) fileSize = String(fbMeta.fileSize);
+        if (fbMeta.ext && !fileExt) fileExt = fbMeta.ext;
+    }
+
+    // Telegram: lấy tên file từ attachments
+    if (isTelegramUser(msg.channel) && (!fileTitle || fileTitle === 'File')) {
         try {
-            const atts = JSON.parse(msg.attachments || '[]');
-            if (atts.length > 0) {
-                const a = atts[0];
-                if (a.name) fileTitle = a.name;
-                if (a.url && !fileHref) fileHref = a.url;
-                if (a.fileSize != null && !fileSize) fileSize = String(a.fileSize);
-                if (!fileExt && fileTitle) fileExt = fileTitle.split('.').pop()?.toLowerCase() || '';
+            const atts = typeof msg.attachments === 'string' ? JSON.parse(msg.attachments || '[]') : (msg.attachments || []);
+            const fileAtt = Array.isArray(atts) ? atts.find((a: any) => a?.type === 'file') : null;
+            if (fileAtt) {
+                if (fileAtt.file_name || fileAtt.name) fileTitle = fileAtt.file_name || fileAtt.name;
+                if (fileAtt.file_size || fileAtt.fileSize) fileSize = String(fileAtt.file_size || fileAtt.fileSize);
+                if (fileAtt.mime_type) {
+                    const ext = fileAtt.mime_type.split('/').pop();
+                    if (ext && !fileExt) fileExt = ext;
+                }
             }
-        } catch {
-        }
-        // Fallback: extract name from body text like "File: filename.ext"
-        if (!fileTitle && msg.content) {
-            const m = msg.content.match(/(?:📎|File:)\s*(.+)/);
-            if (m) {
-                fileTitle = m[1].trim();
-                if (!fileExt) fileExt = fileTitle.split('.').pop()?.toLowerCase() || '';
-            }
-        }
+        } catch {}
     }
 
     let localFilePath = '';
@@ -91,13 +226,9 @@ export function FileBubble({msg, isSent}: { msg: any; isSent: boolean }) {
     } catch {
     }
 
-    // Facebook: also check localPath inside attachments (temp sending state)
-    if (msg.channel === 'facebook' && !localFilePath) {
-        try {
-            const atts = JSON.parse(msg.attachments || '[]');
-            if (atts.length > 0 && atts[0].localPath) localFilePath = atts[0].localPath;
-        } catch {
-        }
+    // Facebook: also check localPath inside attachments via MediaResolver
+    if (isFacebook(msg.channel) && !localFilePath) {
+        localFilePath = getLocalMediaPath(msg, 'file');
     }
 
     const handleOpen = async () => {
@@ -198,7 +329,7 @@ export function FileBubble({msg, isSent}: { msg: any; isSent: boolean }) {
                                 </svg>
                                 <span>Đã có trên máy</span></>
                             : fileHref ? <span>Nhấn để tải</span>
-                                : (msg.channel === 'facebook' && isSent) ? <span>✓ Đã gửi</span>
+                                : (isFacebook(msg.channel) && isSent) ? <span>{getStatusDisplay(msg, true).text}</span>
                                     : <span>Đang tải về...</span>}
                 </p>
             </button>
@@ -282,15 +413,12 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
     } catch {
     }
 
-    // FB: use localPath from attachments for immediate preview
+    // FB/Telegram: use localPath from attachments for immediate preview via MediaResolver
     let fbLocalUrls: string[] = [];
-    if (msg.channel === 'facebook') {
-        try {
-            const atts = JSON.parse(msg.attachments || '[]');
-            fbLocalUrls = atts.map((a: any) => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
-            if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
-        } catch {
-        }
+    if (isNonZalo(msg.channel)) {
+        const atts = extractAttachments(msg);
+        fbLocalUrls = atts.map(a => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
+        if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
     }
 
     // Parse remote URL + caption
@@ -314,6 +442,12 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
             }
         }
     } catch {
+        // Not JSON (Telegram/Facebook) — content is plain text caption
+        const rawContent = (msg.content || '').trim();
+        // Only use as caption if it's not a media placeholder emoji
+        if (rawContent && !rawContent.startsWith('🖼️') && !rawContent.startsWith('🎬') && !rawContent.startsWith('🎞️') && !rawContent.startsWith('🎨') && !rawContent.startsWith('📎')) {
+            caption = rawContent;
+        }
     }
     if (!remoteUrl) {
         try {
@@ -327,12 +461,14 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
     // Nếu local lỗi (race condition file chưa kịp ghi) → tự fallback về CDN
     const displayUrl = useLocal ? (localUrl || remoteUrl) : (remoteUrl || localUrl);
     const viewUrl = remoteUrl || displayUrl;
+    const telegramRepair = useTelegramMediaRepair(msg, !displayUrl);
 
     const handleImgError = () => {
         if (useLocal && remoteUrl) {
             setUseLocal(false); // local lỗi → fallback CDN ngay, không flash
         } else {
             setLoadFailed(true);
+            void telegramRepair.requestRepair('image_load_error');
         }
     };
 
@@ -398,15 +534,20 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
     if (!displayUrl) {
         // Không có cả remote lẫn local - hiển thị placeholder tĩnh (không animation)
         return (
-            <div
-                className="flex items-center justify-center max-w-xs w-full h-32 rounded-xl bg-gray-700/40 text-gray-400 select-none">
+            <button
+                type="button"
+                onClick={() => void telegramRepair.requestRepair('manual_retry', true)}
+                disabled={!isTelegramUser(msg.channel) || telegramRepair.repairing}
+                title={isTelegramUser(msg.channel) ? 'Tải lại ảnh Telegram này' : undefined}
+                className="flex flex-col gap-1 items-center justify-center max-w-xs w-full h-32 rounded-xl bg-gray-700/40 text-gray-400 select-none disabled:cursor-default">
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"
                      className="opacity-30">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                     <circle cx="8.5" cy="8.5" r="1.5"/>
                     <polyline points="21 15 16 10 5 21"/>
                 </svg>
-            </div>
+                {telegramRepair.repairing && <span className="text-[10px] opacity-60">Đang tải lại...</span>}
+            </button>
         );
     }
 
@@ -457,9 +598,10 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
             className={`flex flex-col rounded-2xl overflow-hidden ring-1 ring-black/[0.12]${isSent ? ' rounded-br-sm' : ' rounded-bl-sm'}`}>
             {imgNode}
             <div
-                className={`px-3 py-2 text-sm break-words${isSent ? ' bg-blue-600 text-white' : ' bg-gray-700 text-gray-200'}`}>
+                className={`px-3 py-2 text-sm break-words${isSent ? ' bg-blue-400/40 text-white' : ' bg-gray-700 text-gray-200'}`}>
                 <TextWithMentions
                     text={caption}
+                    channel={msg.channel}
                     allContacts={allContacts}
                     groupMembersList={groupMembersList}
                     onMentionClick={onMentionClick}
@@ -904,7 +1046,27 @@ export function StickerGroupBubble({
 
 /** Trích xuất groupLayoutId từ tin nhắn ảnh gửi theo nhóm (is_group_layout=1) */
 export function getGroupLayoutId(msg: any): string | null {
-    if (!isMediaType(msg.msg_type, msg.content)) return null;
+    if (!isMediaType(msg.msg_type, msg.content, msg.attachments)) return null;
+    if (isTelegram(msg.channel)) {
+        // Telegram's grouped_id is authoritative for a mixed media album.
+        // A post can contain photos and videos in the same album, therefore a
+        // video must not be split into a separate bubble merely because it
+        // needs a different tile renderer.
+        const mediaType = String(msg.msg_type || '').toLowerCase();
+        const isAlbumMedia = mediaType === 'photo' || mediaType === 'image'
+            || mediaType === 'chat.photo' || mediaType === 'video'
+            || mediaType === 'chat.video.msg' || mediaType === 'gif';
+        if (!isAlbumMedia) return null;
+        try {
+            const attachments = typeof msg.attachments === 'string'
+                ? JSON.parse(msg.attachments || '[]')
+                : (msg.attachments || []);
+            const grouped = (Array.isArray(attachments) ? attachments : [attachments]).find((item: any) =>
+                (item?.type === 'telegram_grouped_media' || item?.type === 'telegram_post') && item?.grouped_id
+            );
+            if (grouped?.grouped_id) return `tg:${String(grouped.grouped_id)}`;
+        } catch {}
+    }
     try {
         const parsed = JSON.parse(msg.content || '{}');
         const params = typeof parsed.params === 'string' ? JSON.parse(parsed.params) : (parsed.params || {});
@@ -927,6 +1089,10 @@ export function MediaGroupBubble({
 }) {
     const sorted = React.useMemo(() => {
         return [...groupMsgs].sort((a, b) => {
+            if (isTelegram(a.channel) || isTelegram(b.channel)) {
+                return Number(a.timestamp || 0) - Number(b.timestamp || 0)
+                    || Number(a.msg_id || 0) - Number(b.msg_id || 0);
+            }
             try {
                 const pa = JSON.parse(a.content || '{}');
                 const ppa = typeof pa.params === 'string' ? JSON.parse(pa.params) : (pa.params || {});
@@ -938,22 +1104,38 @@ export function MediaGroupBubble({
             }
         });
     }, [groupMsgs]);
+    const telegramCaption = React.useMemo(() => {
+        const captionMessage = sorted.find((message) => {
+            if (!isTelegram(message.channel)) return false;
+            const text = String(message.content || '').trim();
+            return text && !/^(?:🖼️\s*)?(?:Hình ảnh|Image)$/i.test(text);
+        });
+        return captionMessage ? String(captionMessage.content || '').trim() : '';
+    }, [sorted]);
 
     // Chia thành hàng, mỗi hàng tối đa 4 ảnh
     const rows: any[][] = [];
     for (let i = 0; i < sorted.length; i += 4) rows.push(sorted.slice(i, i + 4));
 
     return (
-        <div className="flex flex-col gap-0.5 overflow-hidden rounded-xl max-w-xs ring-1 ring-black/[0.12]">
-            {rows.map((row, ri) => (
-                <div key={ri} className="flex gap-0.5">
-                    {row.map((m) => (
-                        <SingleImageInGroup key={m.msg_id} msg={m} onView={onView} isSelecting={isSelectingProp}
-                                            isSelected={selectedMsgIdsProp?.has(m.msg_id)}
-                                            onToggleSelect={onToggleSelect}/>
-                    ))}
+        <div className="flex flex-col overflow-hidden rounded-xl max-w-xs ring-1 ring-black/[0.12] bg-[#242f3d]">
+            <div className="flex flex-col gap-0.5">
+                {rows.map((row, ri) => (
+                    <div key={ri} className="flex gap-0.5">
+                        {row.map((m) => (
+                            <SingleImageInGroup key={m.msg_id} msg={m} onView={onView} isSelecting={isSelectingProp}
+                                                isSelected={selectedMsgIdsProp?.has(m.msg_id)}
+                                                onToggleSelect={onToggleSelect}/>
+                        ))}
+                    </div>
+                ))}
+            </div>
+            {telegramCaption && (
+                <div className="px-3 py-2 text-sm whitespace-pre-wrap break-words bg-gray-700 text-gray-200"
+                     style={{fontFamily: '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'}}>
+                    {telegramCaption}
                 </div>
-            ))}
+            )}
         </div>
     );
 }
@@ -990,15 +1172,12 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
     } catch {
     }
 
-    // FB: use localPath from attachments for immediate preview
+    // FB/Telegram: use localPath from attachments for immediate preview via MediaResolver
     let fbLocalUrls: string[] = [];
-    if (msg.channel === 'facebook') {
-        try {
-            const atts = JSON.parse(msg.attachments || '[]');
-            fbLocalUrls = atts.map((a: any) => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
-            if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
-        } catch {
-        }
+    if (isNonZalo(msg.channel)) {
+        const atts = extractAttachments(msg);
+        fbLocalUrls = atts.map(a => a.localPath ? toLocalMediaUrl(a.localPath) : (a.url || '')).filter(Boolean);
+        if (!localUrl && fbLocalUrls.length > 0) localUrl = fbLocalUrls[0];
     }
 
     let remoteUrl = '';
@@ -1010,23 +1189,24 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
         }
     } catch {
     }
-    // FB fallback: lấy URL từ attachments
-    if (!remoteUrl && msg.channel === 'facebook') {
-        try {
-            const attachments = JSON.parse(msg.attachments || '[]');
-            remoteUrl = attachments[0]?.url || attachments[0]?.href || attachments[0]?.thumb || '';
-        } catch {
-        }
+    // FB fallback: lấy URL từ attachments via MediaResolver
+    if (!remoteUrl && isFacebook(msg.channel)) {
+        const att = extractAttachments(msg)[0];
+        remoteUrl = att?.url || att?.href || att?.thumb || '';
     }
 
     // Remote-first: CDN hiển thị ngay; chuyển local khi file đã tải xong
     const displayUrl = useLocal ? (localUrl || remoteUrl) : (remoteUrl || localUrl);
     const viewUrl = remoteUrl || displayUrl;
 
+    const telegramRepair = useTelegramMediaRepair(msg, !displayUrl);
     const handleImgError = () => {
         if (useLocal && remoteUrl) {
             setUseLocal(false); // local lỗi → fallback CDN ngay
-        } else setLoadFailed(true);
+        } else {
+            setLoadFailed(true);
+            void telegramRepair.requestRepair('image_load_error');
+        }
     };
 
     const handleSaveAs = async (e: React.MouseEvent) => {
@@ -1049,8 +1229,12 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
 
     if (loadFailed || !displayUrl) {
         return (
-            <div
-                className="h-40 flex-1 min-w-0 bg-gray-700/50 flex items-center justify-center text-gray-400 select-none">
+            <button
+                type="button"
+                onClick={() => void telegramRepair.requestRepair('manual_retry', true)}
+                disabled={!isTelegramUser(msg.channel) || telegramRepair.repairing}
+                title={isTelegramUser(msg.channel) ? 'Tải lại ảnh Telegram này' : undefined}
+                className="h-40 flex-1 min-w-0 bg-gray-700/50 flex flex-col gap-1 items-center justify-center text-gray-400 select-none disabled:cursor-default">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"
                      className="opacity-30">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -1058,7 +1242,8 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
                     <polyline points="21 15 16 10 5 21"/>
                     {loadFailed && <line x1="2" y1="2" x2="22" y2="22"/>}
                 </svg>
-            </div>
+                {telegramRepair.repairing && <span className="text-[10px] opacity-60">Đang tải lại...</span>}
+            </button>
         );
     }
     const handleClick = (e: React.MouseEvent) => {
@@ -1069,6 +1254,48 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
             onView(viewUrl);
         }
     };
+
+    const isVideoTile = ['video', 'chat.video.msg', 'gif'].includes(String(msg.msg_type || '').toLowerCase());
+    if (isVideoTile && displayUrl) {
+        const openVideo = (e: React.MouseEvent) => {
+            if (isSelectingProp) {
+                e.stopPropagation();
+                onToggleSelect?.(msg.msg_id);
+            } else if (localFilePath) {
+                e.stopPropagation();
+                void ipc.file?.openPath(localFilePath);
+            }
+        };
+        return (
+            <div
+                className={`relative flex-1 min-w-0 group/singleimg cursor-pointer bg-black${isSelected ? ' ring-2 ring-blue-500' : ''}`}
+                onClick={openVideo}
+                title={localFilePath ? 'Mở video' : 'Video đang được tải'}
+            >
+                <video
+                    src={displayUrl}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="h-40 w-full object-cover bg-black"
+                    onError={handleImgError}
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <span className="w-9 h-9 rounded-full bg-black/60 border border-white/30 flex items-center justify-center text-white text-base pl-0.5">▶</span>
+                </div>
+                <div className="absolute inset-0 pointer-events-none ring-1 ring-inset ring-black/[0.18]"/>
+                {isSelectingProp && isSelected && (
+                    <div className="absolute inset-0 bg-blue-500/30 flex items-center justify-center pointer-events-none">
+                        <div className="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
 
     return (
         <div
@@ -1130,12 +1357,70 @@ export function StickerBubble({msg}: { msg: any }) {
     const [stickerUrl, setStickerUrl] = React.useState<string | null>(null);
     const [failed, setFailed] = React.useState(false);
     const [unsupported, setUnsupported] = React.useState(false);
+    // Force re-render counter when event:localPath updates this message
+    const [localPathVersion, setLocalPathVersion] = React.useState(0);
+
+    // Listen for event:localPath to re-render when sticker is downloaded
+    React.useEffect(() => {
+        if (!isTelegram(msg.channel)) return;
+        const handleLocalPath = (data: any) => {
+            if (data?.msgId === msg.msg_id || String(data?.msgId) === String(msg.msg_id)) {
+                setLocalPathVersion(v => v + 1);
+            }
+        };
+        const unsub = ipc.on?.('event:localPath', handleLocalPath);
+        return () => { unsub?.(); };
+    }, [msg.channel, msg.msg_id]);
 
     React.useEffect(() => {
         let cancelled = false;
+        setStickerUrl(null);
+        setFailed(false);
+        setUnsupported(false);
+
+        // Telegram media is already persisted by the main-process listener.
+        // Never fall through to Zalo's numeric sticker-id parser.
+        if (isTelegram(msg.channel)) {
+            const media = getTelegramStickerMedia(msg);
+            if (media?.localPath) {
+                if (media.format === 'tgs') {
+                    if (!cancelled) setStickerUrl(`tgs:${media.localPath}`);
+                    return;
+                }
+                const localUrl = toLocalMediaUrl(media.localPath);
+                if (localUrl) {
+                    if (!cancelled) setStickerUrl(localUrl);
+                    return;
+                }
+            }
+            if (media?.remoteUrl) {
+                if (!cancelled) setStickerUrl(media.remoteUrl);
+                return;
+            }
+
+            try {
+                const paths: Record<string, string> = typeof msg.local_paths === 'string'
+                    ? JSON.parse(msg.local_paths || '{}')
+                    : (msg.local_paths || {});
+                const localFile = paths.sticker || paths.file || paths.main || paths.video || '';
+                if (localFile) {
+                    if (localFile.toLowerCase().endsWith('.tgs')) {
+                        if (!cancelled) setStickerUrl(`tgs:${localFile}`);
+                    } else {
+                        const localUrl = toLocalMediaUrl(localFile);
+                        if (!cancelled && localUrl) setStickerUrl(localUrl);
+                    }
+                    return;
+                }
+            } catch {}
+
+            // A recognized sticker may still be waiting for event:localPath.
+            if (!media && !cancelled) setFailed(true);
+            return;
+        }
 
         // ── Facebook sticker ────────────────────────────────────────────────
-        if (msg.channel === 'facebook') {
+        if (isFacebook(msg.channel)) {
             // Check local file trước (đã được download từ main process)
             try {
                 const lp: Record<string, string> = typeof msg.local_paths === 'string'
@@ -1154,14 +1439,11 @@ export function StickerBubble({msg}: { msg: any }) {
             }
 
             // E2EE sticker không có directPath → unsupported (bridge không cung cấp)
-            try {
-                const atts = JSON.parse(msg.attachments || '[]');
-                const hasDirectPath = atts[0]?.directPath;
-                if (!hasDirectPath && !atts[0]?.url) {
-                    if (!cancelled) setUnsupported(true);
-                    return;
-                }
-            } catch {
+            const atts = extractAttachments(msg);
+            const hasDirectPath = atts[0]?.directPath;
+            if (!hasDirectPath && !atts[0]?.url) {
+                if (!cancelled) setUnsupported(true);
+                return;
             }
 
             // Có directPath nhưng chưa có local file → đang download, giữ loading
@@ -1235,7 +1517,7 @@ export function StickerBubble({msg}: { msg: any }) {
         return () => {
             cancelled = true;
         };
-    }, [msg.content, msg.local_paths, msg.attachments]);
+    }, [msg.content, msg.local_paths, msg.attachments, localPathVersion]);
 
     if (unsupported) {
         return (
@@ -1254,6 +1536,26 @@ export function StickerBubble({msg}: { msg: any }) {
             <div className="w-28 h-28 rounded-xl bg-gray-700/50 flex items-center justify-center animate-pulse">
                 <span className="text-2xl">🎭</span>
             </div>
+        );
+    }
+
+    if (stickerUrl.startsWith('tgs:')) {
+        return <TgsBubble filePath={stickerUrl.slice(4)}/>;
+    }
+
+    const telegramSticker = getTelegramStickerMedia(msg);
+    if (isTelegram(msg.channel) && (telegramSticker?.format === 'mp4' || telegramSticker?.format === 'webm')) {
+        return (
+            <video
+                src={stickerUrl}
+                autoPlay
+                loop
+                muted
+                playsInline
+                aria-label="Telegram animated sticker"
+                className="w-28 h-28 object-contain rounded-xl"
+                onError={() => setFailed(true)}
+            />
         );
     }
 
@@ -1431,10 +1733,10 @@ export function EcardBubble({msg, onManage}: { msg: any; onManage?: () => void }
                 {/* Nội dung */}
                 <div className="px-4 py-3 space-y-1">
                     {title && (
-                        <p className="text-white font-semibold text-sm leading-snug">{title}</p>
+                        <p className="text-white font-semibold text-sm leading-snug">{linkifyText(title)}</p>
                     )}
                     {description && (
-                        <p className="text-gray-400 text-xs leading-relaxed">{description}</p>
+                        <p className="text-gray-400 text-xs leading-relaxed">{linkifyText(description)}</p>
                     )}
                 </div>
                 {/* Actions - chỉ nút Quản lý nhóm */}
@@ -1741,10 +2043,15 @@ export function ContactCardBubble({parsed, isSent, onOpenProfile}: {
     const handleAddFriend = async (e: React.MouseEvent) => {
         e.stopPropagation();
         if (!resolvedUserId || sendingReq) return;
+        const account = getActiveAccount();
+        if (!account) return;
+        // Only supported for Zalo
+        if (isNonZalo(account.channel)) {
+            useAppStore.getState().showNotification('Tính năng chưa hỗ trợ cho kênh này', 'error');
+            return;
+        }
         setSendingReq(true);
         try {
-            const account = getActiveAccount();
-            if (!account) return;
             const auth = {cookies: account.cookies, imei: account.imei, userAgent: account.user_agent};
             const res = await ipc.zalo?.sendFriendRequest({
                 auth,
@@ -1926,7 +2233,7 @@ export function applyRtfStyles(text: string, styles: RtfStyle[], mentions?: RtfM
         const cs = charStyles[i];
         let j = i + 1;
         while (j < text.length && JSON.stringify(charStyles[j]) === JSON.stringify(cs)) j++;
-        const chunk = convertZaloEmojis(text.slice(i, j));
+        const chunk = linkifyText(convertZaloEmojis(text.slice(i, j)));
         const inlineStyle: React.CSSProperties = {};
         const cls: string[] = [];
         if (cs.bold) cls.push('font-bold');
@@ -1957,36 +2264,43 @@ export function applyRtfStyles(text: string, styles: RtfStyle[], mentions?: RtfM
         i = j;
     }
 
-    return <span className="whitespace-pre-wrap select-text break-word">{nodes}</span>;
+    return <span className="whitespace-pre-wrap select-text break-words" style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}>{nodes}</span>;
 }
 
 /** Render normal text, highlighting @mentions in blue, with optional click-to-profile */
 export function TextWithMentions({
                                      text,
+                                     channel,
                                      allContacts,
                                      groupMembersList,
                                      onMentionClick,
                                      highlight,
                                  }: {
     text: string;
+    channel?: string;
     allContacts?: any[];
     groupMembersList?: any[];
     onMentionClick?: (userId: string, e: React.MouseEvent) => void;
     highlight?: string;
 }) {
     if (!text) return null;
-    const converted = convertZaloEmojis(text);
+    // Telegram already sends Unicode (including a fallback glyph for custom
+    // emoji entities). Zalo's text-code converter must not rewrite it.
+    const converted = isTelegram(channel) ? text : convertZaloEmojis(text);
+    const emojiFontStyle: React.CSSProperties = isTelegram(channel)
+        ? { fontFamily: '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif' }
+        : {};
 
-    // Helper: wrap text segment with search highlight marks
+    // Helper: wrap text segment with search highlight marks + URL detection
     const applyHighlight = (str: string, key: string | number): React.ReactNode => {
-        if (!highlight || !highlight.trim()) return <span key={key}>{str}</span>;
+        if (!highlight || !highlight.trim()) return <span key={key}>{linkifyText(str)}</span>;
         const q = highlight.toLowerCase();
         const lower = str.toLowerCase();
         const parts: React.ReactNode[] = [];
         let last = 0;
         let hi = lower.indexOf(q, 0);
         while (hi !== -1) {
-            if (hi > last) parts.push(<span key={`${key}_t${hi}`}>{str.slice(last, hi)}</span>);
+            if (hi > last) parts.push(<span key={`${key}_t${hi}`}>{linkifyText(str.slice(last, hi))}</span>);
             parts.push(
                 <mark key={`${key}_h${hi}`} className="bg-yellow-400/40 text-yellow-200 rounded-sm px-0.5">
                     {str.slice(hi, hi + highlight.length)}
@@ -1995,8 +2309,8 @@ export function TextWithMentions({
             last = hi + highlight.length;
             hi = lower.indexOf(q, last);
         }
-        if (last < str.length) parts.push(<span key={`${key}_e${last}`}>{str.slice(last)}</span>);
-        return parts.length ? <React.Fragment key={key}>{parts}</React.Fragment> : <span key={key}>{str}</span>;
+        if (last < str.length) parts.push(<span key={`${key}_e${last}`}>{linkifyText(str.slice(last))}</span>);
+        return parts.length ? <React.Fragment key={key}>{parts}</React.Fragment> : <span key={key}>{linkifyText(str)}</span>;
     };
 
     // Match @Name: greedy - capture everything after @ until a newline or double-space
@@ -2026,11 +2340,19 @@ export function TextWithMentions({
             });
             for (const person of sorted) {
                 const name = person.display_name || person.displayName || '';
-                if (!name) continue;
-                const expected = '@' + name;
-                if (converted.startsWith(expected, atIdx)) {
+                const username = person.username || '';
+                if (!name && !username) continue;
+                // Match @displayName OR @username
+                const expectedName = name ? '@' + name : '';
+                const expectedUsername = username ? '@' + username : '';
+                const matchedExpected = (expectedName && converted.startsWith(expectedName, atIdx))
+                  ? expectedName
+                  : (expectedUsername && converted.startsWith(expectedUsername, atIdx))
+                    ? expectedUsername
+                    : '';
+                if (matchedExpected) {
                     const uid = person.contact_id || person.userId || '';
-                    const mentionText = expected;
+                    const mentionText = matchedExpected;
                     segments.push(
                         <span
                             key={atIdx}
@@ -2061,8 +2383,8 @@ export function TextWithMentions({
         }
     }
 
-    if (segments.length === 0) return <span className="whitespace-pre-wrap select-text break-word">{converted}</span>;
-    return <span className="whitespace-pre-wrap select-text break-word">{segments}</span>;
+    if (segments.length === 0) return <span className="whitespace-pre-wrap select-text break-words" style={{ overflowWrap: 'break-word', wordBreak: 'normal', ...emojiFontStyle }}>{converted}</span>;
+    return <span className="whitespace-pre-wrap select-text break-words" style={{ overflowWrap: 'break-word', wordBreak: 'normal', ...emojiFontStyle }}>{segments}</span>;
 }
 
 export function RtfBubble({

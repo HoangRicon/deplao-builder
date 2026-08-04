@@ -8,9 +8,12 @@ import { useAppStore } from '@/store/appStore';
 import { useAccountStore } from '@/store/accountStore';
 import ipc, { buildZaloAuth } from '@/lib/ipc'
 import DataAccessor from '@/lib/data/DataAccessor';;
+import { channelSupports, type Channel } from '@/../configs/channelConfig';
+import { CHANNEL, isZalo, isFacebook, isTelegram, isNonZalo } from '@/lib/channelHelper';
 import PhoneDisplay from './PhoneDisplay';
 import GroupAvatarCommon from './GroupAvatar';
 import { FBUserProfilePopup } from './FBUserProfilePopup';
+import { TelegramUserProfilePopup } from './TelegramUserProfilePopup';
 import { Spinner } from '@/components/common/PageLoading';
 
 // ─── ActionRow ────────────────────────────────────────────────────────────────
@@ -53,13 +56,13 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
   // ── Image lightbox ─────────────────────────────────────────────────────
   const [imageViewer, setImageViewer] = React.useState<{ url: string; label: string } | null>(null);
 
-  const isInGroup = !!(activeThreadId && /^\d{15,}$/.test(activeThreadId));
+  const isInGroup = !!(activeThreadId && /^-?\d{15,}$/.test(activeThreadId));
 
   // ── Route Facebook contacts to FBUserProfilePopup ────────────────────────────
   const contactChannel = contacts.find(c => c.contact_id === userId)?.channel || '';
   const accountObj = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
-  const isFacebook = contactChannel === 'facebook' || accountObj?.channel === 'facebook';
-  if (isFacebook) {
+  const isFacebookChannel = isFacebook(contactChannel) || isFacebook(accountObj?.channel);
+  if (isFacebookChannel) {
     return (
       <FBUserProfilePopup
         userId={userId}
@@ -72,6 +75,40 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
       />
     );
   }
+
+  if (isTelegram(contactChannel) || isTelegram(accountObj?.channel)) {
+    const activeConversation = activeThreadId
+      ? contacts.find(item => String(item.contact_id) === String(activeThreadId))
+      : null;
+    const telegramGroupId = activeConversation?.contact_type === 'group'
+      || String(activeConversation?.contact_type) === '1'
+      || String(activeThreadId || '').startsWith('-')
+      ? activeThreadId
+      : null;
+    return (
+      <TelegramUserProfilePopup
+        userId={userId}
+        anchorX={anchorX}
+        anchorY={anchorY}
+        contacts={contacts}
+        activeAccountId={activeAccountId}
+        activeThreadId={telegramGroupId}
+        onClose={onClose}
+      />
+    );
+  }
+
+  // Channel capabilities for gating features
+  const effectiveChannel: Channel = (accountObj?.channel || contactChannel || CHANNEL.ZALO) as Channel;
+  const channelCap = {
+    supportsFriendRequest: channelSupports(effectiveChannel, 'supportsFriendRequest'),
+    supportsMutualGroups: channelSupports(effectiveChannel, 'supportsMutualGroups'),
+    supportsBusinessCard: channelSupports(effectiveChannel, 'supportsBusinessCard'),
+    supportsBlock: channelSupports(effectiveChannel, 'supportsBlock'),
+    supportsReport: channelSupports(effectiveChannel, 'supportsReport'),
+    supportsRemoveFriend: channelSupports(effectiveChannel, 'supportsRemoveFriend'),
+    supportsAlias: channelSupports(effectiveChannel, 'supportsAlias'),
+  };
 
   React.useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -103,8 +140,8 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
     const activeAccount = activeAccountId
       ? useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId)
       : null;
-    const isZaloAccount = (activeAccount?.channel || 'zalo') === 'zalo'
-      && (contactInfo?.channel || 'zalo') === 'zalo';
+    const isZaloAccount = isZalo(activeAccount?.channel)
+      && isZalo(contactInfo?.channel);
     if (!isZaloAccount) {
       setLoading(false);
       return;
@@ -112,6 +149,13 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
     const load = async () => {
       setLoading(true);
       try {
+        // Only call Zalo API for Zalo accounts
+        const accountChannel = accountObj?.channel || CHANNEL.ZALO;
+        if (isNonZalo(accountChannel)) {
+          setLoading(false);
+          return;
+        }
+
         const auth = await getAuth();
         const res = await ipc.zalo?.getUserInfo({ auth, userId });
         if (res?.success && res.response) {
@@ -154,8 +198,8 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
   React.useEffect(() => {
     setMutualGroupsLoading(true);
     setMutualGroups([]);
-    const contactChannel = contacts.find(c => c.contact_id === userId)?.channel || 'zalo';
-    if (contactChannel !== 'zalo') { setMutualGroupsLoading(false); return; }
+    const contactChannel = contacts.find(c => c.contact_id === userId)?.channel || CHANNEL.ZALO;
+    if (!channelSupports(contactChannel as Channel, 'supportsMutualGroups')) { setMutualGroupsLoading(false); return; }
     const loadGroups = async () => {
       try {
         const auth = await getAuth();
@@ -363,9 +407,12 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
   const handleSaveAlias = async () => {
     if (!aliasValue.trim()) return;
     try {
-      const auth = await getAuth();
       const trimmed = aliasValue.trim();
-      await ipc.zalo?.changeFriendAlias({ auth, alias: trimmed, friendId: userId });
+      // Only call Zalo API for Zalo accounts
+      if (isZalo(effectiveChannel)) {
+        const auth = await getAuth();
+        await ipc.zalo?.changeFriendAlias({ auth, alias: trimmed, friendId: userId });
+      }
       setUserInfo((p: any) => ({ ...p, alias: trimmed }));
       if (activeAccountId) {
         useChatStore.getState().updateContact(activeAccountId, { contact_id: userId, alias: trimmed });
@@ -555,7 +602,7 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
               </div>
             ) : (
               <div className="flex gap-2">
-                {!isFriend && (
+                {!isFriend && channelCap.supportsFriendRequest && (
                   <button onClick={handleAddFriend}
                     className="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs py-2 rounded-xl font-semibold transition-colors flex items-center justify-center gap-1.5">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -612,20 +659,22 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
 
         {/* Action list */}
         <div className="py-1">
-          <ActionRow
-            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>}
-            label={mutualGroupsLoading ? 'Nhóm chung (đang tải...)' : `Nhóm chung${mutualGroups.length > 0 ? ` (${mutualGroups.length})` : ' (0)'}`}
-            onClick={() => !mutualGroupsLoading && setShowGroups(true)}
-            textColor={mutualGroupsLoading ? 'text-gray-400' : 'text-gray-300'}
-          />
-          {!isInGroup && activeThreadId && !isMe && (
+          {channelCap.supportsMutualGroups && (
+            <ActionRow
+              icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>}
+              label={mutualGroupsLoading ? 'Nhóm chung (đang tải...)' : `Nhóm chung${mutualGroups.length > 0 ? ` (${mutualGroups.length})` : ' (0)'}`}
+              onClick={() => !mutualGroupsLoading && setShowGroups(true)}
+              textColor={mutualGroupsLoading ? 'text-gray-400' : 'text-gray-300'}
+            />
+          )}
+          {!isInGroup && activeThreadId && !isMe && channelCap.supportsBusinessCard && (
             <ActionRow
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="9" cy="12" r="2"/><path d="M13 12h4M13 16h4"/></svg>}
               label="Chia sẻ danh thiếp"
               onClick={handleShareCard}
             />
           )}
-          {!isMe && (
+          {!isMe && channelCap.supportsBlock && (
             <ActionRow
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>}
               label={isBlocked ? 'Bỏ chặn tin nhắn và cuộc gọi' : 'Chặn tin nhắn và cuộc gọi'}
@@ -633,14 +682,14 @@ export function UserProfilePopup({ userId, anchorX, anchorY, contacts, activeAcc
               textColor={isBlocked ? 'text-orange-400' : 'text-gray-300'}
             />
           )}
-          {!isMe && (
+          {!isMe && channelCap.supportsReport && (
             <ActionRow
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>}
               label="Báo xấu"
               onClick={handleReport}
             />
           )}
-          {isFriend && !isMe && (
+          {isFriend && !isMe && channelCap.supportsRemoveFriend && (
             <ActionRow
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></svg>}
               label="Xoá khỏi danh sách bạn bè"

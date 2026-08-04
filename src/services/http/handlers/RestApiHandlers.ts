@@ -244,7 +244,8 @@ export const handlers = {
     const before = params.before ? parseInt(params.before) : undefined;
 
     // Nếu có before → cursor-based, nếu không → offset-based
-    const messages = db().getMessages(zaloId, params.threadId, limit, before ? 0 : offset, before);
+    const topicId = params.topicId ? String(params.topicId) : undefined;
+    const messages = db().getMessages(zaloId, params.threadId, limit, before ? 0 : offset, before, topicId);
     const hasMore = messages.length >= limit;
 
     console.log(`[RestApi] getMessages: zaloId=${zaloId} threadId=${params.threadId} limit=${limit} → ${messages.length} msgs`);
@@ -267,6 +268,7 @@ export const handlers = {
       local_paths: m.local_paths || null,
       handled_by_employee: m.handled_by_employee || null,
       quote_data: m.quote_data || null,
+      topic_id: m.topic_id || null,
     }));
 
     return success({ items, total: items.length }, {
@@ -328,7 +330,7 @@ export const handlers = {
     const zaloId = params.zaloId || employee.assigned_accounts[0];
     if (!zaloId || !params.msgId) return error('Missing zaloId or msgId');
 
-    const msg = db().getMessageById(zaloId, params.msgId);
+    const msg = db().getMessageById(zaloId, params.msgId, params.threadId);
     return success(msg || null);
   },
 

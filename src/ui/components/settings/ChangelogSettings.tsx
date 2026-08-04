@@ -15,6 +15,57 @@ interface VersionEntry {
 // ─── Changelog data - thêm entry mới vào ĐẦU mảng khi có bản cập nhật ────────
 const CHANGELOG: VersionEntry[] = [
   {
+    version: '26.8.0',
+    date: '08/2026',
+    type: 'minor',
+    highlights: [
+      '🤖 Tích hợp Telegram Bot + Telegram User (beta) — gửi/nhận tin nhắn, ảnh, video, file, quản lý nhóm',
+      '🔗 Link trong tin nhắn hiển thị xanh + gạch chân, click mở trình duyệt bên ngoài',
+      '📜 Sửa lỗi chập chờn scroll nhảy khi tải tin nhắn cũ',
+    ],
+    changes: [
+      {
+        category: 'new',
+        items: [
+          'Tích hợp Telegram Bot (beta) — kết nối qua bot token, polling tin nhắn mới, gửi text/ảnh/video/file/audio/sticker/voice/GIF, quản lý nhóm (admin, kick, pin, đổi tên, đổi avatar)',
+          'Tích hợp Telegram User (beta) — kết nối qua MTProto, đồng bộ tin nhắn real-time, hỗ trợ forum/topics, gửi reaction, edit, forward, unsend',
+          'Workflow hỗ trợ Telegram Bot + Telegram User — trigger workflow từ tin nhắn, gửi tin nhắn tự động qua node',
+          'Link clickable trong tin nhắn — detect URL (http/https/www/domain), hiển thị xanh gạch chân, click mở trình duyệt bên ngoài (shell.openExternal)',
+          'Username cho tài khoản Telegram — hiển thị @username thay vì SĐT (Telegram không có SĐT), lưu riêng field username trong account',
+          'Avatar fallback theo kênh — Sidebar hiện icon Zalo/Facebook/Telegram khi không có avatar, giống Dashboard',
+          'Telegram Bot health check + auto-reconnect — check bot có đang polling không mỗi 60s, nếu disconnect thì startBot lại',
+        ],
+      },
+      {
+        category: 'improved',
+        items: [
+          'Gửi ảnh/file/video cho Telegram Bot — dùng fs.createReadStream cho local file (trước đây chỉ hỗ trợ URL)',
+          'TelegramBotAdapter.sendAttachment routing đúng theo file type — image→sendPhoto, video→sendVideo, audio→sendAudio, file→sendDocument',
+          'Sửa lỗi "An object could not be cloned" khi gọi getActiveBots — strip non-serializable properties (functions, circular refs) trước khi trả qua IPC',
+          'Contact mới từ Telegram hiện ngay trong danh sách — trước đây chỉ lưu DB, không cập nhật Zustand store',
+          'Avatar Telegram Bot/User được fetch và cập nhật vào UI — emit db:unreadChanged sau khi download avatar để trigger refresh',
+          'Telegram User fetchNewContactAvatar emit đúng source — trước đây emit không có source bị filter bỏ',
+          'reconnectAllTelegramAccounts dùng đúng field — botUsername từ acc.username, botFirstName từ acc.full_name',
+          'Tải tin nhắn cũ không nhảy vị trí scroll — dùng useLayoutEffect thay vì useEffect + requestAnimationFrame, restore scrollTop đồng bộ trước khi paint',
+          'Hiển thị "Không có hội thoại" ngay khi load xong mà không có data — trước đây skeleton hiện 8s mới chuyển',
+        ],
+      },
+      {
+        category: 'fixed',
+        items: [
+          'Sửa lỗi Telegram Bot/User tự đánh dấu đã đọc dù chưa đọc — thêm channelIpc.markAsRead() cho non-Zalo channels trong auto-read flow (incoming message + window focus)',
+          'Sửa lỗi link trong tin nhắn mở trong app thay vì trình duyệt — thêm e.preventDefault() trước shell.openExternal',
+          'Sửa lỗi gửi ảnh từ clipboard/thư viện không hoạt động cho Telegram Bot — isNonZalo fallback nhầm vào Facebook IPC, đổi thành isTelegram check trước',
+          'Sửa lỗi Telegram Bot không tự kết nối khi mở app — reconnectAllTelegramAccounts dùng sai field (acc.full_name thay vì acc.username cho botUsername)',
+          'Sửa lỗi avatar Sidebar hiện ảnh rỗng khi URL lỗi — onError ẩn img + retry fail → xóa avatar_url để fallback sang channel icon',
+          'Sửa lỗi ConversationList skeleton 8s khi không có contact — setInitialLoading(false) ngay khi load trả về 0 item',
+          'Sửa lỗi "An object could not be cloned" khi gọi telegram:getActiveBots — account object chứa _inboxConsumer (function) không serialize được qua IPC',
+          'Sửa lỗi scroll nhảy khi tải tin nhắn cũ — requestAnimationFrame chạy sau paint, bị race condition với browser layout; đổi sang useLayoutEffect chạy trước paint',
+        ],
+      },
+    ],
+  },
+  {
     version: '26.7.5',
     date: '07/2026',
     type: 'minor',
@@ -100,7 +151,7 @@ const CHANGELOG: VersionEntry[] = [
     ],
   },
   {
-    version: '26.7.5',
+    version: '26.8.0',
     date: '07/2026',
     type: 'minor',
     highlights: [

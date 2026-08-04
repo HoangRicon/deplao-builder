@@ -7,6 +7,7 @@ import { showConfirm } from '../../common/ConfirmDialog';
 import AccountSelectorDropdown, { AccountOption } from '../../common/AccountSelectorDropdown';
 import AccountMultiDropdown from '../../common/AccountMultiDropdown';
 import { syncZaloLabelsToLocalDB } from '@/lib/labelUtils';
+import { CHANNEL, isZalo } from '@/lib/channelHelper';
 import { LabelEmojiPicker, KeyboardShortcutInput } from '../../common/LabelEmojiPicker';
 import PageLoading from '@/components/common/PageLoading';
 import { AlertIcon, CheckIcon, ClipboardListIcon, CloudIcon, CloseIcon, EditIcon, HardDriveIcon, InboxIcon, PluginIcon, RefreshIcon, TagIcon } from '@/components/common/icons';
@@ -30,7 +31,7 @@ export interface LocalLabel {
 function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle: string }) {
   return (
     <div className="text-center py-14">
-      <p className="text-3xl mb-2">{icon}</p>
+      <p className="text-3xl mb-2 place-items-center">{icon}</p>
       <p className="text-gray-400 text-sm font-medium">{title}</p>
       <p className="text-gray-400 text-xs mt-1">{subtitle}</p>
     </div>
@@ -271,7 +272,7 @@ function LabelModal({ initialData, accounts, filterAccounts, onClose, onSave }: 
   const [form, setForm] = useState<Partial<LocalLabel>>(
     initialData
       ? { ...initialData, shortcut: initialData.shortcut || '' }
-      : { name: '', color: '#3b82f6', text_color: '#ffffff', emoji: '🏷️', is_active: 1, sort_order: 0, shortcut: '' }
+      : { name: '', color: '#3b82f6', text_color: '#ffffff', emoji: '', is_active: 1, sort_order: 0, shortcut: '' }
   );
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
@@ -330,13 +331,13 @@ function LabelModal({ initialData, accounts, filterAccounts, onClose, onSave }: 
                   showEmojiPicker ? 'border-blue-500' : 'border-gray-600 hover:border-gray-500'
                 }`}
               >
-                <span>{form.emoji || '🏷️'}</span>
+                <span>{form.emoji || ''}</span>
                 <span className="text-xs text-gray-400">▼</span>
               </button>
               {showEmojiPicker && (
                 <div className="absolute top-full right-0 mt-1 z-50">
                   <LabelEmojiPicker
-                    value={form.emoji || '🏷️'}
+                    value={form.emoji || ''}
                     onChange={(emoji) => {
                       setForm({ ...form, emoji });
                       setShowEmojiPicker(false);
@@ -797,12 +798,17 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
   const { showNotification } = useAppStore();
   const [labelSource, setLabelSource] = useState<LabelSource>('local');
 
-  // If all selected accounts are Facebook → hide Zalo tab, force Local
-  const allFB = filterAccounts.length > 0 && filterAccounts.every(id => {
+  // Remote labels are a Zalo API feature. Keep a standalone Telegram/Facebook
+  // settings context on Local and do not issue a Zalo labels request.
+  const hideZaloTab = filterAccounts.length > 0 && filterAccounts.every(id => {
     const acc = accounts.find(a => a.zalo_id === id);
-    return (acc?.channel || 'zalo') === 'facebook';
+    return !isZalo(acc?.channel);
   });
-  const effectiveLabelSource: LabelSource = allFB ? 'local' : labelSource;
+  const effectiveLabelSource: LabelSource = hideZaloTab ? 'local' : labelSource;
+
+  useEffect(() => {
+    if (hideZaloTab && labelSource !== 'local') setLabelSource('local');
+  }, [hideZaloTab, labelSource]);
 
   const [localLabels, setLocalLabels] = useState<LocalLabel[]>([]);
   const [zaloLabels, setZaloLabels] = useState<any[]>([]);
@@ -871,9 +877,9 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
   useEffect(() => { fetchLocalLabels(); }, []);
 
   useEffect(() => {
-    if (effectiveLabelSource === 'zalo' && activeZaloId && isConnected) {
+    if (effectiveLabelSource === CHANNEL.ZALO && activeZaloId && isConnected) {
       fetchZaloLabels(activeZaloId);
-    } else if (effectiveLabelSource === 'zalo') {
+    } else if (effectiveLabelSource === CHANNEL.ZALO) {
       setZaloLabels([]);
     }
   }, [labelSource, activeZaloId]);
@@ -999,7 +1005,7 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
         <div className="flex bg-gray-800 rounded-lg p-0.5 gap-0.5">
           {([
             { id: 'local' as const, label: 'Local' },
-            ...(!allFB ? [{ id: 'zalo' as const, label: 'Zalo' }] : []),
+            ...(!hideZaloTab ? [{ id: 'zalo' as const, label: 'Zalo' }] : []),
           ] as const).map(src => (
             <button key={src.id} onClick={() => setLabelSource(src.id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap
@@ -1026,7 +1032,7 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
               Thêm nhãn
             </button>
           </>)}
-          {effectiveLabelSource === 'zalo' && activeZaloId && isConnected && (
+          {effectiveLabelSource === CHANNEL.ZALO && activeZaloId && isConnected && (
             <button onClick={() => fetchZaloLabels(activeZaloId)}
               className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 border border-gray-600"><RefreshIcon className="w-4 h-4 inline" /> Tải lại
             </button>
@@ -1059,7 +1065,7 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
         )}
 
         {/* Zalo Labels */}
-        {effectiveLabelSource === 'zalo' && (
+        {effectiveLabelSource === CHANNEL.ZALO && (
           <ZaloLabelsSection
             activeZaloId={activeZaloId}
             isConnected={isConnected}
@@ -1107,4 +1113,3 @@ export default function LabelSettings({ accounts, filterAccounts, searchText }: 
     </div>
   );
 }
-

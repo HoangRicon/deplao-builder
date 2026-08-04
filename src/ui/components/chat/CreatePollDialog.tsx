@@ -4,6 +4,7 @@ import ipc, { buildZaloAuth } from '@/lib/ipc';
 import * as channelIpc from '../../lib/channelIpc';
 import DateInputVN from '@/components/common/DateInputVN';
 import { Spinner } from '@/components/common/PageLoading';
+import { CHANNEL } from '@/lib/channelHelper';
 
 /** CreatePollDialog - tạo cuộc bình chọn mới trong nhóm */
 export function CreatePollDialog({ groupId, activeAccountId, channel, onClose }: {
@@ -31,8 +32,8 @@ export function CreatePollDialog({ groupId, activeAccountId, channel, onClose }:
     setCreating(true);
     try {
       let res;
-      if (channel === 'facebook') {
-        res = await channelIpc.createPoll('facebook', {
+      if (channel !== CHANNEL.ZALO) {
+        res = await channelIpc.createPoll(channel as any, {
           accountId: activeAccountId,
           threadId: groupId,
           question: q,
