@@ -223,6 +223,7 @@ declare global {
         cloneLocalLabels: (params: { sourceZaloId: string; targetZaloId: string }) => Promise<{ success: boolean; count?: number; error?: string }>;
         getLocalLabelThreads: (params: { zaloId: string }) => Promise<{ success: boolean; threads: Array<{ label_id: number; thread_id: string }> }>;
         assignLocalLabelToThread: (params: { zaloId: string; labelId: number; threadId: string; threadType?: number; labelText?: string; labelColor?: string; labelEmoji?: string }) => Promise<{ success: boolean; error?: string }>;
+        bulkAssignLocalLabelToThread: (params: { zaloId: string; labelIds: number[]; threadIds: string[] }) => Promise<{ success: boolean; count?: number; error?: string }>;
         removeLocalLabelFromThread: (params: { zaloId: string; labelId: number; threadId: string; threadType?: number; labelText?: string; labelColor?: string; labelEmoji?: string }) => Promise<{ success: boolean; error?: string }>;
         getThreadLocalLabels: (params: { zaloId: string; threadId: string }) => Promise<{ success: boolean; labels: any[] }>;
         setLocalLabelActive: (params: { id: number; isActive: number }) => Promise<{ success: boolean; error?: string }>;
@@ -592,6 +593,7 @@ declare global {
         unblockUser:       (params: { accountId: string; userId: string }) => Promise<{ success: boolean; error?: string }>;
         exportChatInvite:  (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; link?: string; error?: string }>;
         readChatHistory:   (params: { accountId: string; chatId: string }) => Promise<{ success: boolean; error?: string }>;
+        readForumTopic:    (params: { accountId: string; chatId: string; topMsgId: string; readMaxId?: string }) => Promise<{ success: boolean; error?: string }>;
         getMessages:       (params: { accountId: string; chatId: string; limit?: number; offsetId?: number; topicRootMessageId?: string }) => Promise<{ success: boolean; messages?: any[]; error?: string }>;
         repairMessageMedia:(params: { accountId: string; chatId: string; messageId: string }) => Promise<{ success: boolean; localPaths?: Record<string, string>; attachments?: any[]; msgType?: string; error?: string }>;
         repairEmptyMessages:(params: { accountId: string; chatId: string; messageIds: string[] }) => Promise<{ success: boolean; results?: Array<{ messageId: string; resolved: boolean; content: string; msgType: string; attachments: any[]; mediaClass: string }>; error?: string }>;

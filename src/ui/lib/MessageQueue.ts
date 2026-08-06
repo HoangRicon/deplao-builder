@@ -292,7 +292,9 @@ class MessageQueue {
 
     try {
       // Race: send vs timeout
+      console.log(`[MessageQueue] Sending tempId=${tempId} channel=${item.channel}`);
       const result = await Promise.race([sendFn(), timeoutPromise]);
+      console.log(`[MessageQueue] sendFn result: success=${result?.success} msgId=${result?.msgId} error=${result?.error}`);
       this.clearTimeout(tempId);
 
       if (result.success && result.msgId) {
@@ -300,8 +302,9 @@ class MessageQueue {
         this.updateStatus(zaloId, threadId, tempId, 'sent', {
           real_msg_id: result.msgId,
         });
-        console.log(`[MessageQueue] ✅ Sent tempId=${tempId} → realMsgId=${result.msgId}`);
+        console.log(`[MessageQueue] ✅ Sent tempId=${tempId} → realMsgId=${result.msgId} (before onSuccess)`);
         item.onSuccess?.(result.msgId, result);
+        console.log(`[MessageQueue] ✅ Sent tempId=${tempId} → realMsgId=${result.msgId} (after onSuccess)`);
       } else if (result.success && result.msgIds && result.msgIds.length > 0) {
         // ── SUCCESS: Multi-attachment (multi-image) — nhiều msgIds ──
         this.updateStatus(zaloId, threadId, tempId, 'sent', {

@@ -1301,7 +1301,13 @@ export default function ConversationList() {
       console.log(`[ConversationList] handleSelect: calling DataAccessor.getMessages zaloId=${zaloId} threadId=${contactId} isEmp=${useEmployeeStore.getState().mode}`);
     const res = await DataAccessor.getMessages({ zaloId, threadId: contactId, limit: 20, offset: 0 });
     const dbMessages = res?.messages || res?.items || [];
-    console.log(`[ConversationList] handleSelect: result keys=${Object.keys(res||{}).join(',')} messages=${res?.messages?.length ?? 0} items=${res?.items?.length ?? 0}`);
+    console.log(`[ConversationList] handleSelect: ${dbMessages.length} msgs for ${contactId}`);
+    dbMessages.slice(0, 5).forEach((m: any, i: number) => {
+      let atts: any[] = []; try { atts = JSON.parse(m.attachments || '[]'); } catch {}
+      let lp: any = {}; try { lp = JSON.parse(m.local_paths || '{}'); } catch {}
+      const a0 = atts[0] || {};
+      console.log(`[ConvList] msg[${i}] id=${m.msg_id} type=${m.msg_type} sent=${m.is_sent} ch=${m.channel} content="${(m.content||'').slice(0,50)}" att_type=${a0.type||'-'} att_url=${(a0.url||'').slice(0,40)||'-'} att_lp=${(a0.localPath||'').slice(0,60)||'-'} att_mime=${a0.mime_type||'-'} att_fid=${a0.file_id?String(a0.file_id).slice(0,20):'-'} lp=${JSON.stringify(lp)} reply=${m.reply_to_id||'-'} quote=${m.quote_data?'y':'n'} react=${m.reactions?'y':'n'}`);
+    });
     if (dbMessages.length > 0) {
       // Build lookup map for reply_to_id → original message content
       const msgLookup = new Map<string, { content: string; type: string }>();
@@ -1324,6 +1330,7 @@ export default function ConversationList() {
         return m;
       });
       setMessages(zaloId, contactId, [...mapped].reverse());
+      console.log(`[ConversationList] handleSelect: setMessages OK count=${mapped.length} for ${contactId}`);
       // Gửi sự kiện đã đọc — truyền lastMsg để tránh query lại DB
       const lastMsg = dbMessages[0]; // already sorted DESC
       sendSeenForThread(zaloId, contactId, threadType, null, lastMsg);
@@ -1488,6 +1495,7 @@ export default function ConversationList() {
 
   // Khi chuyển tài khoản: khôi phục thread đang xem của tài khoản đó (hoặc clear nếu chưa có)
   // isManualSelectingRef: ngăn effect override khi chọn thủ công trong chế độ gộp trang
+  // CHỈ khôi phục UI state — KHÔNG gửi read receipt (handleSelect gửi read receipt)
   useEffect(() => {
     if (isManualSelectingRef.current) {
       isManualSelectingRef.current = false;
@@ -1496,7 +1504,23 @@ export default function ConversationList() {
     if (!activeAccountId) { setActiveThread(null); return; }
     const saved = useChatStore.getState().perAccountThread[activeAccountId];
     if (saved?.threadId) {
-      handleSelect(saved.threadId, saved.threadType);
+      // Restore UI state only — no read receipt to server
+      useChatStore.setState({
+        activeThreadId: saved.threadId,
+        activeThreadType: saved.threadType,
+        activeTopicId: null,
+        activeForumTopicId: null,
+        activeTopicTitle: null,
+        messagesLoading: true,
+      });
+      // Load messages from DB
+      DataAccessor.getMessages({ zaloId: activeAccountId, threadId: saved.threadId, limit: 50, offset: 0 }).then((res: any) => {
+        const msgs = res?.items || res?.messages || [];
+        if (msgs.length > 0) {
+          useChatStore.getState().setMessages(activeAccountId, saved.threadId, [...msgs].reverse());
+        }
+        useChatStore.getState().setMessagesLoading(false);
+      }).catch(() => { useChatStore.getState().setMessagesLoading(false); });
     } else {
       setActiveThread(null);
     }
@@ -1893,28 +1917,26 @@ export default function ConversationList() {
           chatName={forumChatName}
           activeTopicId={activeTopicId}
           compact={false}
-          onSelectTopic={(topicId, topicTitle, forumTopicId) => {
-            // Open chat with topic — set threadId = chatId, store topicId for message filtering
-            // General topic (id=1) is the normal supergroup timeline, NOT a reply thread.
-            // It must use ordinary history/send semantics.
+          onSelectTopic={(topicId, topicTitle, forumTopicId, topMessageId) => {
             useChatStore.getState().setMessages(forumAccountId, forumChatId, [], topicId);
             useChatStore.setState({
               activeThreadId: forumChatId,
               activeThreadType: 1,
-              // Keep General as an explicit topic selection (ID 1), otherwise
-              // !activeTopicId immediately renders the topic list again.
               activeTopicId: topicId,
               activeForumTopicId: forumTopicId || topicId,
               activeTopicTitle: topicTitle,
               messagesLoading: true,
             });
-            // Keep forumChatId set — ChatWindow topic bar will use it for "back to topics"
-            // Mark as read
+            // Mark as read — local DB + Telegram (per-topic via ReadDiscussion)
             DataAccessor.markAsRead({ zaloId: forumAccountId, contactId: forumChatId }).catch(() => {});
-            void import('@/lib/adapters/registry')
-              .then(({ getAdapter }) => getAdapter('telegram_user').markAsRead({ accountId: forumAccountId, threadId: forumChatId }))
-              .catch(() => {});
             clearUnread(forumAccountId, forumChatId);
+            // Gửi read receipt cho topic cụ thể (messages.ReadDiscussion)
+            // topMessageId = ID tin nhắn mới nhất trong topic → dùng làm readMaxId
+            void import('@/lib/adapters/registry')
+              .then(({ getAdapter }) => (getAdapter('telegram_user') as any).markTopicAsRead({
+                accountId: forumAccountId, threadId: forumChatId, topicId, topMessageId,
+              }))
+              .catch(() => {});
           }}
           onBack={() => { setForumChatId(null); setForumAccountId(null); }}
         />
@@ -2524,7 +2546,7 @@ export default function ConversationList() {
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {isMuted && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-400"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>}
                     {contact.has_mention === 1 && contact.unread_count > 0 && (
-                      <span className="bg-cyan-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">@</span>
+                      <span className="bg-cyan-600 text-white-important text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">@</span>
                     )}
                     {contact.unread_count > 0
                       ? <span className="bg-blue-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">{contact.unread_count > 99 ? '99+' : contact.unread_count}</span>

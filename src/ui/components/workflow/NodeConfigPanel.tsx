@@ -149,6 +149,11 @@ interface Field {
    */
   contactMode?: 'single' | 'multi';
   /**
+   * Dùng khi type === 'contact-picker':
+   * Lọc tài khoản theo kênh (vd: 'telegram_user' → chỉ hiện tài khoản Telegram)
+   */
+  channel?: string;
+  /**
    * Dùng khi type === 'file-picker':
    * - 'image' = chỉ chọn ảnh
    * - 'file'  = chọn mọi loại file
@@ -2136,46 +2141,76 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
   // ─── Telegram triggers ──────────────────────────────────────────────────────
   'tg.trigger.message': [
     {
-      key: 'chatId', label: 'Chỉ nhận từ hội thoại cụ thể', type: 'text',
-      placeholder: 'Để trống = tất cả hội thoại',
-      desc: 'ID hội thoại Telegram muốn lắng nghe. Để trống = nhận từ tất cả.',
-      advanced: true,
-    },
-    {
-      key: 'keyword', label: 'Từ khóa lọc', type: 'text',
-      placeholder: 'Để trống = tất cả tin nhắn',
-      desc: 'Chỉ kích hoạt khi tin nhắn chứa từ khóa này. Nhiều từ khóa cách nhau bằng dấu phẩy.',
-    },
-    {
-      key: 'keywordMode', label: 'Chế độ khớp từ khóa', type: 'select',
-      desc: 'Cách so sánh từ khóa với nội dung tin nhắn.',
+      key: 'chatType', label: 'Nguồn tin nhắn', type: 'select',
+      desc: 'Workflow sẽ lắng nghe tin nhắn từ đâu?',
       options: [
-        { value: 'contains_any', label: 'Chứa bất kỳ từ khóa nào' },
-        { value: 'contains_all', label: 'Chứa tất cả từ khóa' },
-        { value: 'exact', label: 'Khớp chính xác' },
-        { value: 'starts_with', label: 'Bắt đầu bằng' },
+        { value: 'all', label: 'Tất cả (cá nhân + nhóm + channel + topic)' },
+        { value: 'user', label: 'Chỉ tin nhắn 1-1 (cá nhân)' },
+        { value: 'group', label: 'Chỉ tin nhắn nhóm (group/supergroup)' },
+        { value: 'channel', label: 'Chỉ tin nhắn kênh (channel)' },
+        { value: 'topic', label: 'Chỉ tin nhắn trong topic (forum)' },
       ],
-      advanced: true,
     },
     {
-      key: 'ignoreOwn', label: 'Bỏ qua tin nhắn của mình', type: 'boolean',
-      desc: 'Không kích hoạt workflow khi tin nhắn do chính tài khoản gửi.',
+      key: 'chatId', label: 'Chỉ nhận từ hội thoại cụ thể', type: 'contact-picker',
+      contactType: 'all', channel: 'telegram_user',
+      placeholder: 'Để trống = tất cả hội thoại',
+      desc: 'Chọn hội thoại Telegram muốn lắng nghe. Để trống = nhận từ tất cả.',
+    },
+    {
+      key: 'keyword', label: 'Từ khóa kích hoạt', type: 'text',
+      placeholder: 'giá, báo giá, order',
+      desc: 'Workflow chỉ chạy khi tin nhắn chứa một trong các từ khóa. Nhiều từ khóa cách nhau bằng dấu phẩy. Để trống = mọi tin nhắn.',
+    },
+    {
+      key: 'keywordMode', label: 'Cách khớp từ khóa', type: 'select',
+      desc: 'Quy tắc áp dụng khi kiểm tra từ khóa trong tin nhắn.',
+      options: [
+        { value: 'contains_any', label: 'Chứa ít nhất 1 từ khóa (phổ biến nhất)' },
+        { value: 'contains_all', label: 'Phải chứa đủ tất cả từ khóa' },
+        { value: 'exact', label: 'Khớp chính xác nguyên câu' },
+        { value: 'starts_with', label: 'Bắt đầu bằng từ khóa' },
+      ],
+    },
+    {
+      key: 'ignoreOwn', label: 'Bỏ qua tin nhắn do mình gửi', type: 'boolean',
+      desc: 'Bật để tránh workflow tự kích hoạt khi tài khoản tự gửi tin.',
+    },
+    {
+      key: 'fromId', label: 'Chỉ nhận từ người gửi cụ thể', type: 'contact-picker',
+      contactType: 'user', channel: 'telegram_user',
+      placeholder: 'Để trống = tất cả',
+      desc: 'Chọn người gửi cụ thể. Để trống = nhận từ tất cả.',
       advanced: true,
     },
     {
       key: 'debounceSeconds', label: 'Chờ gom tin nhắn (giây)', type: 'number',
       placeholder: '0',
-      desc: 'Chờ N giây sau tin nhắn cuối cùng rồi mới chạy workflow. 0 = chạy ngay mỗi tin.',
+      desc: 'Chờ N giây sau tin nhắn cuối rồi mới chạy. 0 = chạy ngay mỗi tin.',
       advanced: true,
     },
+  ],
+  'tg.trigger.unsend': [
+    { key: 'chatId', label: 'Hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: 'Để trống = tất cả' },
+  ],
+  'tg.trigger.groupEvent': [
+    { key: 'chatId', label: 'Nhóm cụ thể', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: 'Để trống = tất cả nhóm' },
+    { key: 'eventType', label: 'Loại sự kiện', type: 'select', options: [
+      { value: 'all', label: 'Tất cả' },
+      { value: 'join', label: 'Thành viên vào nhóm' },
+      { value: 'leave', label: 'Thành viên rời nhóm' },
+      { value: 'member_join', label: 'Có người mới tham gia' },
+      { value: 'member_leave', label: 'Có người rời đi' },
+    ]},
   ],
 
   // ─── Telegram Actions ───────────────────────────────────────────────────────
   'tg.sendMessage': [
     {
-      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
+      key: 'chatId', label: 'Gửi đến hội thoại', type: 'contact-picker',
+      contactType: 'all', channel: 'telegram_user',
       placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram cần gửi tin nhắn. Dùng {{ }} để chèn dữ liệu động.',
+      desc: 'Chọn hội thoại Telegram cần gửi tin nhắn.',
       templateVars: ['$trigger.chatId', '$trigger.fromId'],
     },
     {
@@ -2192,9 +2227,10 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
   ],
   'tg.sendPhoto': [
     {
-      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
+      key: 'chatId', label: 'Gửi đến hội thoại', type: 'contact-picker',
+      contactType: 'all', channel: 'telegram_user',
       placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram cần gửi ảnh.',
+      desc: 'Chọn hội thoại Telegram cần gửi ảnh.',
       templateVars: ['$trigger.chatId'],
     },
     {
@@ -2211,171 +2247,96 @@ const CONFIG_SCHEMA: Record<string, Field[]> = {
     },
   ],
   'tg.sendFile': [
-    {
-      key: 'chatId', label: 'Gửi đến hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram cần gửi file.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'filePath', label: 'File cần gửi', type: 'file-picker', fileType: 'file',
-      placeholder: 'Chọn file từ máy tính',
-      desc: 'Chọn file (PDF, Excel, ...) để gửi.',
-    },
-    {
-      key: 'caption', label: 'Chú thích file', type: 'text',
-      placeholder: 'Để trống nếu không cần chú thích',
-      desc: 'Chú thích hiển thị cùng file.',
-      advanced: true,
-    },
+    { key: 'chatId', label: 'Gửi đến hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'filePath', label: 'File cần gửi', type: 'file-picker', fileType: 'file', desc: 'Chọn file (PDF, Excel, ...) để gửi.' },
+    { key: 'caption', label: 'Chú thích file', type: 'text', advanced: true },
   ],
   'tg.forwardMessage': [
-    {
-      key: 'fromChatId', label: 'Từ hội thoại', type: 'text',
-      placeholder: 'ID hội thoại nguồn',
-      desc: 'ID hội thoại Telegram chứa tin nhắn cần chuyển tiếp.',
-    },
-    {
-      key: 'toChatId', label: 'Đến hội thoại', type: 'text',
-      placeholder: 'ID hội thoại đích',
-      desc: 'ID hội thoại Telegram nhận tin nhắn chuyển tiếp.',
-    },
-    {
-      key: 'messageId', label: 'ID tin nhắn', type: 'text',
-      placeholder: '{{ $trigger.messageId }}',
-      desc: 'ID tin nhắn cần chuyển tiếp.',
-      templateVars: ['$trigger.messageId'],
-    },
+    { key: 'fromChatId', label: 'Từ hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', desc: 'Hội thoại chứa tin nhắn cần chuyển tiếp.' },
+    { key: 'toChatId', label: 'Đến hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', desc: 'Hội thoại nhận tin nhắn chuyển tiếp.' },
+    { key: 'messageId', label: 'ID tin nhắn', type: 'text', placeholder: '{{ $trigger.messageId }}', templateVars: ['$trigger.messageId'] },
   ],
   'tg.deleteMessage': [
-    {
-      key: 'chatId', label: 'Trong hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram chứa tin nhắn cần xóa.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'messageId', label: 'ID tin nhắn cần xóa', type: 'text',
-      placeholder: '{{ $trigger.messageId }}',
-      desc: 'ID tin nhắn Telegram muốn xóa.',
-      templateVars: ['$trigger.messageId'],
-    },
+    { key: 'chatId', label: 'Trong hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'messageId', label: 'ID tin nhắn cần xóa', type: 'text', placeholder: '{{ $trigger.messageId }}', templateVars: ['$trigger.messageId'] },
   ],
   'tg.editMessage': [
-    {
-      key: 'chatId', label: 'Trong hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram chứa tin nhắn cần chỉnh sửa.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'messageId', label: 'ID tin nhắn cần sửa', type: 'text',
-      placeholder: '{{ $trigger.messageId }}',
-      desc: 'ID tin nhắn Telegram muốn chỉnh sửa.',
-      templateVars: ['$trigger.messageId'],
-    },
-    {
-      key: 'text', label: 'Nội dung mới', type: 'textarea',
-      placeholder: 'Nhập nội dung mới cho tin nhắn...',
-      desc: 'Nội dung sẽ thay thế tin nhắn cũ.',
-    },
+    { key: 'chatId', label: 'Trong hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'messageId', label: 'ID tin nhắn cần sửa', type: 'text', placeholder: '{{ $trigger.messageId }}', templateVars: ['$trigger.messageId'] },
+    { key: 'text', label: 'Nội dung mới', type: 'textarea', placeholder: 'Nhập nội dung mới...' },
   ],
   'tg.addReaction': [
-    {
-      key: 'chatId', label: 'Trong hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram chứa tin nhắn cần thả reaction.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'messageId', label: 'ID tin nhắn', type: 'text',
-      placeholder: '{{ $trigger.messageId }}',
-      desc: 'ID tin nhắn Telegram muốn thả reaction.',
-      templateVars: ['$trigger.messageId'],
-    },
-    {
-      key: 'emoji', label: 'Biểu tượng cảm xúc', type: 'select',
-      desc: 'Chọn emoji reaction để thả vào tin nhắn.',
-      options: [
-        { value: '👍', label: 'Like' },
-        { value: '❤️', label: 'Heart' },
-        { value: '🔥', label: 'Fire' },
-        { value: '🥰', label: 'Love' },
-        { value: '😮', label: 'Wow' },
-        { value: '😢', label: 'Sad' },
-        { value: '🎉', label: 'Party' },
-        { value: '👎', label: 'Dislike' },
-        { value: '💩', label: 'Poop' },
-      ],
-    },
+    { key: 'chatId', label: 'Trong hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'messageId', label: 'ID tin nhắn', type: 'text', placeholder: '{{ $trigger.messageId }}', templateVars: ['$trigger.messageId'] },
+    { key: 'emoji', label: 'Emoji', type: 'select', options: [
+      { value: '👍', label: 'Like 👍' }, { value: '❤️', label: 'Heart ❤️' },
+      { value: '🔥', label: 'Fire 🔥' }, { value: '🥰', label: 'Love 🥰' },
+      { value: '😮', label: 'Wow 😮' }, { value: '😢', label: 'Sad 😢' },
+      { value: '🎉', label: 'Party 🎉' }, { value: '👎', label: 'Dislike 👎' },
+    ]},
   ],
   'tg.pinMessage': [
-    {
-      key: 'chatId', label: 'Trong hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram chứa tin nhắn cần ghim.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'messageId', label: 'ID tin nhắn cần ghim', type: 'text',
-      placeholder: '{{ $trigger.messageId }}',
-      desc: 'ID tin nhắn Telegram muốn ghim.',
-      templateVars: ['$trigger.messageId'],
-    },
+    { key: 'chatId', label: 'Trong hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'messageId', label: 'ID tin nhắn cần ghim', type: 'text', placeholder: '{{ $trigger.messageId }}', templateVars: ['$trigger.messageId'] },
   ],
   'tg.sendPoll': [
-    {
-      key: 'chatId', label: 'Tạo trong hội thoại', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID hội thoại Telegram nơi poll sẽ được tạo.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'question', label: 'Câu hỏi bình chọn', type: 'text',
-      placeholder: 'Bạn thích sản phẩm nào nhất?',
-      desc: 'Nội dung câu hỏi hiển thị trong poll.',
-    },
-    {
-      key: 'options', label: 'Các lựa chọn', type: 'textarea',
-      placeholder: 'Lựa chọn 1\nLựa chọn 2\nLựa chọn 3',
-      desc: 'Mỗi dòng là một lựa chọn. Tối thiểu 2 lựa chọn.',
-    },
+    { key: 'chatId', label: 'Tạo trong hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'question', label: 'Câu hỏi', type: 'text', placeholder: 'Bạn thích sản phẩm nào nhất?' },
+    { key: 'options', label: 'Các lựa chọn', type: 'textarea', placeholder: 'Lựa chọn 1\nLựa chọn 2\nLựa chọn 3', desc: 'Mỗi dòng 1 lựa chọn. Tối thiểu 2.' },
   ],
   'tg.banMember': [
-    {
-      key: 'chatId', label: 'Trong nhóm', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID nhóm Telegram.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'userId', label: 'Thành viên cần ban', type: 'text',
-      placeholder: '{{ $trigger.fromId }}',
-      desc: 'ID người dùng Telegram muốn khỏi khỏi nhóm.',
-      templateVars: ['$trigger.fromId'],
-    },
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'userId', label: 'Thành viên cần ban', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', placeholder: '{{ $trigger.fromId }}', templateVars: ['$trigger.fromId'] },
   ],
   'tg.promoteMember': [
-    {
-      key: 'chatId', label: 'Trong nhóm', type: 'text',
-      placeholder: '{{ $trigger.chatId }}',
-      desc: 'ID nhóm Telegram.',
-      templateVars: ['$trigger.chatId'],
-    },
-    {
-      key: 'userId', label: 'Thành viên', type: 'text',
-      placeholder: '{{ $trigger.fromId }}',
-      desc: 'ID người dùng Telegram muốn thay đổi quyền.',
-      templateVars: ['$trigger.fromId'],
-    },
-    {
-      key: 'isAdmin', label: 'Quyền admin', type: 'select',
-      desc: 'Thăng quyền hoặc hạ quyền admin.',
-      options: [
-        { value: 'true', label: 'Thăng quyền admin' },
-        { value: 'false', label: 'Hạ quyền thành viên' },
-      ],
-    },
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'userId', label: 'Thành viên', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', placeholder: '{{ $trigger.fromId }}', templateVars: ['$trigger.fromId'] },
+    { key: 'isAdmin', label: 'Quyền admin', type: 'select', options: [
+      { value: 'true', label: 'Thăng quyền admin' }, { value: 'false', label: 'Hạ quyền thành viên' },
+    ]},
+  ],
+  'tg.sendSticker': [
+    { key: 'chatId', label: 'Gửi đến', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'stickerId', label: 'Sticker ID', type: 'text', desc: 'ID sticker từ Telegram sticker set.' },
+    { key: 'accessHash', label: 'Access Hash', type: 'text', advanced: true },
+  ],
+  'tg.sendTyping': [
+    { key: 'chatId', label: 'Hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+  ],
+  'tg.markAsRead': [
+    { key: 'chatId', label: 'Hội thoại', type: 'contact-picker', contactType: 'all', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+  ],
+  'tg.markTopicAsRead': [
+    { key: 'chatId', label: 'Nhóm (channel)', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'topicId', label: 'Topic ID', type: 'text', placeholder: '{{ $trigger.topicId }}', templateVars: ['$trigger.topicId'] },
+  ],
+  'tg.addMember': [
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'userId', label: 'Thành viên cần thêm', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', templateVars: ['$trigger.fromId'] },
+  ],
+  'tg.removeMember': [
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'userId', label: 'Thành viên cần xóa', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', templateVars: ['$trigger.fromId'] },
+  ],
+  'tg.blockUser': [
+    { key: 'userId', label: 'Người cần chặn', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', templateVars: ['$trigger.fromId'] },
+  ],
+  'tg.unblockUser': [
+    { key: 'userId', label: 'Người cần bỏ chặn', type: 'contact-picker', contactType: 'user', channel: 'telegram_user', templateVars: ['$trigger.fromId'] },
+  ],
+  'tg.changeGroupName': [
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'name', label: 'Tên mới', type: 'text', placeholder: 'Tên nhóm mới' },
+  ],
+  'tg.leaveGroup': [
+    { key: 'chatId', label: 'Nhóm cần rời', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+  ],
+  'tg.exportInviteLink': [
+    { key: 'chatId', label: 'Nhóm', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+  ],
+  'tg.createForumTopic': [
+    { key: 'chatId', label: 'Nhóm Forum', type: 'contact-picker', contactType: 'group', channel: 'telegram_user', placeholder: '{{ $trigger.chatId }}', templateVars: ['$trigger.chatId'] },
+    { key: 'title', label: 'Tên topic', type: 'text', placeholder: 'Tên topic mới' },
   ],
 };
 
@@ -3170,6 +3131,7 @@ function ContactPickerModal({
   onClose,
   contactType,
   contactMode = 'single',
+  channel,
   value,
   onChange,
   accounts,
@@ -3178,11 +3140,11 @@ function ContactPickerModal({
   onClose: () => void;
   contactType: 'user' | 'group' | 'all';
   contactMode?: 'single' | 'multi';
+  channel?: string;
   value: string[];
   onChange: (v: string[]) => void;
-  accounts: { zalo_id: string; full_name: string; display_name?: string; phone?: string; avatar_url: string; cookies: string; imei: string; user_agent: string }[];
+  accounts: { zalo_id: string; full_name: string; display_name?: string; phone?: string; avatar_url: string; cookies: string; imei: string; user_agent: string; channel?: string }[];
 }) {
-  const [selectedAccountId, setSelectedAccountId] = React.useState<string>(accounts[0]?.zalo_id || '');
   const [searchQuery, setSearchQuery] = React.useState('');
   const [contacts, setContacts] = React.useState<ContactItem[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -3191,6 +3153,14 @@ function ContactPickerModal({
   const theme = useAppStore(s => s.theme);
   const groupInfoCache = useAppStore(s => s.groupInfoCache);
   const isLight = theme === 'light';
+
+  // Filter accounts by channel if specified
+  const filteredAccounts = React.useMemo(() => {
+    if (!channel) return accounts;
+    return accounts.filter(a => a.channel === channel);
+  }, [accounts, channel]);
+
+  const [selectedAccountId, setSelectedAccountId] = React.useState<string>(filteredAccounts[0]?.zalo_id || '');
 
   // Load contacts when account changes
   React.useEffect(() => {
@@ -3390,7 +3360,7 @@ function ContactPickerModal({
               </span>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {accounts.map(acc => {
+              {filteredAccounts.map(acc => {
                 const isActive = selectedAccountId === acc.zalo_id;
                 return (
                   <button
@@ -3734,6 +3704,7 @@ function ContactPickerField({
   onChange,
   contactType,
   contactMode = 'single',
+  channel,
   placeholder,
   templateVars,
 }: {
@@ -3741,6 +3712,7 @@ function ContactPickerField({
   onChange: (v: string) => void;
   contactType: 'user' | 'group' | 'all';
   contactMode?: 'single' | 'multi';
+  channel?: string;
   placeholder?: string;
   templateVars?: string[];
 }) {
@@ -3838,6 +3810,7 @@ function ContactPickerField({
         onClose={() => setShowModal(false)}
         contactType={contactType}
         contactMode={contactMode}
+        channel={channel}
         value={selectedIds}
         onChange={handleChange}
         accounts={accounts}
@@ -4520,6 +4493,7 @@ export default function NodeConfigPanel({ node, nodes, edges, onConfigChange, on
             value={config[field.key] ?? ''}
             onChange={v => update(field.key, v)}
             contactType={field.contactType || 'all'}
+            channel={field.channel}
             placeholder={field.placeholder}
             templateVars={field.templateVars}
           />

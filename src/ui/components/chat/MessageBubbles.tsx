@@ -745,14 +745,23 @@ function VoiceBubble({ msg, isSelf }: { msg: any; isSelf: boolean }) {
       const lp = typeof msg.local_paths === 'string' ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
       _localPath = lp.file || lp.voice || lp.main || '';
 
-      // Facebook: read audio path from attachments via MediaResolver
-      if (!_localPath && isFacebook(msg.channel)) {
-        _localPath = getLocalMediaPath(msg, 'audio') || getLocalMediaPath(msg);
+      // Facebook/Telegram: read audio path from attachments via MediaResolver
+      if (!_localPath && (isFacebook(msg.channel) || isTelegram(msg.channel))) {
+        _localPath = getLocalMediaPath(msg, 'audio') || getLocalMediaPath(msg) || getLocalMediaPath(msg, 'voice');
       }
     } catch {}
 
+    // Telegram: extract duration from attachments if not from content params
+    if (_paramsDur === 0 && isTelegram(msg.channel)) {
+      try {
+        const atts = JSON.parse(msg.attachments || '[]');
+        const voiceAtt = atts.find((a: any) => a.type === 'voice' || a.type === 'audio');
+        if (voiceAtt?.duration) _paramsDur = voiceAtt.duration;
+      } catch {}
+    }
+
     return { voiceUrl: _voiceUrl, paramsDurationSec: _paramsDur, localPath: _localPath };
-  }, [msg.content, msg.local_paths]);
+  }, [msg.content, msg.local_paths, msg.attachments]);
 
   // Sync duration from params khi chưa có audio metadata
   React.useEffect(() => {
@@ -1867,9 +1876,27 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
 
   // ── Video ──
   if (isVideoType(mt)) {
+    // Extract caption from content (Telegram video + text)
+    let caption = '';
+    try {
+      const parsed = JSON.parse(msg.content || '{}');
+      caption = typeof parsed === 'string' ? parsed : (parsed.title || parsed.text || parsed.caption || '');
+    } catch { caption = ''; }
+    // Fallback: if content is plain text (not JSON), use it as caption
+    if (!caption && msg.content && !msg.content.startsWith('{')) caption = msg.content;
+
     return (
       <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
-        <VideoBubble msg={msg} />
+        {caption ? (
+          <div className={`flex flex-col rounded-2xl overflow-hidden ring-1 ring-black/[0.12] max-w-xs${isSelf ? ' rounded-br-sm' : ' rounded-bl-sm'}`}>
+            <VideoBubble msg={msg} />
+            <div className={`px-3 py-2 text-sm break-words${isSelf ? ' bg-blue-400/40 text-white' : ' bg-gray-700 text-gray-200'}`}>
+              {linkifyText(caption)}
+            </div>
+          </div>
+        ) : (
+          <VideoBubble msg={msg} />
+        )}
       </div>
     );
   }

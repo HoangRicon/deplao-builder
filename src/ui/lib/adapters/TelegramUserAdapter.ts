@@ -16,13 +16,22 @@ export class TelegramUserAdapter extends BaseChannelAdapter {
 
   async sendMessage(params: SendMessageParams): Promise<ActionResult> {
     try {
-      const res = await ipc.telegramUser?.sendMessage({
+      // Extract replyToMsgId from quote payload (JSON string from buildQuotePayload)
+      let replyToMsgId: string | undefined;
+      if (params.quote) {
+        try {
+          const q = typeof params.quote === 'string' ? JSON.parse(params.quote) : params.quote;
+          replyToMsgId = q?.msgId || q?.msg_id;
+        } catch {}
+      }
+      const res = await (ipc.telegramUser as any)?.sendMessage({
         accountId: params.accountId,
         chatId: params.threadId,
         text: params.body,
         mentions: params.mentions,
+        replyToMsgId,
       });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -167,22 +176,39 @@ export class TelegramUserAdapter extends BaseChannelAdapter {
 
   async sendAttachment(params: SendAttachmentParams): Promise<ActionResult> {
     try {
-      const res = params.topicRootMessageId
-        ? await ipc.telegramUser?.sendTopicFile({
-            accountId: params.accountId,
-            chatId: params.threadId,
-            topicRootMessageId: params.topicRootMessageId,
-            filePath: params.filePath,
-            caption: params.body,
-          })
-        : await ipc.telegramUser?.sendFile({
-            accountId: params.accountId,
-            chatId: params.threadId,
-            filePath: params.filePath,
-            caption: params.body,
-          });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      const filePath = params.filePath;
+      const caption = params.body;
+      const chatId = params.threadId;
+      const topicId = params.topicRootMessageId;
+
+      // Detect file type for proper routing
+      const ext = (filePath.split('.').pop() || '').toLowerCase();
+      const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(ext);
+      const isVideo = ['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv'].includes(ext);
+      const isAudio = ['mp3', 'ogg', 'wav', 'm4a', 'aac', 'flac'].includes(ext);
+
+      const fileType = params.fileType || (isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'file');
+      console.log(`[TG:adapter] sendAttachment filePath=${filePath} fileType=${fileType} topicId=${topicId || 'none'}`);
+
+      let res: any;
+      if (topicId) {
+        res = await (ipc.telegramUser as any)?.sendTopicFile({
+          accountId: params.accountId, chatId, topicRootMessageId: topicId, filePath, caption, fileType,
+        });
+      } else {
+        // Extract replyToMsgId from quote payload if available
+        let replyToMsgId: string | undefined = params.replyToMsgId;
+        if (!replyToMsgId && params.quote) {
+          try { const q = JSON.parse(params.quote); replyToMsgId = q?.msgId || q?.msg_id; } catch {}
+        }
+        res = await (ipc.telegramUser as any)?.sendFile({
+          accountId: params.accountId, chatId, filePath, caption, fileType, replyToMsgId,
+        });
+      }
+      console.log(`[TG:adapter] sendAttachment result: success=${res?.success} msgId=${res?.messageId} error=${res?.error}`);
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
+      console.error(`[TG:adapter] sendAttachment FAILED: ${err.message}`);
       return { success: false, error: err.message };
     }
   }
@@ -301,6 +327,21 @@ export class TelegramUserAdapter extends BaseChannelAdapter {
     }
   }
 
+  /** Đánh dấu đã đọc 1 forum topic cụ thể (dùng messages.ReadDiscussion) */
+  async markTopicAsRead(params: { accountId: string; threadId: string; topicId: string; topMessageId?: string }): Promise<ActionResult> {
+    try {
+      const res = await ipc.telegramUser?.readForumTopic({
+        accountId: params.accountId,
+        chatId: params.threadId,
+        topMsgId: params.topicId,
+        readMaxId: params.topMessageId,
+      });
+      return { success: res?.success ?? false, error: res?.error };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
   // ─── Forum / Topics ────────────────────────────────────────────────────
 
   async isForum(params: { accountId: string; threadId: string; forceApi?: boolean }): Promise<ActionResult & { isForum?: boolean }> {
@@ -351,7 +392,7 @@ export class TelegramUserAdapter extends BaseChannelAdapter {
   async sendTopicMessage(params: { accountId: string; threadId: string; topicId: string; text: string }): Promise<ActionResult> {
     try {
       const res = await ipc.telegramUser?.sendTopicMessage({ accountId: params.accountId, chatId: params.threadId, topicRootMessageId: params.topicId, text: params.text });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }

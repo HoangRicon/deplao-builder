@@ -56,7 +56,7 @@ export function isMediaType(msgType: string, content: string, attachmentsStr?: s
   if (isBankCardType(msgType, content)) return false;
   if (['share.file', 'share.link'].includes(msgType)) return false;
   if (msgType === 'chat.video.msg') return false; // video được xử lý riêng
-  if (msgType === 'chat.voice') return false; // voice được xử lý riêng
+  if (msgType === 'chat.voice' || msgType === 'audio' || msgType === 'voice') return false; // voice được xử lý riêng
   if (msgType === 'photo' || msgType === 'image' || msgType === 'chat.photo') return true;
 
   // Telegram/Facebook: file with image MIME type or image extension → treat as media
@@ -90,14 +90,14 @@ export function isMediaType(msgType: string, content: string, attachmentsStr?: s
   return false;
 }
 
-/** Kiểm tra tin nhắn video */
+/** Kiểm tra tin nhắn video (bao gồm video_note của Telegram) */
 export function isVideoType(msgType: string): boolean {
-  return msgType === 'chat.video.msg' || msgType === 'video';
+  return msgType === 'chat.video.msg' || msgType === 'video' || msgType === 'video_note';
 }
 
 /** Kiểm tra tin nhắn voice */
 export function isVoiceType(msgType: string): boolean {
-  return msgType === 'chat.voice' || msgType === 'audio';
+  return msgType === 'chat.voice' || msgType === 'audio' || msgType === 'voice';
 }
 
 /** Kiểm tra tin nhắn vị trí */

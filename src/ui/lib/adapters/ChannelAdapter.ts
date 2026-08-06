@@ -11,6 +11,7 @@ import { Channel } from '../../../configs/channelConfig';
 export interface ActionResult {
   success: boolean;
   error?: string;
+  msgId?: string;
   messageId?: string;
   pollId?: string;
 }
@@ -56,6 +57,8 @@ export interface SendAttachmentParams {
   body?: string;
   fileType?: 'image' | 'video' | 'audio' | 'file';
   quote?: string | null;
+  /** Reply-to message ID for Telegram */
+  replyToMsgId?: string;
 }
 
 export interface SendVideoParams {

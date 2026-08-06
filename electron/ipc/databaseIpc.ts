@@ -75,7 +75,13 @@ export function registerDatabaseIpc() {
             }
             Logger.log(`[databaseIpc] db:getMessages zaloId=${zaloId} threadId=${threadId} limit=${limit} offset=${offset} before=${before}`);
             const messages = DatabaseService.getInstance().getMessages(zaloId, threadId, limit, offset, before > 0 ? before : undefined, topicId);
-            Logger.log(`[databaseIpc] db:getMessages → ${messages.length} msgs returned`);
+            // Log chi tiết 3 tin nhắn đầu để debug attachment/local_paths
+            const sample = messages.slice(0, 3).map((m: any) => {
+                const attLen = m.attachments ? String(m.attachments).length : 0;
+                const hasLp = !!(m.local_paths && m.local_paths !== '{}' && m.local_paths !== '[]');
+                return `{ id=${m.msg_id} type=${m.msg_type} att=${attLen}b lp=${hasLp} sent=${m.is_sent} ch=${m.channel} }`;
+            });
+            Logger.log(`[databaseIpc] db:getMessages → ${messages.length} msgs. Sample: ${sample.join(' | ')}`);
             return { success: true, messages };
         } catch (error: any) {
             return { success: false, error: error.message };
@@ -994,6 +1000,22 @@ export function registerDatabaseIpc() {
             EventBroadcaster.emit('db:localLabelThreadChanged', { action: 'assign', ownerZaloId: zaloId, labelId, threadId });
             proxyToBoss('db:assignLocalLabelToThread', { zaloId, labelId, threadId, threadType, labelText, labelColor, labelEmoji });
             return { success: true };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    });
+
+    // ── Bulk assign labels — single transaction, no per-item IPC overhead ──
+    ipcMain.handle('db:bulkAssignLocalLabelToThread', async (_event, { zaloId, labelIds, threadIds }: {
+        zaloId: string; labelIds: number[]; threadIds: string[];
+    }) => {
+        try {
+            if (isEmployeeMode()) proxyToBoss("bulkAssignLocalLabelToThread", { zaloId, labelIds, threadIds });
+            const count = DatabaseService.getInstance().bulkAssignLocalLabelToThread(zaloId, labelIds, threadIds);
+            // Emit single event after bulk operation
+            EventBroadcaster.emit('db:localLabelThreadChanged', { action: 'bulkAssign', ownerZaloId: zaloId, labelIds, threadIds });
+            proxyToBoss('db:bulkAssignLocalLabelToThread', { zaloId, labelIds, threadIds });
+            return { success: true, count };
         } catch (error: any) {
             return { success: false, error: error.message };
         }

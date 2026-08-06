@@ -75,7 +75,7 @@ const LOGIN_SESSION_TTL_MS = 10 * 60 * 1000;
 type TelegramIngressSource = 'socket' | 'global_difference' | 'channel_difference' | 'history' | 'poll' | 'topic_api';
 
 type ProcessResult = {
-  status: 'inserted' | 'duplicate' | 'ignored' | 'failed';
+  status: 'inserted' | 'duplicate' | 'updated' | 'ignored' | 'failed';
   chatId?: string;
   messageId?: string;
 };
@@ -761,12 +761,15 @@ function persistTelegramMessage(
 ): ProcessResult {
   if (!msg.msgId || !msg.chatId) return { status: 'ignored' };
 
+  Logger.log(`[TG:persist] msgId=${msg.msgId} msgType=${msg.msgType} isSelf=${msg.isSelf} attachments=${(msg.attachments || []).length}`);
+
   // Check if already exists
   const existing = db.queryOne<any>(
     `SELECT msg_id, attachments, content, msg_type, quote_data FROM messages WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
     [msg.msgId, msg.accountId, msg.chatId],
   );
   if (existing) {
+    Logger.log(`[TG:persist] DUPLICATE msgId=${msg.msgId} existing_attachments=${existing.attachments?.length || 0} new_attachments=${msg.attachments?.length || 0}`);
     // A replay may carry richer post/sticker/custom-emoji metadata than an
     // earlier history row. Merge it without repeating unread/UI side effects.
     let currentAttachments: any[] = [];
@@ -788,7 +791,8 @@ function persistTelegramMessage(
       [
         JSON.stringify(merged),
         existing.content || msg.content,
-        existing.msg_type === 'text' && msg.msgType !== 'text' ? msg.msgType : existing.msg_type,
+        // Always update msg_type from socket echo (more accurate than sendFile's extension-based detection)
+        msg.msgType || existing.msg_type,
         msg.reactions == null ? null : JSON.stringify(msg.reactions),
         msg.reactions == null ? null : JSON.stringify(msg.reactions),
         msg.replyToId || null,
@@ -797,7 +801,12 @@ function persistTelegramMessage(
         msg.msgId, msg.accountId, msg.chatId,
       ],
     );
-    return { status: 'duplicate', chatId: msg.chatId, messageId: msg.msgId };
+    // Return 'updated' if attachments were actually merged (so caller can emit event for UI)
+    const hadAttachments = currentAttachments.length > 0;
+    const newAttachments = (msg.attachments || []).length > 0;
+    const mergeStatus = hadAttachments && newAttachments ? 'updated' : 'duplicate';
+    Logger.log(`[TG:persist] MERGE_RESULT msgId=${msg.msgId} status=${mergeStatus} merged_count=${merged.length}`);
+    return { status: mergeStatus, chatId: msg.chatId, messageId: msg.msgId };
   }
 
   try {
@@ -1345,15 +1354,15 @@ async function drainChannelDifferenceNow(
       if (failedCount === 0 && newPts > 0) {
         db.saveTelegramChannelPts(accountId, channelId, newPts);
         currentPts = newPts;
-        tgLog('info', accountId, source, `ChannelDifference committed pts=${newPts} for ${channelId}`, {
-          msgs: messages.length,
-          otherUpdates: (diff.otherUpdates || []).length,
-        });
+        // tgLog('info', accountId, source, `ChannelDifference committed pts=${newPts} for ${channelId}`, {
+        //   msgs: messages.length,
+        //   otherUpdates: (diff.otherUpdates || []).length,
+        // });
       } else if (failedCount > 0) {
-        tgLog('warn', accountId, source, `ChannelDifference: ${failedCount} failed, NOT committing PTS for ${channelId}`);
+        // tgLog('warn', accountId, source, `ChannelDifference: ${failedCount} failed, NOT committing PTS for ${channelId}`);
         return false; // Don't continue draining on failure
       } else {
-        tgLog('warn', accountId, source, `ChannelDifference returned invalid PTS for ${channelId}`);
+        // tgLog('warn', accountId, source, `ChannelDifference returned invalid PTS for ${channelId}`);
         return false;
       }
 
@@ -1728,7 +1737,22 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
 
         if (msgId && newText !== undefined) {
           if (chatId) {
-            db.run(`UPDATE messages SET content = ? WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`, [newText, msgId, account.accountId, chatId]);
+            // Build edit_history from current content (giống Facebook handler)
+            const existingMsg = db.queryOne<any>(
+              `SELECT content, edit_history FROM messages WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+              [msgId, account.accountId, chatId]
+            );
+            let editHistory: any[] = [];
+            if (existingMsg?.edit_history) {
+              try { editHistory = JSON.parse(existingMsg.edit_history); } catch { editHistory = []; }
+            }
+            if (existingMsg?.content && existingMsg.content !== newText) {
+              editHistory.push({ oldBody: existingMsg.content, editedAt: Date.now(), editCount: editHistory.length + 1 });
+            }
+            db.run(
+              `UPDATE messages SET content = ?, is_edited = 1, edit_history = ? WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+              [newText, JSON.stringify(editHistory), msgId, account.accountId, chatId]
+            );
           }
           EventBroadcaster.emit('event:messageEdited', {
             zaloId: account.accountId,
@@ -1739,7 +1763,7 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
           Logger.log(`[TelegramUserListener] Message edited: ${msgId}`);
         }
 
-        // Handle deleted messages
+        // Handle deleted messages (thu hồi)
         if (update instanceof Api.UpdateDeleteMessages || update instanceof Api.UpdateDeleteChannelMessages) {
           const ids = update.messages || [];
           // Channel message IDs are scoped to their channel. Never mark an
@@ -1748,18 +1772,28 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
             ? `-100${String(update.channelId)}`
             : undefined;
           for (const id of ids) {
+            const msgIdStr = String(id);
+            // Lưu recalled_content trước khi đánh dấu thu hồi
+            const scope = deletedThreadId
+              ? `msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`
+              : `msg_id = ? AND owner_zalo_id = ? AND channel = 'telegram_user'`;
+            const scopeParams = deletedThreadId
+              ? [msgIdStr, account.accountId, deletedThreadId]
+              : [msgIdStr, account.accountId];
+            const existingMsg = db.queryOne<any>(
+              `SELECT content FROM messages WHERE ${scope}`, scopeParams
+            );
+            const recalledContent = existingMsg?.content || null;
+            Logger.log(`[TelegramUserListener] Recall msg ${msgIdStr}: content="${(recalledContent || '').slice(0, 100)}" scope=${scope} deletedThreadId=${deletedThreadId || 'none'}`);
             if (deletedThreadId) {
               db.run(
-                `UPDATE messages SET msg_type = 'deleted' WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
-                [String(id), account.accountId, deletedThreadId]
+                `UPDATE messages SET msg_type = 'recalled', status = 'recalled', is_recalled = 1, recalled_content = ? WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+                [recalledContent, msgIdStr, account.accountId, deletedThreadId]
               );
             } else {
-              // MTProto's non-channel delete update has no peer context.
-              // Keep the legacy account-scoped handling until Phase 3 adds
-              // durable update/difference context for private/basic chats.
               db.run(
-                `UPDATE messages SET msg_type = 'deleted' WHERE msg_id = ? AND owner_zalo_id = ? AND channel = 'telegram_user'`,
-                [String(id), account.accountId]
+                `UPDATE messages SET msg_type = 'recalled', status = 'recalled', is_recalled = 1, recalled_content = ? WHERE msg_id = ? AND owner_zalo_id = ? AND channel = 'telegram_user'`,
+                [recalledContent, msgIdStr, account.accountId]
               );
             }
           }
@@ -1800,7 +1834,7 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
           return;
         }
 
-        // ── Read history outbox (we read their messages) ─────────────────────
+        // ── Read history outbox (we read their messages on another device) ───
         if (update instanceof Api.UpdateReadHistoryOutbox) {
           try {
             const peer = (update as any).peer;
@@ -1818,6 +1852,12 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
                  WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'telegram_user'`,
                 [account.accountId, readChatId],
               );
+              EventBroadcaster.emit('event:seen', {
+                zaloId: account.accountId,
+                threadId: readChatId,
+                msgId: String(update.maxId || ''),
+                channel: 'telegram_user',
+              });
               EventBroadcaster.emit('db:unreadChanged', { zaloId: account.accountId, source: 'telegram_read_outbox' });
             }
           } catch (err: any) {
@@ -2284,13 +2324,9 @@ async function handleNewMessage(accountId: string, event: NewMessageEvent, clien
   if (!db) return { status: 'failed', chatId, messageId };
 
   const displayContent = content || (() => {
-    if (msgType === 'photo') return '🖼️ Hình ảnh';
-    if (msgType === 'video') return '🎬 Video';
-    if (msgType === 'gif') return '🎞️ GIF';
-    if (msgType === 'video_note') return '🎬 Video message';
+    // Chỉ hiện placeholder cho audio (có ý nghĩa), còn lại empty nếu không có caption
     if (msgType === 'audio') return '🎵 Audio';
-    if (msgType === 'sticker') return '🎨 Sticker';
-    if (msgType !== 'text') return '📎 Tệp đính kèm';
+    if (msgType !== 'text') return '';
     return '';
   })();
 
@@ -2350,7 +2386,7 @@ async function handleNewMessage(accountId: string, event: NewMessageEvent, clien
         display_name = CASE WHEN excluded.display_name != '' AND contacts.display_name = '' THEN excluded.display_name ELSE contacts.display_name END,
         last_message = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message ELSE contacts.last_message END,
         last_message_time = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message_time ELSE contacts.last_message_time END,
-        unread_count = CASE WHEN ? = 0 THEN contacts.unread_count + 1 ELSE contacts.unread_count END,
+        unread_count = CASE WHEN ? = 0 THEN contacts.unread_count ELSE contacts.unread_count + 1 END,
         channel = 'telegram_user'
     `, [
       accountId, chatId, chatTitle,
@@ -2366,9 +2402,11 @@ async function handleNewMessage(accountId: string, event: NewMessageEvent, clien
     }
 
     // Download media (background, non-blocking)
-    if ((message as any).media && client) {
+    const hasMedia = !!(message as any).media;
+    Logger.log(`[TG:handleNew] STEP6 msgId=${messageId} hasMedia=${hasMedia} isSelf=${isSelf} source=${source} result=${result.status}`);
+    if (hasMedia && client) {
       downloadMediaForMessage(accountId, client, message, messageId, msgType, chatId).catch(err => {
-        tgLog('warn', accountId, source, `Media download failed for ${messageId}: ${err.message}`);
+        Logger.error(`[TG:download] QUEUE_FAILED msgId=${messageId} error=${err.message}`);
       });
     }
 
@@ -2406,10 +2444,58 @@ async function handleNewMessage(accountId: string, event: NewMessageEvent, clien
       topicId: topicId || '-',
       msgType,
     });
+  } else if (result.status === 'updated') {
+    // Attachments were merged into existing message — emit event so UI picks it up
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: {
+        type: threadType,
+        threadId: chatId,
+        isSelf,
+        _silentNotification: suppressNotification,
+        data: {
+          uidFrom: senderId,
+          idTo: chatId,
+          msgId: messageId,
+          content,
+          msgType,
+          ts: String(timestamp),
+          dName: senderName,
+          attachments,
+        },
+      },
+    });
+    tgLog('info', accountId, source, `UI_EMITTED (updated) msg ${messageId}`, { chatId, msgType });
   } else if (result.status === 'duplicate') {
-    // Duplicate — log but no side effects. This is expected when socket +
-    // difference both deliver the same message. NOT an error.
-    tgLog('info', accountId, source, `dedup msg ${messageId}`, { chatId });
+    // Duplicate — KHÔNG emit UI event.
+    // Temp message trong store đã có local_paths và hiển thị đúng.
+    // Real message trong DB có metadata (attachments, reactions) từ socket echo.
+    // Emit event → renderer thay temp bằng real → mất local_paths → "Đang tải về...".
+    tgLog('info', accountId, source, `dedup msg ${messageId} (kept temp, DB enriched)`, { chatId });
+    // For self-sent messages: socket echo merges attachments into DB, but UI store needs update
+    // Emit event so addMessage can merge attachments into existing temp/real message
+    if (isSelf && attachments && attachments.length > 0) {
+      EventBroadcaster.emit('event:message', {
+        zaloId: accountId,
+        message: {
+          type: threadType,
+          threadId: chatId,
+          isSelf,
+          _silentNotification: true,
+          data: {
+            uidFrom: senderId,
+            idTo: chatId,
+            msgId: messageId,
+            content,
+            msgType,
+            ts: String(timestamp),
+            dName: senderName,
+            attachments,
+          },
+        },
+      });
+      tgLog('info', accountId, source, `UI_EMITTED (self-dedup with attachments) msg ${messageId}`, { chatId, msgType });
+    }
   }
   return result;
 }
@@ -2469,6 +2555,7 @@ async function downloadMediaForMessageNow(
   msgType: string,
   threadId: string,
 ): Promise<string | null> {
+  Logger.log(`[TG:download] START msgId=${messageId} msgType=${msgType} threadId=${threadId}`);
   const db = DatabaseService.getInstance();
   if (!db) return null;
 
@@ -2495,9 +2582,23 @@ async function downloadMediaForMessageNow(
 
     // Update local_paths trong DB
     const localPaths: Record<string, string> = {};
-    if (msgType === 'photo') localPaths.main = localPath;
-    else if (msgType === 'video') localPaths.video = localPath;
-    else if (msgType === 'audio') localPaths.voice = localPath;
+    // Detect actual media type for webpage messages
+    let effectiveMsgType = msgType;
+    if (msgType === 'telegram.webpage') {
+      try {
+        const webpage = (message?.media as any)?.webpage;
+        if (webpage?.photo) effectiveMsgType = 'photo';
+        else if (webpage?.document) {
+          const mime = String(webpage.document?.mimeType || '');
+          if (mime.includes('video')) effectiveMsgType = 'video';
+          else if (mime.includes('audio')) effectiveMsgType = 'audio';
+          else effectiveMsgType = 'file';
+        }
+      } catch {}
+    }
+    if (effectiveMsgType === 'photo') localPaths.main = localPath;
+    else if (effectiveMsgType === 'video') localPaths.video = localPath;
+    else if (effectiveMsgType === 'audio') localPaths.voice = localPath;
     else localPaths.file = localPath;
 
     db.run(
@@ -2513,9 +2614,10 @@ async function downloadMediaForMessageNow(
       localPaths,
     });
 
-    Logger.log(`[TelegramUserListener] Downloaded ${msgType} for msg ${messageId}: ${localPath}`);
+    Logger.log(`[TG:download] DONE msgId=${messageId} msgType=${msgType} localPath=${localPath} localPaths=${JSON.stringify(localPaths)}`);
     return localPath;
   } catch (err: any) {
+    Logger.error(`[TG:download] FAILED msgId=${messageId} error=${err.message}`);
     tgLog('warn', accountId, 'history', 'MEDIA_DOWNLOAD_FAILED', {
       chatId: threadId,
       messageId,
@@ -2542,6 +2644,29 @@ function getMediaExtension(msgType: string, message: any): string {
     if (stickerMime.includes('mp4')) return '.mp4';
     if (stickerMime.includes('webp')) return '.webp';
     return '.webp';
+  }
+  // MessageMediaWebPage: detect actual media type inside webpage
+  if (msgType === 'telegram.webpage') {
+    try {
+      const webpage = (message?.media as any)?.webpage;
+      if (webpage?.photo) return '.jpg';
+      if (webpage?.document) {
+        const doc = webpage.document;
+        const mime = String(doc?.mimeType || '');
+        if (mime.includes('video')) return '.mp4';
+        if (mime.includes('audio')) return '.mp3';
+        if (mime.includes('gif')) return '.mp4';
+        // Try filename extension
+        const attrs = doc?.attributes || [];
+        const fnAttr = attrs.find((a: any) => a.className === 'DocumentAttributeFilename');
+        if (fnAttr?.fileName) {
+          const dot = fnAttr.fileName.lastIndexOf('.');
+          if (dot > 0) return fnAttr.fileName.substring(dot);
+        }
+        return '.bin';
+      }
+    } catch {}
+    return '.jpg'; // fallback: webpage often has photo thumbnail
   }
   // File: try get extension from document attributes
   try {
@@ -3142,13 +3267,8 @@ async function fetchMissedMessages(accountId: string, client: TelegramClient): P
         const reactions = normalizeTelegramReactions((msg as any).reactions, accountId);
 
         const displayContent = content || (() => {
-          if (msgType === 'photo') return '🖼️ Hình ảnh';
-          if (msgType === 'video') return '🎬 Video';
-          if (msgType === 'gif') return '🎞️ GIF';
-          if (msgType === 'video_note') return '🎬 Video message';
           if (msgType === 'audio') return '🎵 Audio';
-          if (msgType === 'sticker') return '🎨 Sticker';
-          if (msgType !== 'text') return '📎 Tệp đính kèm';
+          if (msgType !== 'text') return '';
           return '';
         })();
 
@@ -3578,7 +3698,7 @@ function getPersistedTelegramSendDenial(accountId: string, chatId: string): stri
   }
 }
 
-export async function sendMessage(accountId: string, chatId: string, text: string, mentions?: Array<{ uid: string; pos: number; len: number }>): Promise<{ success: boolean; messageId?: string; error?: string }> {
+export async function sendMessage(accountId: string, chatId: string, text: string, mentions?: Array<{ uid: string; pos: number; len: number }>, replyToMsgId?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const listener = activeListeners.get(accountId);
   if (!listener?.client || !listener.connected) {
     return { success: false, error: 'Telegram client not connected' };
@@ -3616,19 +3736,50 @@ export async function sendMessage(accountId: string, chatId: string, text: strin
 
     const sendOpts: any = { message: text };
     if (entities.length > 0) sendOpts.entities = entities;
+    if (replyToMsgId) sendOpts.replyTo = Number(replyToMsgId);
 
     const result = await listener.client.sendMessage(peer, sendOpts);
     const msgId = String(result?.id || Date.now());
 
-    // Save sent message to DB
+    // Save sent message to DB (INSERT OR IGNORE — socket echo sẽ skip nếu đã tồn tại)
+    const now = Date.now();
+    const threadType = chatId.startsWith('-') ? 1 : 0;
     const db = DatabaseService.getInstance();
     if (db) {
       db.run(`
         INSERT OR IGNORE INTO messages
           (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel)
-        VALUES (?, ?, ?, 0, ?, ?, 'text', ?, 1, '[]', 'sent', 'telegram_user')
-      `, [msgId, accountId, chatId, accountId, text, Date.now()]);
+        VALUES (?, ?, ?, ?, ?, ?, 'text', ?, 1, '[]', 'sent', 'telegram_user')
+      `, [msgId, accountId, chatId, threadType, accountId, text, now]);
+
+      // Update contacts (last_message, last_message_time) — đảm bảo conversation list cập nhật ngay
+      db.run(`
+        INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel, is_in_others)
+        VALUES (?, ?, '', '', 0, ?, 0, ?, ?, 'telegram_user', 0)
+        ON CONFLICT(owner_zalo_id, contact_id) DO UPDATE SET
+          last_message = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message ELSE contacts.last_message END,
+          last_message_time = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message_time ELSE contacts.last_message_time END
+      `, [accountId, chatId, threadType === 1 ? 'group' : 'user', text, now]);
     }
+
+    // Emit event cho renderer — socket echo sẽ skip do persistTelegramMessage trả 'existing'
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: {
+        type: threadType,
+        threadId: chatId,
+        isSelf: true,
+        _silentNotification: true,
+        data: {
+          uidFrom: accountId,
+          idTo: chatId,
+          msgId,
+          content: text,
+          msgType: 'text',
+          ts: String(now),
+        },
+      },
+    });
 
     return { success: true, messageId: msgId };
   } catch (err: any) {
@@ -3644,7 +3795,7 @@ export async function editMessage(accountId: string, chatId: string, messageId: 
   if (!listener?.client || !listener.connected) return { success: false, error: 'Not connected' };
   try {
     const peer = await resolveInputPeer(accountId, listener.client, chatId);
-    await listener.client.editMessage(peer, { message: text, id: Number(messageId) } as any);
+    await listener.client.editMessage(peer, { message: Number(messageId), text });
     // Update DB
     const db = DatabaseService.getInstance();
     if (db) {
@@ -4493,7 +4644,7 @@ export async function forwardMessages(accountId: string, fromChatId: string, toC
 /**
  * Send file/media (User API)
  */
-export async function sendFile(accountId: string, chatId: string, filePath: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+export async function sendFile(accountId: string, chatId: string, filePath: string, caption?: string, fileType?: string, replyToMsgId?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const listener = activeListeners.get(accountId);
   if (!listener?.client || !listener.connected) return { success: false, error: 'Not connected' };
   const denial = getPersistedTelegramSendDenial(accountId, chatId);
@@ -4502,22 +4653,155 @@ export async function sendFile(accountId: string, chatId: string, filePath: stri
   if (!rateLimit.allowed) return { success: false, error: `Rate limited. Wait ${rateLimit.waitSeconds}s.` };
   try {
     const peer = await resolveInputPeer(accountId, listener.client, chatId);
-    const result = await listener.client.sendFile(peer, { file: filePath, caption });
-    const msgId = String(result?.id || Date.now());
-    // Save to DB
+    const pathMod = require('path');
+    const fs = require('fs');
+
+    // Resolve path: handle both absolute paths and local-media:// URLs
+    let resolvedPath = filePath;
+    if (filePath.startsWith('local-media:///')) {
+      resolvedPath = filePath.replace('local-media:///', '');
+    } else if (filePath.startsWith('local-media://')) {
+      resolvedPath = filePath.replace('local-media://', '');
+    }
+    resolvedPath = resolvedPath.replace(/\//g, pathMod.sep);
+    if (!fs.existsSync(resolvedPath)) {
+      Logger.error(`[TG:sendFile] File not found: ${resolvedPath} (original: ${filePath})`);
+      return { success: false, error: `File không tồn tại: ${pathMod.basename(resolvedPath)}` };
+    }
+    Logger.log(`[TG:sendFile] STEP1 Sending ${resolvedPath}`);
+
+    // Use client.sendFile() — handles upload + response parsing + message ID extraction
+    const sendOpts: any = { file: resolvedPath, forceDocument: fileType === 'file' };
+    if (caption) sendOpts.message = caption;
+    if (replyToMsgId) sendOpts.replyTo = Number(replyToMsgId);
+
+    Logger.log(`[TG:sendFile] STEP2 sendOpts:`, JSON.stringify({ file: resolvedPath, forceDocument: sendOpts.forceDocument, hasCaption: !!caption }));
+    const result = await listener.client.sendFile(peer, sendOpts);
+    // client.sendFile() returns a Message object with .id (proper 32-bit Telegram msgId)
+    const msgId = String(result?.id || '');
+    const now = Date.now();
+    const threadType = chatId.startsWith('-') ? 1 : 0;
+    Logger.log(`[TG:sendFile] STEP3 result: id=${msgId} className=${result?.className} hasMedia=${!!(result as any)?.media}`);
+    Logger.log(`[TG:sendFile] SUCCESS msgId=${msgId} result.className=${result?.className} result.id=${String(result?.id)}`);
+
+    // Extract attachments from GramJS Message result
+    const attachments: any[] = [];
+    let msgType = 'file';
+    const media = (result as any)?.media;
+    if (media) {
+      if (media.photo) {
+        // Photo: array of PhotoSize — take the largest (last element)
+        const photos = media.photo.sizes || [];
+        const largest = photos[photos.length - 1];
+        if (largest) {
+          attachments.push({
+            type: 'photo',
+            file_id: String(largest.src?.volumeId || ''),
+            width: largest.w || 0,
+            height: largest.h || 0,
+            file_size: largest.size || 0,
+          });
+        }
+        msgType = 'photo';
+      } else if (media.document) {
+        const doc = media.document;
+        const fileName = (doc.attributes || []).find((a: any) => a.fileName)?.fileName || pathMod.basename(resolvedPath);
+        const mimeType = doc.mimeType || '';
+        // Detect type from attributes
+        const isVideo = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeVideo');
+        const isAudio = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeAudio');
+        const isVoice = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeAudio' && a.voice);
+        const isSticker = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeSticker');
+
+        if (isVoice) msgType = 'voice';
+        else if (isVideo) msgType = 'video';
+        else if (isAudio) msgType = 'audio';
+        else if (isSticker) msgType = 'sticker';
+
+        attachments.push({
+          type: isSticker ? 'sticker' : isVoice ? 'voice' : isAudio ? 'audio' : isVideo ? 'video' : 'file',
+          file_id: String(doc.id?.valueOf?.() || doc.id || ''),
+          file_name: fileName,
+          mime_type: mimeType,
+          file_size: doc.size || 0,
+          is_sticker: isSticker,
+        });
+      }
+    }
+
+    // Determine msgType: ưu tiên fileType từ UI, fallback extension, fallback media attributes
+    const ext = pathMod.extname(resolvedPath).toLowerCase();
+    if (fileType === 'image') msgType = 'photo';
+    else if (fileType === 'video') msgType = 'video';
+    else if (fileType === 'audio') msgType = 'audio';
+    else if (!msgType || msgType === 'file') {
+      // Fallback: detect from extension
+      if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext)) msgType = 'photo';
+      else if (['.mp4', '.avi', '.mov', '.mkv', '.webm'].includes(ext)) msgType = 'video';
+      else if (['.mp3', '.ogg', '.wav', '.m4a', '.aac', '.flac'].includes(ext)) msgType = 'audio';
+    }
+
+    Logger.log(`[TG:sendFile] STEP4 msgType=${msgType} attachments=${attachments.length} attachmentTypes=${attachments.map((a: any) => a.type).join(',')}`);
+
+    // Media preview for contacts.last_message
+    const mediaPreview = msgType === 'photo' ? '🖼️ Hình ảnh'
+      : msgType === 'video' ? '🎬 Video'
+      : msgType === 'audio' ? '🎵 Audio'
+      : caption || '📎 File';
+
+    // Save to DB WITH attachments (socket echo sẽ skip vì đã tồn tại)
     const db = DatabaseService.getInstance();
     if (db) {
-      const path = require('path');
-      const ext = path.extname(filePath).toLowerCase();
-      let msgType = 'file';
-      if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) msgType = 'photo';
-      else if (['.mp4', '.avi', '.mov', '.mkv'].includes(ext)) msgType = 'video';
-      else if (['.mp3', '.ogg', '.wav', '.m4a'].includes(ext)) msgType = 'audio';
-      db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel) VALUES (?, ?, ?, 0, ?, ?, ?, ?, 1, '[]', 'sent', 'telegram_user')`,
-        [msgId, accountId, chatId, accountId, caption || '', msgType, Date.now()]);
+      db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'sent', 'telegram_user')`,
+        [msgId, accountId, chatId, threadType, accountId, caption || '', msgType, now, JSON.stringify(attachments)]);
+
+      db.run(`
+        INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel, is_in_others)
+        VALUES (?, ?, '', '', 0, ?, 0, ?, ?, 'telegram_user', 0)
+        ON CONFLICT(owner_zalo_id, contact_id) DO UPDATE SET
+          last_message = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message ELSE contacts.last_message END,
+          last_message_time = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message_time ELSE contacts.last_message_time END
+      `, [accountId, chatId, threadType === 1 ? 'group' : 'user', mediaPreview, now]);
+      Logger.log(`[TG:sendFile] STEP5 DB saved msgId=${msgId} msgType=${msgType} attachments=${attachments.length}`);
     }
+
+    // Emit event để UI thêm tin nhắn ngay (msgType đúng, socket echo KHÔNG arrive cho self-sent)
+    Logger.log(`[TG:sendFile] EMITTING event: msgId=${msgId} msgType=${msgType} chatId=${chatId}`);
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: {
+        type: threadType,
+        threadId: chatId,
+        isSelf: true,
+        _silentNotification: true,
+        data: {
+          uidFrom: accountId,
+          idTo: chatId,
+          msgId,
+          content: caption || '',
+          msgType,
+          ts: String(now),
+          attachments,
+        },
+      },
+    });
+    Logger.log(`[TG:sendFile] STEP6 EVENT_EMITTED msgId=${msgId}`);
+
+    // Trigger background download NGAY — không rely vào handleNewMessage
+    // (socket echo có thể không arrive cho self-sent GramJS messages)
+    if ((result as any)?.media && listener.client) {
+      Logger.log(`[TG:sendFile] STEP7 Starting background download for msgId=${msgId}`);
+      downloadMediaForMessage(accountId, listener.client, result, msgId, msgType, chatId).catch(err => {
+        Logger.error(`[TG:sendFile] STEP7 download FAILED msgId=${msgId} error=${err.message}`);
+      });
+    } else {
+      Logger.log(`[TG:sendFile] STEP7 SKIPPED no media or no client: hasMedia=${!!(result as any)?.media} hasClient=${!!listener.client}`);
+    }
+    Logger.log(`[TG:sendFile] DONE msgId=${msgId} msgType=${msgType} (waiting for background download + socket echo)`);
+
     return { success: true, messageId: msgId };
   } catch (err: any) {
+    Logger.error(`[TG:sendFile] FAILED: ${err.message}`);
     return { success: false, error: err.message };
   }
 }
@@ -4659,7 +4943,7 @@ export async function sendReaction(
 /** Send a file/media into a forum topic. GramJS maps `topMsgId` to
  * InputReplyToMessage.topMsgId, which is required in addition to a reply ID
  * so Telegram does not route the upload to the forum parent timeline. */
-export async function sendTopicFile(accountId: string, chatId: string, topicRootMessageId: string, filePath: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+export async function sendTopicFile(accountId: string, chatId: string, topicRootMessageId: string, filePath: string, caption?: string, fileType?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const listener = activeListeners.get(accountId);
   if (!listener?.client || !listener.connected) return { success: false, error: 'Telegram client not connected' };
   const denial = getPersistedTelegramSendDenial(accountId, chatId);
@@ -4668,14 +4952,91 @@ export async function sendTopicFile(accountId: string, chatId: string, topicRoot
   if (!rateLimit.allowed) return { success: false, error: `Gửi tin quá nhanh. Vui lòng chờ ${rateLimit.waitSeconds} giây.` };
   try {
     const peer = await resolveInputPeer(accountId, listener.client, chatId);
-    const result = await listener.client.sendFile(peer, {
-      file: filePath,
-      caption: caption || '',
-      replyTo: Number(topicRootMessageId),
-      topMsgId: Number(topicRootMessageId),
-    } as any);
-    return { success: true, messageId: String(result?.id || Date.now()) };
+    const pathMod = require('path');
+    const fs = require('fs');
+
+    // Resolve path
+    let resolvedPath = filePath;
+    if (filePath.startsWith('local-media:///')) {
+      resolvedPath = filePath.replace('local-media:///', '');
+    } else if (filePath.startsWith('local-media://')) {
+      resolvedPath = filePath.replace('local-media://', '');
+    }
+    resolvedPath = resolvedPath.replace(/\//g, pathMod.sep);
+    if (!fs.existsSync(resolvedPath)) {
+      Logger.error(`[TG:sendTopicFile] File not found: ${resolvedPath} (original: ${filePath})`);
+      return { success: false, error: `File không tồn tại: ${pathMod.basename(resolvedPath)}` };
+    }
+    Logger.log(`[TG:sendTopicFile] Sending ${resolvedPath}`);
+
+    // Use client.sendFile() — handles upload + response parsing + message ID extraction
+    const sendOpts: any = { file: resolvedPath, forceDocument: fileType === 'file', topMsgId: Number(topicRootMessageId) };
+    if (caption) sendOpts.message = caption;
+
+    const result = await listener.client.sendFile(peer, sendOpts);
+    const msgId = String(result?.id || '');
+    const now = Date.now();
+    const threadType = chatId.startsWith('-') ? 1 : 0;
+
+    // Extract attachments from GramJS Message result
+    const attachments: any[] = [];
+    let msgType = 'file';
+    const media = (result as any)?.media;
+    if (media) {
+      if (media.photo) {
+        const photos = media.photo.sizes || [];
+        const largest = photos[photos.length - 1];
+        if (largest) {
+          attachments.push({ type: 'photo', file_id: String(largest.src?.volumeId || ''), width: largest.w || 0, height: largest.h || 0, file_size: largest.size || 0 });
+        }
+        msgType = 'photo';
+      } else if (media.document) {
+        const doc = media.document;
+        const fileName = (doc.attributes || []).find((a: any) => a.fileName)?.fileName || pathMod.basename(resolvedPath);
+        const mimeType = doc.mimeType || '';
+        const isVideo = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeVideo');
+        const isAudio = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeAudio');
+        const isVoice = (doc.attributes || []).some((a: any) => a.className === 'DocumentAttributeAudio' && a.voice);
+        if (isVoice) msgType = 'voice';
+        else if (isVideo) msgType = 'video';
+        else if (isAudio) msgType = 'audio';
+        attachments.push({ type: isVoice ? 'voice' : isAudio ? 'audio' : isVideo ? 'video' : 'file', file_id: String(doc.id?.valueOf?.() || doc.id || ''), file_name: fileName, mime_type: mimeType, file_size: doc.size || 0 });
+      }
+    }
+    // Fallback: determine from extension
+    const ext = pathMod.extname(resolvedPath).toLowerCase();
+    if (fileType === 'image') msgType = 'photo';
+    else if (fileType === 'video') msgType = 'video';
+    else if (fileType === 'audio') msgType = 'audio';
+    else if (msgType === 'file') {
+      if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext)) msgType = 'photo';
+      else if (['.mp4', '.avi', '.mov', '.mkv', '.webm'].includes(ext)) msgType = 'video';
+      else if (['.mp3', '.ogg', '.wav', '.m4a', '.aac', '.flac'].includes(ext)) msgType = 'audio';
+    }
+
+    const mediaPreview = msgType === 'photo' ? '🖼️ Hình ảnh' : msgType === 'video' ? '🎬 Video' : msgType === 'audio' ? '🎵 Audio' : caption || '📎 File';
+
+    // Save to DB WITH attachments
+    const db = DatabaseService.getInstance();
+    if (db) {
+      db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'sent', 'telegram_user')`,
+        [msgId, accountId, chatId, threadType, accountId, caption || '', msgType, now, JSON.stringify(attachments)]);
+      db.run(`INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel, is_in_others) VALUES (?, ?, '', '', 0, ?, 0, ?, ?, 'telegram_user', 0) ON CONFLICT(owner_zalo_id, contact_id) DO UPDATE SET last_message = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message ELSE contacts.last_message END, last_message_time = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message_time ELSE contacts.last_message_time END`,
+        [accountId, chatId, threadType === 1 ? 'group' : 'user', mediaPreview, now]);
+    }
+
+    // Emit event với đầy đủ attachments
+    Logger.log(`[TG:sendTopicFile] EMITTING event: msgId=${msgId} msgType=${msgType} chatId=${chatId}`);
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: { type: threadType, threadId: chatId, isSelf: true, _silentNotification: true,
+        data: { uidFrom: accountId, idTo: chatId, msgId, content: caption || '', msgType, ts: String(now), attachments, topicId: topicRootMessageId } },
+    });
+    Logger.log(`[TG:sendTopicFile] EVENT_EMITTED msgId=${msgId} msgType=${msgType} attachments=${attachments.length}`);
+
+    return { success: true, messageId: msgId };
   } catch (err: any) {
+    Logger.error(`[TG:sendTopicFile] FAILED: ${err?.message || err}`);
     return { success: false, error: err?.message || String(err) };
   }
 }
@@ -5641,7 +6002,10 @@ export async function editChatPhoto(accountId: string, chatId: string, photoPath
     const fs = require('fs');
     const peerType = await resolveChatPeerType(accountId, conn.client, chatId);
     const buffer = fs.readFileSync(photoPath);
-    const file = await conn.client.uploadFile({ file: buffer, workers: 1 });
+    // GramJS uploadFile expects CustomFile, not raw Buffer
+    const { CustomFile } = require('telegram/client/uploads');
+    const customFile = new CustomFile(require('path').basename(photoPath), buffer.length, '', buffer);
+    const file = await conn.client.uploadFile({ file: customFile, workers: 1 });
     const inputFile = 'id' in file
       ? new Api.InputFileUploaded({ id: file.id, parts: file.parts, md5Checksum: Buffer.alloc(0) })
       : file;
@@ -5768,6 +6132,33 @@ export async function readChatHistory(accountId: string, chatId: string): Promis
     }
     return { success: true };
   } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Đánh dấu đã đọc 1 forum topic cụ thể
+ * Forum topic = discussion thread, dùng messages.ReadDiscussion
+ * msg_id = topic root message ID
+ * read_max_id = max message ID cần mark read (dùng top_message từ ForumTopic nếu có)
+ */
+export async function readForumTopic(accountId: string, chatId: string, topMsgId: string, readMaxId?: string): Promise<{ success: boolean; error?: string }> {
+  const conn = ensureConnected(accountId);
+  if ('error' in conn) return { success: false, error: conn.error };
+  try {
+    const { Api } = require('telegram');
+    const peer = await resolveInputPeer(accountId, conn.client, chatId);
+    // read_max_id: nếu không có → dùng INT32_MAX để mark toàn bộ topic
+    const maxId = readMaxId ? Number(readMaxId) : 0x7FFFFFFF;
+    Logger.log(`[TelegramUserListener] readForumTopic: chatId=${chatId} topMsgId=${topMsgId} readMaxId=${maxId}`);
+    await conn.client.invoke(new Api.messages.ReadDiscussion({
+      peer,
+      msgId: Number(topMsgId),
+      readMaxId: maxId,
+    }));
+    return { success: true };
+  } catch (err: any) {
+    Logger.warn(`[TelegramUserListener] readForumTopic failed: ${err.message}`);
     return { success: false, error: err.message };
   }
 }
@@ -6309,13 +6700,43 @@ export async function sendTopicMessage(accountId: string, chatId: string, rootMe
       randomId: BigInt(Math.floor(Math.random() * 2**64)),
     }));
     const msgId = getMessageIdFromUpdates(result) || String(Date.now());
+    const now = Date.now();
 
-    // Save to DB
+    // Save to DB (INSERT OR IGNORE — socket echo sẽ skip nếu đã tồn tại)
     const db = DatabaseService.getInstance();
     if (db) {
       db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel, reply_to_id, topic_id) VALUES (?, ?, ?, 1, ?, ?, 'text', ?, 1, '[]', 'sent', 'telegram_user', ?, ?)`,
-        [msgId, accountId, chatId, accountId, text, Date.now(), null, rootMessageId]);
+        [msgId, accountId, chatId, accountId, text, now, null, rootMessageId]);
+
+      db.run(`
+        INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel, is_in_others)
+        VALUES (?, ?, '', '', 0, 'group', 0, ?, ?, 'telegram_user', 0)
+        ON CONFLICT(owner_zalo_id, contact_id) DO UPDATE SET
+          last_message = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message ELSE contacts.last_message END,
+          last_message_time = CASE WHEN excluded.last_message_time >= COALESCE(contacts.last_message_time, 0) THEN excluded.last_message_time ELSE contacts.last_message_time END
+      `, [accountId, chatId, text, now]);
     }
+
+    // Emit event cho renderer
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: {
+        type: 1,
+        threadId: chatId,
+        isSelf: true,
+        _silentNotification: true,
+        data: {
+          uidFrom: accountId,
+          idTo: chatId,
+          msgId,
+          content: text,
+          msgType: 'text',
+          ts: String(now),
+          topicId: rootMessageId,
+        },
+      },
+    });
+
     return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.message };

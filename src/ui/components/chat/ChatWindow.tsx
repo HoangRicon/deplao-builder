@@ -1444,7 +1444,7 @@ export default function ChatWindow() {
     let rafId = 0;
     // Preload threshold: trigger when user scrolls within 800px of top
     // (~10-15 messages depending on message height)
-    const SCROLL_THRESHOLD = 800;
+    const SCROLL_THRESHOLD = 550;
     const onScroll = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
@@ -2896,7 +2896,7 @@ export default function ChatWindow() {
                       <p className="text-xs text-gray-400 mb-0.5 px-1 truncate max-w-full">{displayName}</p>
                     )}
                     <div className={`rounded-2xl text-sm break-words min-w-0 max-w-full overflow-hidden ${
-                      telegramPostMeta ? 'max-w-[520px] bg-[#202b3c] border border-sky-500/25 shadow-lg rounded-xl' :
+                      telegramPostMeta ? 'max-w-[520px] bg-gray-700 border border-sky-500/25 shadow-lg rounded-xl' :
                       isMediaMsg || isGroupMedia || isFileMsg || isCardMsg || isEcardMsg || isStickerMsg || isBankCardMsg ? '' : isSent
                         ? 'px-3 py-2 bg-blue-400/40 text-white border border-blue-200 dark:border-blue-600/50 rounded-br-sm'
                         : 'px-3 py-2 bg-gray-700 text-gray-200 border border-gray-200 dark:border-gray-600 rounded-bl-sm'
@@ -3061,13 +3061,11 @@ export default function ChatWindow() {
                         <PollBubble msg={msg} isSent={isSent} activeAccountId={activeAccountId || ''} threadId={activeThreadId || ''} />
                       )}
                       renderVideo={() => {
-                        // Facebook video: auto-capture thumbnail + click → system player
                         let videoPath = '';
                         try {
                           const lp = typeof msg.local_paths === 'string'
                             ? JSON.parse(msg.local_paths || '{}') : (msg.local_paths || {});
                           videoPath = lp.file || lp.video || lp.main || '';
-                          // Facebook group videos store path as att_0, att_1, etc.
                           if (!videoPath) {
                             const attKey = Object.keys(lp).find(k => k.startsWith('att_'));
                             if (attKey) videoPath = lp[attKey];
@@ -3076,7 +3074,25 @@ export default function ChatWindow() {
                         if (!videoPath && isFacebook(msg.channel)) {
                           videoPath = getLocalMediaPath(msg, 'video') || getLocalMediaPath(msg);
                         }
-                        return <FBVideoThumb videoPath={videoPath} />;
+                        // Extract caption from content (Telegram video + text)
+                        let videoCaption = '';
+                        try {
+                          const parsed = JSON.parse(msg.content || '{}');
+                          videoCaption = typeof parsed === 'string' ? parsed : (parsed.title || parsed.text || parsed.caption || '');
+                        } catch { videoCaption = ''; }
+                        if (!videoCaption && msg.content && !msg.content.startsWith('{')) videoCaption = msg.content;
+                        const videoNode = <FBVideoThumb videoPath={videoPath} />;
+                        if (videoCaption) {
+                          return (
+                            <div className={`flex flex-col max-w-xs`}>
+                              {videoNode}
+                              <div className={`px-3 py-2 text-sm break-words ${isSent ? 'bg-blue-400/40 text-white' : 'bg-gray-700 text-gray-200'}`}>
+                                {videoCaption}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return videoNode;
                       }}
                       renderVoice={() => <VoiceBubble msg={msg} isSent={isSent} />}
                       renderFile={() => <FileBubble msg={msg} isSent={isSent} />}

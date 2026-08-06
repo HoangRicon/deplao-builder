@@ -91,9 +91,10 @@ export function registerTelegramUserIpc(): void {
     chatId: string;
     text: string;
     mentions?: Array<{ uid: string; pos: number; len: number }>;
+    replyToMsgId?: string;
   }) => {
     try {
-      return await TelegramUser.sendMessage(params.accountId, params.chatId, params.text, params.mentions);
+      return await TelegramUser.sendMessage(params.accountId, params.chatId, params.text, params.mentions, params.replyToMsgId);
     } catch (err: any) {
       Logger.error(`[telegramUser:sendMessage] ${err.message}`);
       return { success: false, error: err.message };
@@ -170,8 +171,8 @@ export function registerTelegramUserIpc(): void {
     catch (err: any) { return { success: false, error: err.message }; }
   });
 
-  ipcMain.handle('telegramUser:sendFile', async (_event, params: { accountId: string; chatId: string; filePath: string; caption?: string }) => {
-    try { return await TelegramUser.sendFile(params.accountId, params.chatId, params.filePath, params.caption); }
+  ipcMain.handle('telegramUser:sendFile', async (_event, params: { accountId: string; chatId: string; filePath: string; caption?: string; fileType?: string; replyToMsgId?: string }) => {
+    try { return await TelegramUser.sendFile(params.accountId, params.chatId, params.filePath, params.caption, params.fileType, params.replyToMsgId); }
     catch (err: any) { return { success: false, error: err.message }; }
   });
 
@@ -249,6 +250,11 @@ export function registerTelegramUserIpc(): void {
 
   ipcMain.handle('telegramUser:readChatHistory', async (_event, params: { accountId: string; chatId: string }) => {
     try { return await TelegramUser.readChatHistory(params.accountId, params.chatId); }
+    catch (err: any) { return { success: false, error: err.message }; }
+  });
+
+  ipcMain.handle('telegramUser:readForumTopic', async (_event, params: { accountId: string; chatId: string; topMsgId: string; readMaxId?: string }) => {
+    try { return await TelegramUser.readForumTopic(params.accountId, params.chatId, params.topMsgId, params.readMaxId); }
     catch (err: any) { return { success: false, error: err.message }; }
   });
 

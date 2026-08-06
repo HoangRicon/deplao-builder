@@ -21,7 +21,7 @@ export class TelegramBotAdapter extends BaseChannelAdapter {
         chatId: params.threadId,
         text: params.body,
       });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -59,7 +59,7 @@ export class TelegramBotAdapter extends BaseChannelAdapter {
           });
         }
       }
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -73,7 +73,7 @@ export class TelegramBotAdapter extends BaseChannelAdapter {
         videoPath: params.filePath,
         caption: params.body,
       });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -116,7 +116,7 @@ export class TelegramBotAdapter extends BaseChannelAdapter {
         fromChatId: params.accountId, // source chat
         messageId: params.messageId,
       });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
@@ -145,7 +145,7 @@ export class TelegramBotAdapter extends BaseChannelAdapter {
         question: params.question,
         options: params.options,
       });
-      return { success: res?.success ?? false, messageId: res?.messageId, error: res?.error };
+      return { success: res?.success ?? false, msgId: res?.messageId, messageId: res?.messageId, error: res?.error };
     } catch (err: any) {
       return { success: false, error: err.message };
     }

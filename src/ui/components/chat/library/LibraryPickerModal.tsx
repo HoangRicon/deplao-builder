@@ -601,6 +601,10 @@ export default function LibraryPickerModal({
     setUploading(true);
     try {
       const auth = await getAuthForZaloId();
+      const account = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
+      const channel = ((account as any)?.channel || CHANNEL.ZALO) as any;
+      const isTg = isTelegramUser(channel) || isTelegramBot(channel);
+
       const imagePaths: string[] = [];
       const videoPromises: Promise<void>[] = [];
       const filePromises: Promise<void>[] = [];
@@ -617,37 +621,55 @@ export default function LibraryPickerModal({
         }
         const filePath = saveRes.filePath;
 
-        if (file.type.startsWith('image/')) {
-          imagePaths.push(filePath);
-        } else if (file.type.startsWith('video/')) {
-          videoPromises.push((async () => {
-            const metaRes: any = await ipc.file?.getVideoMeta?.({ filePath }) || {};
-            await channelIpc.sendVideo('zalo', {
-              auth: auth || {},
-              accountId: zaloId, threadId, threadType, filePath,
-              thumbPath: metaRes.thumbPath || '',
-              duration: metaRes.duration || 0,
-              width: metaRes.width || 0,
-              height: metaRes.height || 0,
-            });
-          })());
+        if (isTg) {
+          // Telegram: send all files via channelIpc
+          if (file.type.startsWith('video/')) {
+            videoPromises.push(channelIpc.sendVideo(channel, { accountId: zaloId, threadId, threadType, filePath }).then(() => {}));
+          } else {
+            filePromises.push(channelIpc.sendAttachment(channel, { accountId: zaloId, threadId, threadType, filePath, body: '' }).then(() => {}));
+          }
         } else {
-          filePromises.push(ipc.zalo.sendFile({ auth: auth || {}, zaloId, threadId, threadType, filePath }));
+          // Zalo: existing flow
+          if (file.type.startsWith('image/')) {
+            imagePaths.push(filePath);
+          } else if (file.type.startsWith('video/')) {
+            videoPromises.push((async () => {
+              const metaRes: any = await ipc.file?.getVideoMeta?.({ filePath }) || {};
+              await channelIpc.sendVideo('zalo', {
+                auth: auth || {},
+                accountId: zaloId, threadId, threadType, filePath,
+                thumbPath: metaRes.thumbPath || '',
+                duration: metaRes.duration || 0,
+                width: metaRes.width || 0,
+                height: metaRes.height || 0,
+              });
+            })());
+          } else {
+            filePromises.push(ipc.zalo.sendFile({ auth: auth || {}, zaloId, threadId, threadType, filePath }));
+          }
         }
       }
 
-      // Phase 2: send images in batch
-      if (imagePaths.length > 0) {
+      // Phase 2: send images in batch (Zalo only)
+      if (!isTg && imagePaths.length > 0) {
         if (imagePaths.length === 1) {
           await ipc.zalo.sendImage({ auth: auth || {}, zaloId, threadId, threadType, filePath: imagePaths[0] });
         } else {
           await ipc.zalo.sendImages({ auth: auth || {}, zaloId, threadId, type: threadType, filePaths: imagePaths });
         }
       }
+      // Telegram: send images one by one
+      if (isTg && imagePaths.length > 0) {
+        for (const fp of imagePaths) {
+          await channelIpc.sendAttachment(channel, { accountId: zaloId, threadId, threadType, filePath: fp, body: '' });
+        }
+      }
 
       // Phase 3: send videos and files concurrently (each is independent)
       await Promise.all([...videoPromises, ...filePromises]);
-    } catch {}
+    } catch (err) {
+      console.error('[Library] handleDirectFile error:', err);
+    }
     setUploading(false);
     if (directInputRef.current) directInputRef.current.value = '';
     onClose();
@@ -831,7 +853,7 @@ export default function LibraryPickerModal({
 
                         {/*** Star favorite (top-left) ***/}
                         <div className={`absolute top-1 left-1 z-10 ${!item.is_favorite ? 'opacity-0 group-hover:opacity-100' : ''} transition-opacity`}>
-                          <div className="bg-white backdrop-blur-sm rounded-lg p-1 shadow-lg">
+                          <div className="bg-gray-500 backdrop-blur-sm rounded-lg p-1 shadow-lg">
                             <button onClick={(e) => { e.stopPropagation(); handleToggleFavorite(item.uuid, item.is_favorite); }}
                               className="text-[11px] leading-none block" title={item.is_favorite ? 'Bỏ yêu thích' : 'Yêu thích'}>
                               {item.is_favorite ? <StarIcon className="w-4 h-4 text-yellow-400" /> : <StarIcon className="w-4 h-4 text-gray-400" />}
@@ -842,7 +864,7 @@ export default function LibraryPickerModal({
                         {/*** ⋮ button (top-right, hover) — menu ở modal level fixed ***/}
                         <div className="absolute top-1 right-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button onClick={(e) => handleMenuClick(e, item.uuid)}
-                            className="bg-white backdrop-blur-sm rounded-lg p-2 shadow-lg text-gray-200 hover:text-white text-sm leading-none">⋮</button>
+                            className="bg-gray-500 backdrop-blur-sm rounded-lg p-2 shadow-lg text-gray-200 hover:text-white text-sm leading-none">⋮</button>
                         </div>
 
                         {selected.has(item.uuid) && (

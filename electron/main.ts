@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, protocol, net, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, protocol, net, Notification, safeStorage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { autoUpdater } from 'electron-updater';
@@ -40,6 +40,34 @@ import { SHOW_DEV_TOOLS, IS_DEV_BUILD } from '../src/configs/BuildConfig';
 
 // CHANNEL constant — same as src/ui/lib/channelHelper.ts (electron build excludes src/ui/)
 const CHANNEL = { ZALO: 'zalo', FACEBOOK: 'facebook', TELEGRAM_BOT: 'telegram_bot', TELEGRAM_USER: 'telegram_user' } as const;
+
+/**
+ * Decrypt cookies from DB — mirror of DatabaseService.decryptCookies().
+ * startupAllWorkspaces reads raw rows via queryOtherDb, so we must decrypt
+ * before passing to loginService.connectUser().
+ */
+function decryptCookiesForStartup(encrypted: string): string {
+  if (!encrypted) return encrypted;
+  const trimmed = encrypted.trimStart();
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return encrypted;
+  if (/^\d+:[A-Za-z0-9_-]+$/.test(trimmed)) return encrypted;
+
+  // Try safeStorage — works for any encrypted format (DPAPI, U2Fsd, etc.)
+  // GramJS sessions are NOT encrypted → safeStorage.decryptString throws → return as-is
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+      if (decrypted.startsWith('[') || decrypted.startsWith('{')) {
+        JSON.parse(decrypted); // validate
+        return decrypted;
+      }
+      return decrypted;
+    }
+  } catch {
+    // safeStorage failed → likely GramJS session or corrupted data → return as-is
+  }
+  return encrypted;
+}
 
 const isDev = IS_DEV_BUILD;
 let isQuitting = false;
@@ -385,8 +413,10 @@ function createTray() {
       click: () => {
         isQuitting = true;
         app.quit();
-        // Force-exit sau 3s phòng trường hợp background service giữ event loop
-        setTimeout(() => process.exit(0), 3000).unref();
+        setTimeout(() => {
+          console.warn('[main] Force-exit after 5s timeout (tray)');
+          process.exit(0);
+        }, 5000).unref();
       },
     },
   ]);
@@ -438,8 +468,12 @@ function registerWindowControls() {
   ipcMain.on('window:quit', () => {
     isQuitting = true;
     app.quit();
-    // Force-exit sau 3s phòng trường hợp background service giữ event loop
-    setTimeout(() => process.exit(0), 3000).unref();
+    // Force-exit: DB close() đã chạy trong before-quit (sync, ~1ms).
+    // 5s đủ cho socket disconnect + service stop. Nếu vẫn kẹt → force kill.
+    setTimeout(() => {
+      console.warn('[main] Force-exit after 5s timeout — background service may be stuck');
+      process.exit(0);
+    }, 5000).unref();
   });
 
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false);
@@ -751,15 +785,17 @@ async function startupAllWorkspaces(): Promise<void> {
 
       // Read accounts from this workspace's DB (without switching active DB)
       const accounts = db.queryOtherDb<any[]>(dbPath, (otherDb) => {
-        const rows = otherDb.prepare('SELECT * FROM accounts WHERE is_active = 1').all();
+        const rows = otherDb.prepare("SELECT * FROM accounts WHERE is_active = 1 AND (channel = 'zalo' OR channel IS NULL)").all();
         return rows;
       });
 
       for (const acc of accounts) {
         if (connectedZaloIds.has(acc.zalo_id)) continue; // already connected
         try {
+          const decryptedCookies = decryptCookiesForStartup(acc.cookies || '');
+          console.log(`[startupAllWorkspaces] ${acc.zalo_id}: raw prefix="${(acc.cookies || '').substring(0, 20)}" → decrypted prefix="${decryptedCookies.substring(0, 40)}" len=${decryptedCookies.length}`);
           await loginService.connectUser({
-            cookies: acc.cookies || '',
+            cookies: decryptedCookies,
             imei: acc.imei || '',
             userAgent: acc.user_agent || acc.userAgent || '',
           });
@@ -808,6 +844,22 @@ app.whenReady().then(async () => {
       }
 
       if (!fs.existsSync(filePath)) {
+        // Fallback: file might be missing extension (DB migration bug)
+        // Try common extensions: .jpg, .png, .webp, .mp4, .ogg, .mp3
+        const exts = ['.jpg', '.png', '.webp', '.mp4', '.ogg', '.mp3'];
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
+        for (const ext of exts) {
+          const candidate = path.join(dir, base + ext);
+          if (fs.existsSync(candidate)) {
+            console.log(`[local-media] Found with extension: ${candidate}`);
+            filePath = candidate;
+            break;
+          }
+        }
+      }
+
+      if (!fs.existsSync(filePath)) {
         // Fallback: check old Telegram media location (userData/telegram_media/)
         const basename = path.basename(filePath);
         const oldTelegramPath = path.join(app.getPath('userData'), 'telegram_media', basename);
@@ -817,6 +869,7 @@ app.whenReady().then(async () => {
       }
 
       if (!fs.existsSync(filePath)) {
+        console.warn(`[local-media] NOT FOUND: ${filePath}`);
         return new Response('Not Found', { status: 404 });
       }
 
@@ -1089,8 +1142,10 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
-    // Force-exit sau 3s phòng trường hợp background service giữ event loop
-    setTimeout(() => process.exit(0), 3000).unref();
+    setTimeout(() => {
+      console.warn('[main] Force-exit after 5s timeout (window-all-closed)');
+      process.exit(0);
+    }, 5000).unref();
   }
 });
 
@@ -1138,8 +1193,9 @@ app.on('before-quit', () => {
   } catch {}
 
   try {
-    // Flush DB ra disk trước khi thoát
-    DatabaseService.getInstance().forceFlush();
+    // Close DB completely — releases file handles so NSIS installer can update safely.
+    // forceFlush() only does WAL checkpoint; close() also releases locks on .db/.wal/.shm.
+    DatabaseService.getInstance().close();
   } catch {}
 
   try {
@@ -1160,6 +1216,12 @@ app.on('before-quit', () => {
     const { stopAllPollers } = require('../src/services/workflow/TelegramBotPollingService');
     stopAllPollers();
   } catch {}
+});
+
+// ─── Last-resort: ensure DB is closed before process exits ──────────────────
+// Covers edge cases where before-quit didn't fire (e.g. process.kill, NSIS force-quit)
+app.on('will-quit', () => {
+  try { DatabaseService.getInstance().close(); } catch {}
 });
 
 // ─── Global error handlers ──────────────────────────────────────────────────

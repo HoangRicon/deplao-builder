@@ -85,6 +85,9 @@ interface Auth {
     cookies: string;
     imei: string;
     userAgent: string;
+    accountId?: string;
+    zalo_id?: string;
+    zaloId?: string;
 }
 export default class ZaloService {
     private static instances: Map<string, ZaloService> = new Map();
@@ -148,17 +151,24 @@ export default class ZaloService {
     private async initialize(isReconnection: boolean = false): Promise<void> {
         Logger.log(`[${new Date().toISOString()}] [ZaloService] Initializing${isReconnection ? ' (reconnection mode)' : ''}...`);
 
-        // GET API FROM CONNECTION MANAGER (not create new!)
-        // Pass startListener=false for API-only operations (no WebSocket listener)
-        // Pass isReconnection to force recreation if needed
-        // LẤY API TỪ CONNECTION MANAGER (không tạo mới!)
-        // Truyền startListener=false cho các thao tác chỉ dùng API (không có listener WebSocket)
-        // Truyền isReconnection để buộc tạo lại nếu cần
+        // First try: reuse existing connection by zaloId (avoids authKey mismatch
+        // when DB stores encrypted cookies but QR login stored plain cookies).
+        const existingZaloId = this.auth.accountId || this.auth.zalo_id || this.auth.zaloId || '';
+        if (existingZaloId && !isReconnection) {
+            const existing = ConnectionManager.getConnection(existingZaloId);
+            if (existing?.api) {
+                this.api = existing.api;
+                this.zaloId = this.api.getOwnId();
+                Logger.log(`[${new Date().toISOString()}] [ZaloService] ✅ Initialized for ${this.zaloId} - Reused existing connection (API-only mode)`);
+                return;
+            }
+        }
+
+        // Fallback: get or create connection via auth cookies
         const connection = await ConnectionManager.getOrCreateConnection(this.auth, false, undefined, isReconnection);
 
         this.api = connection.api;
         this.zaloId = this.api.getOwnId();
-
 
         Logger.log(`[${new Date().toISOString()}] [ZaloService] ✅ Initialized for ${this.zaloId} - Using shared API instance from ConnectionManager (API-only mode, no listener)`);
     }

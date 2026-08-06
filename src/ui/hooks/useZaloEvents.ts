@@ -957,15 +957,12 @@ export function useZaloEvents() {
       if (!tid || !activeAccountId) return;
       clearUnread(activeAccountId, tid);
       DataAccessor.markAsRead({ zaloId: activeAccountId, contactId: tid }).catch(() => {});
-      // Gửi sự kiện đã đọc khi cửa sổ được focus lại
+      // Gửi sự kiện đã đọc cho Zalo (sendSeenForThread tự skip non-Zalo)
       const activeContact = (useChatStore.getState().contacts[activeAccountId] || []).find(c => c.contact_id === tid);
       const focusThreadType = activeContact?.contact_type === 'group' ? 1 : 0;
-      const focusChannel = ((activeContact?.channel as any) || CHANNEL.ZALO) as string;
       sendSeenForThread(activeAccountId, tid, focusThreadType);
-      // Đánh dấu đã đọc trên server (Telegram, Facebook, etc.)
-      if (!isZalo(focusChannel)) {
-        channelIpc.markAsRead(focusChannel as any, { accountId: activeAccountId, threadId: tid }).catch(() => {});
-      }
+      // KHÔNG gửi read receipt sang server (Telegram, Facebook) khi chỉ focus window
+      // Read receipt chỉ gửi khi user CHỦ ĐỘNG click vào hội thoại
       ipc.app?.setBadge(getFilteredUnreadCount());
     };
     const handleBlur = () => { windowFocusedRef.current = false; };
@@ -1237,9 +1234,15 @@ export function useZaloEvents() {
         // Tin nhắn cũ (old_messages / getGroupChatHistory) - KHÔNG cộng unread, KHÔNG bắn sound/notification
         // Chỉ lưu message + update contact (đã xử lý ở trên)
       } else {
-        const { activeThreadId: currentActiveThread, activeThreadId } = useChatStore.getState();
+        const { activeThreadId: currentActiveThread, activeThreadId, activeTopicId: currentActiveTopicId } = useChatStore.getState();
         const { activeAccountId: currentActiveAccount } = useAccountStore.getState();
-        const isActiveThread = threadId === currentActiveThread && zaloId === currentActiveAccount;
+        // Forum topic: cùng channel NHƯNG khác topic → không phải active thread
+        let isActiveThread = threadId === currentActiveThread && zaloId === currentActiveAccount;
+        if (isActiveThread && incomingTopicId) {
+          // Tin nhắn thuộc topic → chỉ active nếu user đang xem đúng topic đó
+          const effectiveTopicId = currentActiveTopicId || '1'; // '1' = General (main timeline)
+          isActiveThread = incomingTopicId === effectiveTopicId;
+        }
         const isWindowFocused = windowFocusedRef.current;
 
         if (!isActiveThread || !isWindowFocused) {
@@ -1315,20 +1318,16 @@ export function useZaloEvents() {
         }
         // ────────────────────────────────────────────────────────────────
         } else {
-          // Tin nhắn từ người khác gửi vào thread đang mở VÀ cùng account VÀ cửa sổ đang focus → mark read ngay
+          // Tin nhắn từ người khác gửi vào thread đang mở VÀ cùng account VÀ cửa sổ đang focus
+          // → chỉ mark read local DB + UI, KHÔNG gửi read receipt sang server (Telegram/Facebook)
+          // Read receipt chỉ gửi khi user CHỦ ĐỘNG click vào hội thoại (selectThread / ConversationList)
           DataAccessor.markAsRead({ zaloId, contactId: threadId }).catch(() => {});
           clearUnread(zaloId, threadId);
           // Clear @mention flag when messages are read
           DataAccessor.setContactFlags?.({ zaloId, contactId: threadId, flags: { has_mention: 0 } }).catch(() => {});
           useChatStore.getState().updateContact(zaloId, { contact_id: threadId, has_mention: 0 } as any);
-          // Gửi sự kiện đã đọc cho Zalo vì đang xem thread này
+          // Gửi sự kiện đã đọc cho Zalo (sendSeenForThread tự skip non-Zalo)
           sendSeenForThread(zaloId, threadId, isGroup ? 1 : 0);
-          // Đánh dấu đã đọc trên server (Telegram, Facebook, etc.)
-          const msgAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === zaloId);
-          const msgChannel = ((msgAccount?.channel as any) || CHANNEL.ZALO) as string;
-          if (!isZalo(msgChannel)) {
-            channelIpc.markAsRead(msgChannel as any, { accountId: zaloId, threadId }).catch(() => {});
-          }
         }
       }
 
@@ -1604,8 +1603,12 @@ export function useZaloEvents() {
 
     const unsubLocalPath = ipc.on('event:localPath', (data: any) => {
       const { zaloId, msgId, threadId, localPaths } = data;
+      console.log(`[useZaloEvents] event:localPath msgId=${msgId} threadId=${threadId} localPaths=${JSON.stringify(localPaths)}`);
       if (zaloId && msgId && threadId && localPaths) {
         updateMessageLocalPath(zaloId, threadId, msgId, localPaths);
+        console.log(`[useZaloEvents] event:localPath APPLIED msgId=${msgId}`);
+      } else {
+        console.log(`[useZaloEvents] event:localPath SKIPPED (missing data)`);
       }
     });
 

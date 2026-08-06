@@ -159,7 +159,7 @@ async function handleInboundMessage(account: BotAccount, message: any): Promise<
       file_size: message.audio.file_size,
     }];
   } else if (message.voice) {
-    msgType = 'audio';
+    msgType = 'voice';
     attachments = [{
       type: 'voice',
       file_id: message.voice.file_id,
@@ -276,6 +276,7 @@ async function saveMessage(msg: TelegramMessage, botToken?: string): Promise<voi
       if (msg.msgType === 'photo') return '🖼️ Hình ảnh';
       if (msg.msgType === 'video') return '🎬 Video';
       if (msg.msgType === 'audio') return '🎵 Audio';
+      if (msg.msgType === 'voice') return '🎤 Voice';
       if (msg.msgType === 'sticker') return '🎨 Sticker';
       if (msg.msgType !== 'text') return '📎 Tệp đính kèm';
       return '';
@@ -497,7 +498,7 @@ async function downloadBotMedia(
     const localPaths: Record<string, string> = {};
     if (msgType === 'photo') localPaths.main = localPath;
     else if (msgType === 'video') localPaths.video = localPath;
-    else if (msgType === 'audio') localPaths.voice = localPath;
+    else if (msgType === 'audio' || msgType === 'voice') localPaths.voice = localPath;
     else localPaths.file = localPath;
 
     db.run(
@@ -522,7 +523,7 @@ async function downloadBotMedia(
 function getMediaExtension(msgType: string, filename: string): string {
   if (msgType === 'photo') return '.jpg';
   if (msgType === 'video') return '.mp4';
-  if (msgType === 'audio') return '.ogg';
+  if (msgType === 'audio' || msgType === 'voice') return '.ogg';
   if (msgType === 'sticker') {
     const lowerName = filename.toLowerCase();
     if (lowerName.endsWith('.tgs')) return '.tgs';
@@ -655,6 +656,58 @@ export async function sendMessage(accountId: string, chatId: string, text: strin
 }
 
 /**
+ * Helper: save a self-sent bot message to DB and emit event for UI.
+ */
+async function saveSentBotMessage(
+  accountId: string,
+  chatId: string,
+  msgId: string,
+  content: string,
+  msgType: string,
+  attachments: any[] = [],
+): Promise<void> {
+  if (!msgId) return;
+  const threadType = chatId.startsWith('-') ? 1 : 0;
+  const bot = registeredAccounts.get(accountId);
+  const botName = bot?.botFirstName || 'Bot';
+
+  await saveMessage({
+    accountId,
+    threadId: chatId,
+    threadType,
+    senderId: accountId,
+    senderName: botName,
+    messageId: msgId,
+    content: content || '',
+    msgType,
+    timestamp: Date.now(),
+    isSelf: true,
+    attachments,
+  });
+
+  try {
+    EventBroadcaster.emit('event:message', {
+      zaloId: accountId,
+      message: {
+        type: threadType,
+        threadId: chatId,
+        isSelf: true,
+        data: {
+          uidFrom: accountId,
+          idTo: chatId,
+          msgId,
+          content: content || '',
+          msgType,
+          ts: String(Date.now()),
+          dName: botName,
+          attachments,
+        },
+      },
+    });
+  } catch {}
+}
+
+/**
  * Gửi ảnh qua Telegram Bot
  */
 export async function sendPhoto(accountId: string, chatId: string, photoPath: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
@@ -779,6 +832,15 @@ export async function sendVideo(accountId: string, chatId: string, videoPath: st
     });
     if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
     const msgId = res.data?.result?.message_id ? String(res.data.result.message_id) : '';
+    if (msgId) {
+      const videoAttachments = res.data?.result?.video ? [{
+        type: 'video', file_id: res.data.result.video.file_id,
+        file_unique_id: res.data.result.video.file_unique_id,
+        width: res.data.result.video.width, height: res.data.result.video.height,
+        duration: res.data.result.video.duration, file_size: res.data.result.video.file_size,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, caption || '', 'video', videoAttachments);
+    }
     return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
@@ -809,6 +871,16 @@ export async function sendDocument(accountId: string, chatId: string, filePath: 
     });
     if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
     const msgId = res.data?.result?.message_id ? String(res.data.result.message_id) : '';
+    if (msgId) {
+      const docAttachments = res.data?.result?.document ? [{
+        type: 'file', file_id: res.data.result.document.file_id,
+        file_unique_id: res.data.result.document.file_unique_id,
+        file_name: res.data.result.document.file_name,
+        mime_type: res.data.result.document.mime_type,
+        file_size: res.data.result.document.file_size,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, caption || '', 'file', docAttachments);
+    }
     return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
@@ -839,6 +911,15 @@ export async function sendAudio(accountId: string, chatId: string, audioPath: st
     });
     if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
     const msgId = res.data?.result?.message_id ? String(res.data.result.message_id) : '';
+    if (msgId) {
+      const audioAttachments = res.data?.result?.audio ? [{
+        type: 'audio', file_id: res.data.result.audio.file_id,
+        duration: res.data.result.audio.duration,
+        title: res.data.result.audio.title,
+        file_size: res.data.result.audio.file_size,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, caption || '', 'audio', audioAttachments);
+    }
     return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
@@ -967,7 +1048,20 @@ export async function sendSticker(accountId: string, chatId: string, stickerPath
     const res = await axios.post(`${TELEGRAM_API}/bot${bot.botToken}/sendSticker`, form, {
       headers: form.getHeaders(), timeout: 30000,
     });
-    return { success: true, messageId: String(res.data?.result?.message_id || '') };
+    if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
+    const msgId = String(res.data?.result?.message_id || '');
+    if (msgId) {
+      const stickerAttachments = res.data?.result?.sticker ? [{
+        type: 'sticker', is_sticker: true,
+        sticker_format: res.data.result.sticker.is_animated ? 'tgs' : res.data.result.sticker.is_video ? 'webm' : 'webp',
+        mime_type: res.data.result.sticker.is_animated ? 'application/x-tgsticker' : res.data.result.sticker.is_video ? 'video/webm' : 'image/webp',
+        file_id: res.data.result.sticker.file_id,
+        file_unique_id: res.data.result.sticker.file_unique_id,
+        emoji: res.data.result.sticker.emoji,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, '', 'sticker', stickerAttachments);
+    }
+    return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
   }
@@ -989,7 +1083,17 @@ export async function sendVoice(accountId: string, chatId: string, voicePath: st
     const res = await axios.post(`${TELEGRAM_API}/bot${bot.botToken}/sendVoice`, form, {
       headers: form.getHeaders(), timeout: 30000,
     });
-    return { success: true, messageId: String(res.data?.result?.message_id || '') };
+    if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
+    const msgId = String(res.data?.result?.message_id || '');
+    if (msgId) {
+      const voiceAttachments = res.data?.result?.voice ? [{
+        type: 'voice', file_id: res.data.result.voice.file_id,
+        duration: res.data.result.voice.duration,
+        file_size: res.data.result.voice.file_size,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, caption || '', 'voice', voiceAttachments);
+    }
+    return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
   }
@@ -1011,7 +1115,21 @@ export async function sendAnimation(accountId: string, chatId: string, animPath:
     const res = await axios.post(`${TELEGRAM_API}/bot${bot.botToken}/sendAnimation`, form, {
       headers: form.getHeaders(), timeout: 30000,
     });
-    return { success: true, messageId: String(res.data?.result?.message_id || '') };
+    if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
+    const msgId = String(res.data?.result?.message_id || '');
+    if (msgId) {
+      const animAttachments = res.data?.result?.animation ? [{
+        type: 'gif', file_id: res.data.result.animation.file_id,
+        file_unique_id: res.data.result.animation.file_unique_id,
+        width: res.data.result.animation.width,
+        height: res.data.result.animation.height,
+        duration: res.data.result.animation.duration,
+        file_size: res.data.result.animation.file_size,
+        mime_type: res.data.result.animation.mime_type || '',
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, caption || '', 'gif', animAttachments);
+    }
+    return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
   }
@@ -1032,7 +1150,20 @@ export async function sendVideoNote(accountId: string, chatId: string, videoPath
     const res = await axios.post(`${TELEGRAM_API}/bot${bot.botToken}/sendVideoNote`, form, {
       headers: form.getHeaders(), timeout: 30000,
     });
-    return { success: true, messageId: String(res.data?.result?.message_id || '') };
+    if (!res.data?.ok) return { success: false, error: res.data?.description || 'Telegram API error' };
+    const msgId = String(res.data?.result?.message_id || '');
+    if (msgId) {
+      const vnAttachments = res.data?.result?.video_note ? [{
+        type: 'video_note',
+        file_id: res.data.result.video_note.file_id,
+        file_unique_id: res.data.result.video_note.file_unique_id,
+        length: res.data.result.video_note.length,
+        duration: res.data.result.video_note.duration,
+        file_size: res.data.result.video_note.file_size,
+      }] : [];
+      await saveSentBotMessage(accountId, chatId, msgId, '', 'video_note', vnAttachments);
+    }
+    return { success: true, messageId: msgId };
   } catch (err: any) {
     return { success: false, error: err.response?.data?.description || err.message };
   }

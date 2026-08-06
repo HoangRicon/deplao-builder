@@ -31,37 +31,50 @@ export function parseTxt(content: string): string {
  */
 export function linkifyText(text: string): React.ReactNode[] {
   if (!text) return [text];
-  // Regex match URL: http(s)://, www., hoặc domain pattern
-  const urlRegex = /(https?:\/\/[^\s<>"')\]]+|www\.[^\s<>"')\]]+|[a-zA-Z0-9._-]+\.(com|vn|net|org|io|dev|app|me|co|xyz|info|tv|gg|link|page|site|online|tech|store|fun|icu|top|cc|pw|tk|ml|ga|cf|gq)(?:\/[^\s<>"')\]]*)?)/gi;
+  // Combined regex: URL hoặc @username
+  // @username: '@' + word chars (letters, digits, underscore) — đơn giản, bắt đến cuối từ
+  const combinedRegex = /(https?:\/\/[^\s<>"')\]]+|www\.[^\s<>"')\]]+|[a-zA-Z0-9._-]+\.(com|vn|net|org|io|dev|app|me|co|xyz|info|tv|gg|link|page|site|online|tech|store|fun|icu|top|cc|pw|tk|ml|ga|cf|gq)(?:\/[^\s<>"')\]]*)?|@\w+)/g;
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = urlRegex.exec(text)) !== null) {
+  while ((match = combinedRegex.exec(text)) !== null) {
     // Thêm text trước match
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
     }
-    const rawUrl = match[0];
-    // Chuẩn hóa URL: nếu bắt đầu bằng www. thì thêm https://
-    const href = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
-    parts.push(
-      React.createElement('a', {
-        key: `link-${match.index}`,
-        href,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        className: 'text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer break-all',
-        onClick: (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          // Dùng Electron shell.openExternal nếu có
-          try { window.electronAPI?.shell?.openExternal?.(href); } catch {}
-        },
-        title: href,
-      }, rawUrl)
-    );
-    lastIndex = match.index + rawUrl.length;
+    const raw = match[0];
+
+    if (raw.startsWith('@')) {
+      // @username mention
+      const username = raw.slice(1);
+      parts.push(
+        React.createElement('span', {
+          key: `mention-${match.index}`,
+          className: 'text-blue-400 hover:text-blue-300 cursor-pointer font-medium',
+          title: `@${username}`,
+        }, raw)
+      );
+    } else {
+      // URL link
+      const href = raw.startsWith('http') ? raw : `https://${raw}`;
+      parts.push(
+        React.createElement('a', {
+          key: `link-${match.index}`,
+          href,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          className: 'text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer break-all',
+          onClick: (e: React.MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { window.electronAPI?.shell?.openExternal?.(href); } catch {}
+          },
+          title: href,
+        }, raw)
+      );
+    }
+    lastIndex = match.index + raw.length;
   }
 
   // Thêm phần text còn lại

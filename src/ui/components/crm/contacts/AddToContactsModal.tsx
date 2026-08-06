@@ -183,13 +183,13 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
         });
       }
 
-      // 2. Assign local labels if selected
+      // 2. Assign local labels if selected (bulk transaction)
       if (tagTab === 'local' && selectedLocalLabelIds.length > 0) {
-        for (const labelId of selectedLocalLabelIds) {
-          for (const c of finalContacts) {
-            await DataAccessor.assignLocalLabelToThread({ zaloId: accountId, labelId, threadId: c.contactId });
-          }
-        }
+        await DataAccessor.bulkAssignLocalLabelToThread({
+          zaloId: accountId,
+          labelIds: selectedLocalLabelIds,
+          threadIds: finalContacts.map(c => c.contactId),
+        });
         window.dispatchEvent(new CustomEvent('local-labels-changed', { detail: { zaloId: accountId } }));
       }
 

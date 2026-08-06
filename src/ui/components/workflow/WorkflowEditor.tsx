@@ -570,7 +570,7 @@ export default function WorkflowEditor({ workflowId, onBack }: Props) {
             ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
             : workflowMeta.channel === CHANNEL.FACEBOOK
               ? 'bg-[#1877F2]/10 border-[#1877F2]/30 text-[#1877F2]'
-              : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+              : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-600'
         }`}>
           <span>Kênh: {channelLabel}</span>
         </div>

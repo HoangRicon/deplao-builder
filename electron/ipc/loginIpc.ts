@@ -386,6 +386,9 @@ export function registerLoginIpc(mainWindow: BrowserWindow | null) {
             const results = [];
 
             for (const acc of accounts) {
+                // Only reconnect Zalo accounts — Telegram/FB have their own reconnect
+                const ch = (acc as any).channel || 'zalo';
+                if (ch !== 'zalo') continue;
                 try {
                     const auth = {
                         imei: acc.imei,

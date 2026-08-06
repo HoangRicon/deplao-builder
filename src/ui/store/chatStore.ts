@@ -298,7 +298,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   }),
 
   setContacts: (zaloId, contacts) =>
-    set((state) => ({ contacts: { ...state.contacts, [zaloId]: contacts } })),
+    set((state) => ({
+      contacts: {
+        ...state.contacts,
+        [zaloId]: contacts.map(c => {
+          // Normalize legacy avatar URL format: media://local/ → local-media://
+          if (c.avatar_url && c.avatar_url.startsWith('media://local/')) {
+            const rawPath = c.avatar_url.replace('media://local/', '');
+            const normalized = rawPath.replace(/\\/g, '/');
+            const withSlash = normalized.startsWith('/') ? normalized : '/' + normalized;
+            return { ...c, avatar_url: 'local-media://' + withSlash };
+          }
+          return c;
+        }),
+      },
+    })),
 
   setMessages: (zaloId, threadId, messages, topicRootMessageId) => {
     const key = getMessageCacheKey(zaloId, threadId, topicRootMessageId);
@@ -344,6 +358,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Deduplicate by msg_id (dùng String() để tránh type mismatch number vs string)
       const dupIdx = existing.findIndex((m) => String(m.msg_id) === String(message.msg_id));
       if (dupIdx >= 0) {
+        const existingMsg2 = existing[dupIdx];
+        const existingAttStr = typeof existingMsg2.attachments === 'string' ? existingMsg2.attachments : JSON.stringify(existingMsg2.attachments || '');
+        const newAttStr = typeof message.attachments === 'string' ? message.attachments : JSON.stringify(message.attachments || '');
+        console.log(`[addMessage] DUPLICATE msgId=${message.msg_id} existing_msgType=${existingMsg2.msg_type} new_msgType=${message.msg_type} existing_att_len=${existingAttStr.length} new_att_len=${newAttStr.length} existing_localPaths=${existingMsg2.local_paths ? 'yes' : 'no'} new_localPaths=${message.local_paths ? 'yes' : 'no'}`);
         // Merge handled_by_employee if the new message carries it but existing doesn't
         // (happens when employee's local listener adds message first without employee info,
         //  then boss's enriched relay arrives with _employeeInfo)
@@ -358,6 +376,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         // Fix race: MQTT echo đến trước persistSentMessage → message vào store thiếu quote_data
         if (message.quote_data && !existingMsg.quote_data) {
           const merged = { ...existingMsg, quote_data: message.quote_data };
+          const newMessages = [...existing];
+          newMessages[dupIdx] = merged;
+          return { messages: { ...state.messages, [key]: newMessages } };
+        }
+        // Merge attachments & msg_type: socket echo mang data chính xác hơn sendFile
+        const existingAttachments = existingMsg.attachments ? (typeof existingMsg.attachments === 'string' ? existingMsg.attachments : JSON.stringify(existingMsg.attachments)) : '';
+        const newAttachments = message.attachments ? (typeof message.attachments === 'string' ? message.attachments : JSON.stringify(message.attachments)) : '';
+        const existingHasAttachments = existingAttachments && existingAttachments !== '[]' && existingAttachments !== '""';
+        const newHasAttachments = newAttachments && newAttachments !== '[]' && newAttachments !== '""';
+        const needsMerge = (newHasAttachments && !existingHasAttachments) || (message.msg_type && message.msg_type !== existingMsg.msg_type);
+        if (needsMerge) {
+          const merged = {
+            ...existingMsg,
+            ...(newHasAttachments ? { attachments: message.attachments, local_paths: message.local_paths || existingMsg.local_paths } : {}),
+            ...(message.msg_type && message.msg_type !== existingMsg.msg_type ? { msg_type: message.msg_type } : {}),
+          };
           const newMessages = [...existing];
           newMessages[dupIdx] = merged;
           return { messages: { ...state.messages, [key]: newMessages } };
@@ -383,11 +417,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (message.is_sent === 1 && !message.msg_id.startsWith('temp_')) {
         const incomingMsgId = String(message.msg_id);
         const incomingText = extractDedupText(message.content);
+        const hasAttachments = !!(message.attachments && message.attachments !== '[]' && message.attachments !== '""');
+        console.log(`[addMessage] SELF msgId=${incomingMsgId} msgType=${message.msg_type} hasAttachments=${hasAttachments} existingTemps=${existing.filter(m => m.msg_id?.startsWith?.('temp_')).length}`);
 
         // Strategy 1: match bằng real_msg_id (ưu tiên cao nhất)
         const hasRealIdMatch = existing.some(
           (m) => m.msg_id.startsWith('temp_') && m.is_sent === 1 && m.real_msg_id === incomingMsgId
         );
+        console.log(`[addMessage] hasRealIdMatch=${hasRealIdMatch}`);
 
         if (hasRealIdMatch) {
           // Chỉ xóa temp_ có real_msg_id match

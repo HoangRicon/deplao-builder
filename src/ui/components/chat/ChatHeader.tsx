@@ -430,6 +430,11 @@ export default function ChatHeader() {
     try {
       const res = await ipc.telegramUser?.getMessages({ accountId: activeAccountId, chatId: activeThreadId, limit });
       if (res?.success && res.messages?.length) {
+        // Reload messages from DB into store so they appear in UI
+        const dbRes = await DataAccessor.getMessages({ zaloId: activeAccountId, threadId: activeThreadId, limit: limit + 20, offset: 0 });
+        if (dbRes?.messages?.length) {
+          useChatStore.getState().setMessages(activeAccountId, activeThreadId, [...dbRes.messages].reverse());
+        }
         showNotification(`Đã tải ${res.messages.length} tin nhắn`, 'success');
       } else {
         showNotification(res?.error || 'Không có tin nhắn mới', 'info');

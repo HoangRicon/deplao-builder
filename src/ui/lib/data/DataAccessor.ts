@@ -428,6 +428,14 @@ export class DataAccessor {
     return window.electronAPI.db.assignLocalLabelToThread(params as any);
   }
 
+  /** Gán nhiều label cho nhiều thread trong 1 lần — dùng transaction, nhanh hơn gọi lẻ hàng nghìn lần */
+  static async bulkAssignLocalLabelToThread(params: { zaloId: string; labelIds: number[]; threadIds: string[] }) {
+    if (isEmployee()) {
+      return rest().post('/api/command/label-threads/bulk', params);
+    }
+    return (window.electronAPI.db as any).bulkAssignLocalLabelToThread(params);
+  }
+
   static async removeLocalLabelFromThread(params: { zaloId: string; labelId: number; threadId: string }) {
     if (isEmployee()) {
       return rest().delete(`/api/command/label-threads?zaloId=${params.zaloId}&labelId=${params.labelId}&threadId=${params.threadId}`);

@@ -73,15 +73,24 @@ function useTelegramMediaRepair(msg: any, shouldAutoRepair: boolean) {
             localPathState = 'invalid_json';
         }
 
-        console.warn('[TelegramMedia] PHOTO_UNAVAILABLE', {
-            accountId,
-            threadId,
-            messageId,
-            msgType: msg?.msg_type || '-',
-            reason,
-            attachmentTypes,
-            localPathState,
-        });
+        // Log chi tiết để debug tại sao ảnh không load
+        let lpDetail = 'none';
+        try {
+            const lp = JSON.parse(msg?.local_paths || '{}');
+            const keys = Object.keys(lp);
+            if (keys.length > 0) {
+                lpDetail = keys.map(k => `${k}=${lp[k] || 'empty'}`).join(', ');
+            }
+        } catch {}
+        let attDetail = 'none';
+        try {
+            const atts = JSON.parse(msg?.attachments || '[]');
+            if (atts.length > 0) {
+                const a = atts[0];
+                attDetail = `type=${a.type} url=${a.url?.slice(0,80) || 'none'} localPath=${a.localPath?.slice(0,80) || 'none'} mime=${a.mime_type || 'none'} file_id=${a.file_id ? String(a.file_id).slice(0,30) : 'none'}`;
+            }
+        } catch {}
+        console.warn(`[TelegramMedia] PHOTO_UNAVAILABLE msgId=${messageId} reason=${reason} msgType=${msg?.msg_type}\n    lp: ${lpDetail}\n    att: ${attDetail}`);
 
         setRepairing(true);
         try {
@@ -463,12 +472,21 @@ export function MediaBubble({msg, onView, isSent, allContacts, groupMembersList,
     const viewUrl = remoteUrl || displayUrl;
     const telegramRepair = useTelegramMediaRepair(msg, !displayUrl);
 
+    const retryCountRef = React.useRef(0);
     const handleImgError = () => {
         if (useLocal && remoteUrl) {
             setUseLocal(false); // local lỗi → fallback CDN ngay, không flash
         } else {
-            setLoadFailed(true);
-            void telegramRepair.requestRepair('image_load_error');
+            // Auto-retry repair nếu lần đầu fail (tối đa 3 lần, delay 2s)
+            if (retryCountRef.current < 3) {
+                retryCountRef.current++;
+                console.log(`[TelegramMedia] image_load_error msgId=${msg?.msg_id} retry=${retryCountRef.current}/3`);
+                setTimeout(() => {
+                    void telegramRepair.requestRepair('image_load_error', true);
+                }, 2000 * retryCountRef.current);
+            } else {
+                setLoadFailed(true);
+            }
         }
     };
 
@@ -1266,7 +1284,15 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
                 void ipc.file?.openPath(localFilePath);
             }
         };
-        return (
+        // Extract caption from content (Telegram video + text)
+        let videoCaption = '';
+        try {
+            const parsed = JSON.parse(msg.content || '{}');
+            videoCaption = typeof parsed === 'string' ? parsed : (parsed.title || parsed.text || parsed.caption || '');
+        } catch { videoCaption = ''; }
+        if (!videoCaption && msg.content && !msg.content.startsWith('{')) videoCaption = msg.content;
+
+        const videoNode = (
             <div
                 className={`relative flex-1 min-w-0 group/singleimg cursor-pointer bg-black${isSelected ? ' ring-2 ring-blue-500' : ''}`}
                 onClick={openVideo}
@@ -1295,6 +1321,18 @@ export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, i
                 )}
             </div>
         );
+
+        if (videoCaption) {
+            return (
+                <div className="flex flex-col max-w-xs">
+                    {videoNode}
+                    <div className={`px-3 py-2 text-sm break-words rounded-b-2xl ${isSent ? 'bg-blue-400/40 text-white' : 'bg-gray-700 text-gray-200'}`}>
+                        {videoCaption}
+                    </div>
+                </div>
+            );
+        }
+        return videoNode;
     }
 
     return (

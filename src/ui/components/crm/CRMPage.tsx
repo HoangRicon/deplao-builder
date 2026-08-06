@@ -461,13 +461,14 @@ export default function CRMPage() {
     setApplyingBulkLabel(true);
     try {
       const selectedContactIds = [...store.selectedContactIds];
-      for (const labelId of bulkLocalLabelIds) {
-        for (const contactId of selectedContactIds) {
-          await DataAccessor.assignLocalLabelToThread({ zaloId: activeAccountId, labelId, threadId: contactId });
-        }
-      }
-      // Note: Workflow events are emitted by backend (databaseIpc.ts) to avoid duplicates
-      showNotification(`Đã gán Nhãn Local cho ${selectedContactIds.length} liên hệ`, 'success');
+      // Single bulk call with transaction — thay vì hàng nghìn IPC calls riêng lẻ
+      const res = await DataAccessor.bulkAssignLocalLabelToThread({
+        zaloId: activeAccountId,
+        labelIds: bulkLocalLabelIds,
+        threadIds: selectedContactIds,
+      });
+      const count = res?.count ?? (bulkLocalLabelIds.length * selectedContactIds.length);
+      showNotification(`Đã gán Nhãn Local cho ${selectedContactIds.length} liên hệ (${count} assignments)`, 'success');
       setShowBulkLocalModal(false);
       setBulkLocalLabelIds([]);
       store.clearSelection();

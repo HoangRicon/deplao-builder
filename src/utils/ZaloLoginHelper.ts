@@ -650,6 +650,9 @@ class ZaloLoginHelper {
         try {
             cookieParsed = JSON.parse(auth.cookies);
         } catch {
+            const prefix = (auth.cookies || '').substring(0, 40);
+            const len = (auth.cookies || '').length;
+            console.error(`[loginZalo] JSON.parse FAIL: len=${len}, prefix="${prefix}", startsWith=${JSON.stringify((auth.cookies || '').substring(0, 5))}`);
             throw new Error(
                 'Cookies tài khoản không hợp lệ (có thể bị mã hóa sai hoặc dữ liệu cũ). ' +
                 'Vui lòng đăng xuất và đăng nhập lại tài khoản này.'

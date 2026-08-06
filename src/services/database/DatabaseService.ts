@@ -2972,17 +2972,14 @@ class DatabaseService {
         if (trimmed.startsWith('[') || trimmed.startsWith('{')) return encrypted;
         // Fast-path: Telegram bot token format (digits:alphanumeric, e.g., "123456:ABC-DEF1234...")
         if (/^\d+:[A-Za-z0-9_-]+$/.test(trimmed)) return encrypted;
-        // Fast-path: looks like a raw base64 session string (GramJS Telegram session, not encrypted)
-        // GramJS sessions are base64 of JSON (e.g., eyJkYyI6...) - won't start with "U2Fsd" (safeStorage prefix)
-        if (/^[A-Za-z0-9+/=]{20,}$/.test(trimmed) && !trimmed.startsWith('U2Fsd')) {
-            return encrypted; // Already raw session, no decryption needed
-        }
 
+        // Try safeStorage decryption — works for Zalo cookies encrypted by safeStorage (any prefix).
+        // GramJS sessions (base64 of JSON) are NOT encrypted, so safeStorage.decryptString will
+        // throw → we catch and return as-is.
         try {
             if (safeStorage.isEncryptionAvailable()) {
                 const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
                 // Sanity check for JSON cookies (Zalo/FB): must be parseable JSON
-                // Non-JSON (e.g., Telegram GramJS session) is also valid — return as-is
                 if (decrypted.startsWith('[') || decrypted.startsWith('{')) {
                     JSON.parse(decrypted);
                 }
@@ -2991,15 +2988,9 @@ class DatabaseService {
                 Logger.warn('[DatabaseService] decryptCookies: safeStorage not available, returning raw value');
             }
         } catch (err: any) {
-            // DPAPI key mismatch (dev vs production build, different user, etc.)
-            const prefix = encrypted.substring(0, 20);
-            Logger.warn(`[DatabaseService] decryptCookies failed (${err.message}). Encrypted prefix: "${prefix}".`);
-            // Recovery: nếu là encrypted blob (U2Fsd...) → return rỗng để caller biết session invalid
-            // User cần login lại. Không return encrypted blob vì sẽ gây lỗi downstream.
-            if (encrypted.startsWith('U2Fsd')) {
-                Logger.warn(`[DatabaseService] Session encrypted by different instance - returning empty (user must re-login)`);
-                return '';
-            }
+            // safeStorage failed: could be GramJS session (not encrypted), DPAPI mismatch, or corrupted data.
+            // Return as-is — GramJS sessions work as plain base64; encrypted Zalo cookies will fail downstream
+            // and user will see "connect_failed" (must re-login).
         }
         return encrypted;
     }
@@ -5274,6 +5265,30 @@ class DatabaseService {
         } catch (err: any) {
             Logger.error(`[DB] assignLocalLabelToThread: ${err.message}`);
         }
+    }
+
+    /** Gán nhiều label cho nhiều thread trong 1 transaction — tối ưu cho bulk */
+    public bulkAssignLocalLabelToThread(ownerZaloId: string, labelIds: number[], threadIds: string[]): number {
+        if (!this.initialized || !db || labelIds.length === 0 || threadIds.length === 0) return 0;
+        let count = 0;
+        const now = Date.now();
+        try {
+            db.exec('BEGIN');
+            const stmt = db.prepare(
+                `INSERT OR IGNORE INTO local_label_threads (owner_zalo_id, label_id, thread_id, created_at) VALUES (?,?,?,?)`
+            );
+            for (const labelId of labelIds) {
+                for (const threadId of threadIds) {
+                    stmt.run(ownerZaloId, labelId, threadId, now);
+                    count++;
+                }
+            }
+            db.exec('COMMIT');
+        } catch (err: any) {
+            try { db!.exec('ROLLBACK'); } catch {}
+            Logger.error(`[DB] bulkAssignLocalLabelToThread: ${err.message}`);
+        }
+        return count;
     }
 
     /** Gỡ label khỏi một thread */
