@@ -93,6 +93,7 @@ function StickerBubble({ msg }: { msg: any }) {
     // ── Telegram sticker: từ local_paths (đã download) ───────────────
     if (isTelegram(msg.channel)) {
       const media = getTelegramStickerMedia(msg);
+      console.log(`[StickerBubble] msgId=${msg.msg_id} media=${JSON.stringify(media)} attachments=${msg.attachments?.slice(0,50)} local_paths=${msg.local_paths?.slice(0,80)}`);
       if (media?.localPath) {
         if (media.format === 'tgs') {
           if (!cancelled) {
@@ -1967,19 +1968,17 @@ export function MessageBubble({ msg, isSelf, senderName, onManage, onView, onOpe
     <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-0.5`}>
       <div className={`px-3 py-2 rounded-2xl text-sm max-w-[280px] break-words whitespace-pre-wrap ${cls}`} style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}>
         {text ? linkifyText(text) : '(Không có nội dung)'}
-        {isEdited && (
+        {isEdited && editHistoryEntries.length > 0 && (
           <>
             <span className="ml-1.5 text-[10px] opacity-60 select-none font-normal">
               (đã chỉnh sửa)
             </span>
-            {editHistoryEntries.length > 0 && (
-              <button
-                onClick={() => setShowEditHistory(p => !p)}
-                className="ml-1.5 text-[10px] font-medium text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
-              >
-                {showEditHistory ? 'Ẩn' : 'Xem nội dung cũ'}
-              </button>
-            )}
+            <button
+              onClick={() => setShowEditHistory(p => !p)}
+              className="ml-1.5 text-[10px] font-medium text-blue-300 transition-colors underline underline-offset-2 select-none pointer-events-auto"
+            >
+              {showEditHistory ? 'Ẩn' : 'Xem nội dung cũ'}
+            </button>
           </>
         )}
       </div>

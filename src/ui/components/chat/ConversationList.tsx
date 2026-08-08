@@ -3,6 +3,7 @@ import { useChatStore } from '@/store/chatStore';
 import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
 import ipc, { buildZaloAuth } from '@/lib/ipc';
+import { MESSAGE_LOAD_LIMIT, MESSAGE_RESTORE_LIMIT, MESSAGE_SEARCH_LIMIT, PAGE_SIZE, INITIAL_BATCH, BACKGROUND_BATCH, BATCH_SIZE, BATCH_DELAY_MS, INITIAL_LOADING_TIMEOUT_MS, BACKGROUND_LOAD_DELAY_MS, LABELS_DEBOUNCE_MS } from '@/lib/chat/constants';
 import DataAccessor from '@/lib/data/DataAccessor';
 import { useEmployeeStore } from '@/store/employeeStore';
 import { sendSeenForThread } from '@/lib/sendSeenHelper';
@@ -169,7 +170,6 @@ export default function ConversationList() {
   }, [isEmp, activeAccountId]);
 
   // ── Pagination: cố định 200 hội thoại mỗi trang, infinite scroll ──────
-  const PAGE_SIZE = 200;
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
   const [conversationHasMore, setConversationHasMore] = useState(false);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
@@ -421,7 +421,7 @@ export default function ConversationList() {
       return;
     }
     // Safety fallback: clear after 8s
-    const timeout = setTimeout(() => setInitialLoading(false), 8000);
+    const timeout = setTimeout(() => setInitialLoading(false), INITIAL_LOADING_TIMEOUT_MS);
     return () => clearTimeout(timeout);
   }, [activeAccountId, contacts]);
 
@@ -516,10 +516,8 @@ export default function ConversationList() {
 
         console.log(`[ConversationList] Found ${groupsNeedingAvatars.length} groups needing avatars`);
 
-        // ═══ PROGRESSIVE LOADING: Load 10 đầu tiên, sau đó load dần background ═══
-        const INITIAL_BATCH = 10;
-        const BACKGROUND_BATCH = 5;
-        const BACKGROUND_DELAY = 500; // ms delay giữa các batch background
+        // ═══ PROGRESSIVE LOADING ═══
+        const backgroundDelay = BACKGROUND_LOAD_DELAY_MS;
 
         // Helper function để load members của 1 group từ DB
         const loadGroupFromDB = async (group: typeof groupsNeedingAvatars[0]): Promise<boolean> => {
@@ -585,7 +583,7 @@ export default function ConversationList() {
           (async () => {
             for (let i = 0; i < groupsNeedingAvatars.length; i += BACKGROUND_BATCH) {
               if (i > 0) {
-                await new Promise(resolve => setTimeout(resolve, BACKGROUND_DELAY));
+                await new Promise(resolve => setTimeout(resolve, backgroundDelay));
               }
               const batch = groupsNeedingAvatars.slice(i, i + BACKGROUND_BATCH);
               await Promise.all(batch.map(g => loadGroupFromDB(g).catch(() => {})));
@@ -612,7 +610,7 @@ export default function ConversationList() {
             (async () => {
               for (let i = 0; i < remainingGroups.length; i += BACKGROUND_BATCH) {
                 if (i > 0) {
-                  await new Promise(resolve => setTimeout(resolve, BACKGROUND_DELAY));
+                  await new Promise(resolve => setTimeout(resolve, backgroundDelay));
                 }
 
                 const batch = remainingGroups.slice(i, i + BACKGROUND_BATCH);
@@ -778,8 +776,6 @@ export default function ConversationList() {
     if (!mergedInboxMode || mergedInboxAccounts.length === 0) return;
 
     const loadMergedGroupAvatars = async () => {
-      const BATCH_SIZE = 5;
-      const BATCH_DELAY = 300;
 
       for (const zaloId of mergedInboxAccounts) {
         const accountContacts = useChatStore.getState().contacts[zaloId] || [];
@@ -795,7 +791,7 @@ export default function ConversationList() {
         // Progressive loading: batch by batch with delay
         for (let i = 0; i < groupsNeedingAvatars.length; i += BATCH_SIZE) {
           if (i > 0) {
-            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
           }
 
           const batch = groupsNeedingAvatars.slice(i, i + BATCH_SIZE);
@@ -1196,7 +1192,7 @@ export default function ConversationList() {
     const acc = useAccountStore.getState().getActiveAccount();
     if (!acc || !channelSupports(acc.channel || CHANNEL.ZALO, 'supportsLabel')) return; // Labels are Zalo-only
     const now = Date.now();
-    if (now - lastLabelsFetchRef.current < 3_600_000) return; // debounce 1 giờ
+    if (now - lastLabelsFetchRef.current < LABELS_DEBOUNCE_MS) return;
     lastLabelsFetchRef.current = now;
     const auth = buildZaloAuth(acc, activeAccountId);
     try {
@@ -1254,6 +1250,9 @@ export default function ConversationList() {
         .catch(() => {});
     }
     clearUnread(zaloId, contactId);
+    // Clear @mention flag when conversation is opened
+    DataAccessor.setContactFlags?.({ zaloId, contactId, flags: { has_mention: 0 } }).catch(() => {});
+    updateContact(zaloId, { contact_id: contactId, has_mention: 0 } as any);
     ipc.app?.setBadge(getFilteredUnreadCount());
     if (!overrideZaloId) loadLabelsIfStale();
 
@@ -1299,7 +1298,7 @@ export default function ConversationList() {
 
     try {
       console.log(`[ConversationList] handleSelect: calling DataAccessor.getMessages zaloId=${zaloId} threadId=${contactId} isEmp=${useEmployeeStore.getState().mode}`);
-    const res = await DataAccessor.getMessages({ zaloId, threadId: contactId, limit: 20, offset: 0 });
+    const res = await DataAccessor.getMessages({ zaloId, threadId: contactId, limit: MESSAGE_LOAD_LIMIT, offset: 0 });
     const dbMessages = res?.messages || res?.items || [];
     console.log(`[ConversationList] handleSelect: ${dbMessages.length} msgs for ${contactId}`);
     dbMessages.slice(0, 5).forEach((m: any, i: number) => {
@@ -1378,7 +1377,7 @@ export default function ConversationList() {
       const isEmp = useEmployeeStore.getState().mode === 'employee';
       if (isEmp) {
         try {
-          const result = await DataAccessor.getMessages({ zaloId: zaloId!, threadId: contactId, limit: 20 });
+          const result = await DataAccessor.getMessages({ zaloId: zaloId!, threadId: contactId, limit: MESSAGE_LOAD_LIMIT });
           const msgs = result?.items || [];
           console.log(`[ConversationList] handleSelect: loaded ${msgs.length} msgs from REST for ${contactId}`);
           if (msgs.length > 0) {
@@ -1391,7 +1390,7 @@ export default function ConversationList() {
         // Boss/standalone: fallback — dùng DataAccessor (-> IPC -> DB)
         console.log(`[ConversationList] handleSelect: boss mode, loading from IPC...`);
         try {
-          const result = await DataAccessor.getMessages({ zaloId: zaloId!, threadId: contactId, limit: 20 });
+          const result = await DataAccessor.getMessages({ zaloId: zaloId!, threadId: contactId, limit: MESSAGE_LOAD_LIMIT });
           const msgs = result?.items || [];
           if (msgs.length > 0) {
             setMessages(zaloId!, contactId, [...msgs].reverse());
@@ -1400,7 +1399,7 @@ export default function ConversationList() {
             // For Telegram: try to get messages from API when DB is empty
             if (isTelegramUser(accChannel)) {
               try {
-                const tgRes = await ipc.telegramUser?.getMessages({ accountId: zaloId!, chatId: contactId, limit: 20 });
+                const tgRes = await ipc.telegramUser?.getMessages({ accountId: zaloId!, chatId: contactId, limit: MESSAGE_LOAD_LIMIT });
                 if (tgRes?.success && tgRes.messages?.length) {
                   setMessages(zaloId!, contactId, [...tgRes.messages].reverse());
                 }
@@ -1514,7 +1513,7 @@ export default function ConversationList() {
         messagesLoading: true,
       });
       // Load messages from DB
-      DataAccessor.getMessages({ zaloId: activeAccountId, threadId: saved.threadId, limit: 50, offset: 0 }).then((res: any) => {
+      DataAccessor.getMessages({ zaloId: activeAccountId, threadId: saved.threadId, limit: MESSAGE_RESTORE_LIMIT, offset: 0 }).then((res: any) => {
         const msgs = res?.items || res?.messages || [];
         if (msgs.length > 0) {
           useChatStore.getState().setMessages(activeAccountId, saved.threadId, [...msgs].reverse());
@@ -2058,7 +2057,7 @@ export default function ConversationList() {
                   zaloId,
                   threadId: msg.thread_id,
                   timestamp: Number(msg.timestamp),
-                  limit: 80,
+                  limit: MESSAGE_SEARCH_LIMIT,
                 });
                 const aroundMsgs = aroundRes?.messages;
                 if (!aroundMsgs?.length) return;
@@ -2479,7 +2478,7 @@ export default function ConversationList() {
                 )}
                 {/* Badge tài khoản - chỉ hiện trong chế độ Gộp trang */}
                 {mergedInboxMode && ownerAcc && (
-                  <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border border-gray-800 overflow-hidden z-10 flex-shrink-0" title={ownerAcc.full_name || ownerAcc.zalo_id}>
+                  <div className="absolute -bottom-1.5 -right-1.5 w-5 h-5 rounded-full border border-gray-800 overflow-hidden z-10 flex-shrink-0" title={ownerAcc.full_name || ownerAcc.zalo_id}>
                     {ownerAcc.avatar_url
                       ? <img src={ownerAcc.avatar_url} alt="" className="w-full h-full object-cover" />
                       : <div className="w-full h-full bg-purple-600 flex items-center justify-center text-white text-[6px] font-bold">{(ownerAcc.full_name || ownerAcc.zalo_id).charAt(0).toUpperCase()}</div>
@@ -2488,8 +2487,8 @@ export default function ConversationList() {
                 )}
                 {/* Channel badge overlay - hiện trong chế độ Gộp trang */}
                 {mergedInboxMode && (
-                  <div className="absolute -top-0.5 -left-0.5 z-10">
-                    <ChannelBadgeOverlay channel={(contact.channel || CHANNEL.ZALO) as Channel} size="xs" />
+                  <div className="absolute top-1 left-1 z-10">
+                    <ChannelBadgeOverlay channel={(contact.channel || CHANNEL.ZALO) as Channel} size="sm" />
                   </div>
                 )}
               </div>

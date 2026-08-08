@@ -8,6 +8,9 @@ import PhoneDisplay from '@/components/common/PhoneDisplay';
 import GroupAvatar from '@/components/common/GroupAvatar';
 import CampaignCreateModal from '@/components/crm/campaigns/CampaignCreateModal';
 import AddToContactsModal from '@/components/crm/contacts/AddToContactsModal';
+import PaymentQrSection from '@/components/crm/groups/PaymentQrSection';
+import ShareGroupModal from '@/components/crm/groups/ShareGroupModal';
+import SharedGroupsCategoryPopup from '@/components/crm/groups/SharedGroupsCategoryPopup';
 import { syncZaloGroups, MemberPlaceholder, SyncGroupsProgress } from '@/lib/zaloGroupUtils';
 import { AlertIcon, CheckIcon, SearchIcon } from '@/components/common/icons';
 
@@ -121,6 +124,18 @@ export default function GroupMembersTab() {
 
   // ── Tab state ─────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'members' | 'scan'>('members');
+
+  // ── Share group modal state ───────────────────────────────────────────────
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareGroupInfo, setShareGroupInfo] = useState<{
+    groupId: string; groupName: string; groupAvatar: string; memberCount: number;
+  } | null>(null);
+
+  // ── Payment popup state ──────────────────────────────────────────────────
+  const [showPaymentPopup, setShowPaymentPopup] = useState(false);
+
+  // ── Shared groups popup state ────────────────────────────────────────────
+  const [showSharedGroupsPopup, setShowSharedGroupsPopup] = useState(false);
 
   // ── Scan tab state ────────────────────────────────────────────────────
   const [scanLinkInput, setScanLinkInput] = useState('');
@@ -512,7 +527,7 @@ export default function GroupMembersTab() {
 
     // Kiểm tra premium trước khi quét
     if (!isPremium) {
-      setScanTabError('Cần kích hoạt gói Premium để sử dụng tính năng này. Bấm nút mua gói hoặc liên hệ @babyvibe9 trên Telegram.');
+      setScanTabError('Cần nâng cấp gói Premium để sử dụng tính năng này.');
       return;
     }
 
@@ -663,27 +678,26 @@ export default function GroupMembersTab() {
 
     const storageKey = `premium_${activeAccountId}`;
 
-    // Đọc từ localStorage trước
-    let cached = false;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const data = JSON.parse(raw);
-        const expiresDate = new Date(data.expiresAt);
-        setIsPremium(expiresDate > new Date());
-        setPremiumExpiresAt(data.expiresAt);
-        cached = true;
+    // Nếu không phải manual reload → đọc cache trước
+    if (!fromBackend) {
+      let cached = false;
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const data = JSON.parse(raw);
+          const expiresDate = new Date(data.expiresAt);
+          setIsPremium(expiresDate > new Date());
+          setPremiumExpiresAt(data.expiresAt);
+          cached = true;
+        }
+      } catch {}
+      if (!cached) {
+        setIsPremium(false);
+        setPremiumExpiresAt(null);
       }
-    } catch {}
-
-    if (!cached) {
-      setIsPremium(false);
-      setPremiumExpiresAt(null);
+      setPremiumLoaded(true);
+      return;
     }
-    setPremiumLoaded(true);
-
-    // Nếu có cache rồi mà không phải manual reload → không gọi backend
-    if (cached && !fromBackend) return;
 
     // Gọi backend (lần đầu hoặc manual reload)
     setPremiumLoading(true);
@@ -861,7 +875,7 @@ export default function GroupMembersTab() {
       {activeTab === 'scan' ? (
         /* ── Tab: Quét thành viên (Premium) ──────────────────────────────── */
         <div className="flex-1 overflow-y-auto">
-          <div className="max-w-2xl mx-auto px-6 py-6 space-y-5">
+          <div className="mx-auto px-6 py-6 space-y-5">
 
             {/* Header */}
             <div className="text-center pb-2">
@@ -880,8 +894,8 @@ export default function GroupMembersTab() {
                 <div key={i} className="bg-gray-800 border border-gray-700 rounded-xl p-3.5 flex gap-3">
                   <div className="w-9 h-9 rounded-lg bg-gray-700/50 flex items-center justify-center flex-shrink-0">{f.icon}</div>
                   <div>
-                    <p className="text-xs font-semibold text-white">{f.title}</p>
-                    <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">{f.desc}</p>
+                    <p className="text-sm font-semibold text-white">{f.title}</p>
+                    <p className="text-[11px] text-gray-600 mt-0.5 leading-relaxed">{f.desc}</p>
                   </div>
                 </div>
               ))}
@@ -920,8 +934,81 @@ export default function GroupMembersTab() {
                     </>
                   )}
                 </button>
+                <button
+                  onClick={() => {
+                    if (!scanLinkInput.trim()) return;
+                    // Extract groupId from link or use input directly
+                    let groupId = scanLinkInput.trim();
+                    let groupName = '';
+                    if (resolvedGroupInfo) {
+                      groupId = resolvedGroupInfo.groupId;
+                      groupName = resolvedGroupInfo.name;
+                    }
+                    setShareGroupInfo({
+                      groupId,
+                      groupName: groupName || groupId,
+                      groupAvatar: resolvedGroupInfo?.avatar || '',
+                      memberCount: 0,
+                    });
+                    setShowShareModal(true);
+                  }}
+                  disabled={!scanLinkInput.trim()}
+                  className="px-4 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 flex-shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                  </svg>
+                  Chia sẻ
+                </button>
               </div>
-              <p className="text-[11px] text-gray-500">Kết quả sẽ lưu vào tab Thành viên nhóm để bạn sử dụng đầy đủ tính năng</p>
+              <p className="text-[12px] text-gray-600">Kết quả khi quét xong sẽ lưu vào tab `Thành viên nhóm` để bạn sử dụng thêm vào chiến dịch.</p>
+              <p className="text-[12px] text-gray-600">UID thành viên nhóm không thể chia sẻ giữa các tài khoản với nhau do chính sách từ Zalo.</p>
+              <p className="text-[12px] text-gray-600">Nếu bạn quét nhóm chưa join cần ít nhất ở chế độ chờ duyệt, với trường hợp nhóm tắt chờ duyệt thì bạn không thể quét được nhóm này.</p>
+              <p className="text-[12px] text-gray-600">Bạn có thể chia sẻ group cho cộng đồng để xây dựng kho nhóm dùng chung toàn bộ app.</p>
+            </div>
+
+            {/* Shared groups description */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-green-500/15 flex items-center justify-center flex-shrink-0">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2">
+                      <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-md font-semibold text-white">Nhóm chung từ cộng đồng</p>
+                    <p className="text-[10px] text-gray-600">Cùng nhau phát triển, chia sẻ giá trị</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Benefits grid */}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { icon: '🎯', title: 'Tiết kiệm thời gian', desc: 'Không cần tự tìm nhóm, đã có danh sách nhóm chất lượng' },
+                  { icon: '🤝', title: 'Cùng nhau phát triển', desc: 'Chia sẻ nhóm tốt giúp cộng đồng cùng tiếp cận khách hàng' },
+                  { icon: '✅', title: 'Đảm bảo chất lượng', desc: 'Mọi nhóm đều qua kiểm duyệt, không spam không ảo hoặc nhóm ít thành viên' },
+                ].map((b, i) => (
+                  <div key={i} className="bg-gray-700/30 rounded-lg p-2 text-center">
+                    <span className="text-base">{b.icon}</span>
+                    <p className="text-[14px] text-white font-medium mt-1 leading-tight">{b.title}</p>
+                    <p className="text-[12px] text-gray-600 mt-0.5 leading-tight">{b.desc}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* CTA */}
+              <button
+                onClick={() => setShowSharedGroupsPopup(true)}
+                className="w-full py-4 bg-green-600/10 hover:bg-green-600/20 border border-green-500/20 text-green-400 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+                Khám phá kho nhóm chung
+              </button>
             </div>
 
             {/* Resolved group info card */}
@@ -941,7 +1028,7 @@ export default function GroupMembersTab() {
                   <p className="text-[11px] text-gray-400 mt-0.5">ID: {resolvedGroupInfo.groupId}</p>
                 </div>
                 <button onClick={() => setResolvedGroupInfo(null)}
-                  className="text-gray-500 hover:text-gray-300 transition-colors p-1">
+                  className="text-gray-600 hover:text-gray-300 transition-colors p-1">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -986,6 +1073,23 @@ export default function GroupMembersTab() {
                     className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors">
                     Xem trong tab Thành viên →
                   </button>
+                  <button
+                    onClick={() => {
+                      setShareGroupInfo({
+                        groupId: scanTabGroupId || '',
+                        groupName: resolvedGroupInfo?.name || scanTabGroupId || '',
+                        groupAvatar: resolvedGroupInfo?.avatar || '',
+                        memberCount: scanTabResults.length,
+                      });
+                      setShowShareModal(true);
+                    }}
+                    className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                    </svg>
+                    Chia sẻ nhóm này
+                  </button>
                 </div>
                 <div className="max-h-80 overflow-y-auto divide-y divide-gray-700/50">
                   {scanTabResults.slice(0, 50).map((m, i) => (
@@ -993,12 +1097,12 @@ export default function GroupMembersTab() {
                       <Avatar src={m.avatar} name={m.displayName || m.userId} size={32} />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white truncate">{m.displayName || m.userId}</p>
-                        <p className="text-[11px] text-gray-500">{m.userId}</p>
+                        <p className="text-[11px] text-gray-600">{m.userId}</p>
                       </div>
                     </div>
                   ))}
                   {scanTabResults.length > 50 && (
-                    <div className="px-4 py-2 text-xs text-gray-500 text-center">
+                    <div className="px-4 py-2 text-xs text-gray-600 text-center">
                       ... và {scanTabResults.length - 50} thành viên khác. Xem đầy đủ ở tab Thành viên nhóm.
                     </div>
                   )}
@@ -1023,7 +1127,7 @@ export default function GroupMembersTab() {
                     {premiumLoading ? <>{SpinIcon} Đang cập nhật...</> : <>{RefreshIcon} Cập nhật</>}
                   </button>
                   {isPremium && premiumExpiresAt && (
-                    <span className="text-xs text-gray-500">· Hết hạn: {new Date(premiumExpiresAt).toLocaleDateString('vi-VN')}</span>
+                    <span className="text-xs text-gray-600">· Hết hạn: {new Date(premiumExpiresAt).toLocaleDateString('vi-VN')}</span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -1037,24 +1141,34 @@ export default function GroupMembersTab() {
               {!isPremium && (
                 <>
                   <div className="flex items-baseline gap-1.5">
-                    <span className="font-bold text-white">265.000đ</span>
-                    <span className="text-sm text-gray-400">/ năm / tài khoản</span>
+                    <span className="font-bold text-white">Từ ~833đ</span>
+                    <span className="text-sm text-gray-400">/ ngày / tài khoản</span>
                   </div>
                   <p className="text-xs text-gray-400 leading-relaxed">
-                    Chỉ <span className="text-white font-semibold">~700đ/ngày</span> - tiếp cận hàng chục nghìn khách hàng tiềm năng từ các nhóm chất lượng trên Zalo
+                    Tiếp cận hàng chục nghìn khách hàng tiềm năng từ các nhóm chất lượng trên Zalo
                   </p>
                   <button
-                    onClick={() => window.open('https://t.me/babyvibe9', '_blank')}
+                    onClick={() => setShowPaymentPopup(true)}
                     className="w-full py-2.5 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.161c-.18 1.897-.962 6.502-1.359 8.627-.168.9-.5 1.201-.82 1.23-.697.064-1.226-.461-1.901-.903-1.056-.692-1.653-1.123-2.678-1.799-1.185-.78-.417-1.21.258-1.911.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.479.33-.913.492-1.302.484-.428-.008-1.252-.241-1.865-.44-.752-.244-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.831-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635.099-.002.321.023.465.141a.506.506 0 0 1 .171.325c.016.093.036.306.02.472z"/>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
                     </svg>
-                    Liên hệ mua gói
+                    Nâng cấp gói
                   </button>
                 </>
               )}
               {isPremium && (
-                <p className="text-xs text-gray-400">Quét không giới hạn thành viên nhóm</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-400">Quét không giới hạn thành viên nhóm</p>
+                  <button
+                    onClick={() => setShowPaymentPopup(true)}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Gia hạn thêm
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1065,7 +1179,7 @@ export default function GroupMembersTab() {
                 {[
                   { step: '1', text: 'Dán link nhóm Zalo vào ô bên trên' },
                   { step: '2', text: 'Nhấn Tham gia nếu chưa là thành viên' },
-                  { step: '3', text: 'Nhấn Quét — kết quả hiện ở tab Thành viên nhóm' },
+                  { step: '3', text: 'Nhấn Quét → kết quả hiện ở tab Thành viên nhóm' },
                   { step: '4', text: 'Chọn thành viên → thêm vào chiến dịch, gửi tin, kết bạn...' },
                 ].map(s => (
                   <div key={s.step} className="flex items-start gap-2.5">
@@ -1673,6 +1787,65 @@ export default function GroupMembersTab() {
         </div>
       )}
       </div>
+      )}
+
+      {/* ── Share Group Modal ──────────────────────────────────────────── */}
+      {showShareModal && shareGroupInfo && (() => {
+        const acc = useAccountStore.getState().getActiveAccount();
+        return (
+          <ShareGroupModal
+            groupId={shareGroupInfo.groupId}
+            groupName={shareGroupInfo.groupName}
+            groupAvatar={shareGroupInfo.groupAvatar}
+            memberCount={shareGroupInfo.memberCount}
+            pageId={activeAccountId}
+            displayName={acc?.display_name || acc?.full_name || activeAccountId}
+            avatarUrl={acc?.avatar_url || ''}
+            onClose={() => { setShowShareModal(false); setShareGroupInfo(null); }}
+            onSubmitted={() => { setShowShareModal(false); setShareGroupInfo(null); }}
+          />
+        );
+      })()}
+
+      {/* ── Payment QR Popup ──────────────────────────────────────────── */}
+      {showPaymentPopup && (() => {
+        const allAccounts = useAccountStore.getState().accounts;
+        const zaloAccounts = allAccounts.filter(acc => (acc.channel || 'zalo') === 'zalo');
+        return (
+          <PaymentQrSection
+            accounts={zaloAccounts.map(acc => ({
+              pageId: acc.zalo_id,
+              displayName: acc.display_name || acc.full_name || acc.zalo_id,
+              expiresAt: null,
+              avatar: acc.avatar_url || '',
+            }))}
+            onClose={() => setShowPaymentPopup(false)}
+            onPaymentSuccess={() => {
+              setShowPaymentPopup(false);
+              // Xóa localStorage cache để force load từ BE
+              try { localStorage.removeItem(`premium_${activeAccountId}`); } catch {}
+              loadPremiumStatus(true);
+            }}
+          />
+        );
+      })()}
+
+      {/* ── Shared Groups Category Popup ──────────────────────────────── */}
+      {showSharedGroupsPopup && (
+        <SharedGroupsCategoryPopup
+          pageId={activeAccountId}
+          onClose={() => setShowSharedGroupsPopup(false)}
+          onShareGroup={() => {
+            setShowSharedGroupsPopup(false);
+            setShareGroupInfo({
+              groupId: '',
+              groupName: '',
+              groupAvatar: '',
+              memberCount: 0,
+            });
+            setShowShareModal(true);
+          }}
+        />
       )}
     </div>
   );

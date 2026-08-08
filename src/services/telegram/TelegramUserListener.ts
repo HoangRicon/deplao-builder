@@ -1746,12 +1746,14 @@ async function connectListenerNow(listener: ActiveListener): Promise<void> {
             if (existingMsg?.edit_history) {
               try { editHistory = JSON.parse(existingMsg.edit_history); } catch { editHistory = []; }
             }
-            if (existingMsg?.content && existingMsg.content !== newText) {
+            const contentChanged = existingMsg?.content && existingMsg.content !== newText;
+            if (contentChanged) {
               editHistory.push({ oldBody: existingMsg.content, editedAt: Date.now(), editCount: editHistory.length + 1 });
             }
+            // Only set is_edited=1 when content ACTUALLY changed (reaction updates don't change content)
             db.run(
-              `UPDATE messages SET content = ?, is_edited = 1, edit_history = ? WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
-              [newText, JSON.stringify(editHistory), msgId, account.accountId, chatId]
+              `UPDATE messages SET content = ?, is_edited = ?, edit_history = ? WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+              [newText, contentChanged ? 1 : 0, JSON.stringify(editHistory), msgId, account.accountId, chatId]
             );
           }
           EventBroadcaster.emit('event:messageEdited', {
@@ -2403,7 +2405,7 @@ async function handleNewMessage(accountId: string, event: NewMessageEvent, clien
 
     // Download media (background, non-blocking)
     const hasMedia = !!(message as any).media;
-    Logger.log(`[TG:handleNew] STEP6 msgId=${messageId} hasMedia=${hasMedia} isSelf=${isSelf} source=${source} result=${result.status}`);
+    Logger.log(`[TG:handleNew] STEP6 msgId=${messageId} hasMedia=${hasMedia} isSelf=${isSelf} source=${source} msgType=${msgType} result=${result.status}`);
     if (hasMedia && client) {
       downloadMediaForMessage(accountId, client, message, messageId, msgType, chatId).catch(err => {
         Logger.error(`[TG:download] QUEUE_FAILED msgId=${messageId} error=${err.message}`);
@@ -3744,13 +3746,26 @@ export async function sendMessage(accountId: string, chatId: string, text: strin
     // Save sent message to DB (INSERT OR IGNORE — socket echo sẽ skip nếu đã tồn tại)
     const now = Date.now();
     const threadType = chatId.startsWith('-') ? 1 : 0;
+    // Build quote_data nếu reply
+    let quoteData: string | null = null;
+    if (replyToMsgId) {
+      const dbQuote = DatabaseService.getInstance()?.queryOne<any>(
+        `SELECT content, msg_type, sender_id FROM messages WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+        [replyToMsgId, accountId, chatId]
+      );
+      if (dbQuote) {
+        quoteData = JSON.stringify({ msgId: replyToMsgId, msg: dbQuote.content || '', senderId: dbQuote.sender_id || '', msgType: dbQuote.msg_type || 'text' });
+      } else {
+        quoteData = JSON.stringify({ msgId: replyToMsgId, msg: '', senderId: '', msgType: 'text' });
+      }
+    }
     const db = DatabaseService.getInstance();
     if (db) {
       db.run(`
         INSERT OR IGNORE INTO messages
-          (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel)
-        VALUES (?, ?, ?, ?, ?, ?, 'text', ?, 1, '[]', 'sent', 'telegram_user')
-      `, [msgId, accountId, chatId, threadType, accountId, text, now]);
+          (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel, reply_to_id, quote_data)
+        VALUES (?, ?, ?, ?, ?, ?, 'text', ?, 1, '[]', 'sent', 'telegram_user', ?, ?)
+      `, [msgId, accountId, chatId, threadType, accountId, text, now, replyToMsgId || null, quoteData]);
 
       // Update contacts (last_message, last_message_time) — đảm bảo conversation list cập nhật ngay
       db.run(`
@@ -3777,6 +3792,8 @@ export async function sendMessage(accountId: string, chatId: string, text: strin
           content: text,
           msgType: 'text',
           ts: String(now),
+          replyToId: replyToMsgId || undefined,
+          quoteData: quoteData || undefined,
         },
       },
     });
@@ -4749,11 +4766,25 @@ export async function sendFile(accountId: string, chatId: string, filePath: stri
       : msgType === 'audio' ? '🎵 Audio'
       : caption || '📎 File';
 
+    // Build quote_data nếu reply
+    let quoteData: string | null = null;
+    if (replyToMsgId) {
+      const dbQuote = DatabaseService.getInstance()?.queryOne<any>(
+        `SELECT content, msg_type, sender_id FROM messages WHERE msg_id = ? AND owner_zalo_id = ? AND thread_id = ? AND channel = 'telegram_user'`,
+        [replyToMsgId, accountId, chatId]
+      );
+      if (dbQuote) {
+        quoteData = JSON.stringify({ msgId: replyToMsgId, msg: dbQuote.content || '', senderId: dbQuote.sender_id || '', msgType: dbQuote.msg_type || 'text' });
+      } else {
+        quoteData = JSON.stringify({ msgId: replyToMsgId, msg: '', senderId: '', msgType: 'text' });
+      }
+    }
+
     // Save to DB WITH attachments (socket echo sẽ skip vì đã tồn tại)
     const db = DatabaseService.getInstance();
     if (db) {
-      db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'sent', 'telegram_user')`,
-        [msgId, accountId, chatId, threadType, accountId, caption || '', msgType, now, JSON.stringify(attachments)]);
+      db.run(`INSERT OR IGNORE INTO messages (msg_id, owner_zalo_id, thread_id, thread_type, sender_id, content, msg_type, timestamp, is_sent, attachments, status, channel, reply_to_id, quote_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'sent', 'telegram_user', ?, ?)`,
+        [msgId, accountId, chatId, threadType, accountId, caption || '', msgType, now, JSON.stringify(attachments), replyToMsgId || null, quoteData]);
 
       db.run(`
         INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel, is_in_others)
@@ -4782,6 +4813,8 @@ export async function sendFile(accountId: string, chatId: string, filePath: stri
           msgType,
           ts: String(now),
           attachments,
+          replyToId: replyToMsgId || undefined,
+          quoteData: quoteData || undefined,
         },
       },
     });

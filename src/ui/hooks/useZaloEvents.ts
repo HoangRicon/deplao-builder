@@ -1253,8 +1253,17 @@ export function useZaloEvents() {
         // ─── Check for @mentions in unread messages ──────────────────────
         const msgText = String(content || '');
         const currentAccountId = useAccountStore.getState().activeAccountId;
-        const hasMention = msgText.includes('@all') || msgText.includes('@All')
-          || (currentAccountId && msgText.includes(`@${currentAccountId}`));
+        const currentAccount = useAccountStore.getState().accounts.find(a => a.zalo_id === currentAccountId);
+        // Word boundary regex: chỉ match @all/@everyone đứng riêng, KHÔNG match @allStar
+        const mentionAllRegex = /@(all|All|everyone)\b/;
+        const hasMentionAll = mentionAllRegex.test(msgText);
+        // Check @username (Telegram) — KHÔNG check @displayName vì Zalo dùng @Tên
+        // nhưng displayName quá ngắn/generic → match nhầm tin nhắn tag người khác
+        const username = currentAccount?.username || '';
+        const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const mentionUserRegex = username ? new RegExp(`@${escapeRegex(username)}\\b`) : null;
+        const hasMentionUser = mentionUserRegex ? mentionUserRegex.test(msgText) : false;
+        const hasMention = hasMentionAll || hasMentionUser;
         if (hasMention) {
           DataAccessor.setContactFlags?.({ zaloId, contactId: threadId, flags: { has_mention: 1 } }).catch(() => {});
           // Update store immediately

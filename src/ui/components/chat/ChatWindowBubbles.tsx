@@ -1098,11 +1098,12 @@ export function getGroupLayoutId(msg: any): string | null {
 export function MediaGroupBubble({
                                      msgs: groupMsgs,
                                      onView,
+                                     isSent,
                                      isSelecting: isSelectingProp,
                                      selectedMsgIds: selectedMsgIdsProp,
                                      onToggleSelect
                                  }: {
-    msgs: any[]; onView: (src: string) => void;
+    msgs: any[]; onView: (src: string) => void; isSent?: boolean;
     isSelecting?: boolean; selectedMsgIds?: Set<string>; onToggleSelect?: (msgId: string) => void;
 }) {
     const sorted = React.useMemo(() => {
@@ -1141,7 +1142,7 @@ export function MediaGroupBubble({
                 {rows.map((row, ri) => (
                     <div key={ri} className="flex gap-0.5">
                         {row.map((m) => (
-                            <SingleImageInGroup key={m.msg_id} msg={m} onView={onView} isSelecting={isSelectingProp}
+                            <SingleImageInGroup key={m.msg_id} msg={m} onView={onView} isSent={isSent} isSelecting={isSelectingProp}
                                                 isSelected={selectedMsgIdsProp?.has(m.msg_id)}
                                                 onToggleSelect={onToggleSelect}/>
                         ))}
@@ -1159,8 +1160,8 @@ export function MediaGroupBubble({
 }
 
 /** Ảnh đơn bên trong MediaGroupBubble - chiều cao cố định h-40 */
-export function SingleImageInGroup({msg, onView, isSelecting: isSelectingProp, isSelected, onToggleSelect}: {
-    msg: any; onView: (src: string) => void;
+export function SingleImageInGroup({msg, onView, isSent, isSelecting: isSelectingProp, isSelected, onToggleSelect}: {
+    msg: any; onView: (src: string) => void; isSent?: boolean;
     isSelecting?: boolean; isSelected?: boolean; onToggleSelect?: (msgId: string) => void;
 }) {
     // Remote-first: hiển thị CDN ngay; chuyển local khi file đã tải xong
@@ -2414,8 +2415,24 @@ export function TextWithMentions({
             const spaceIdx = restStr.search(/[\s,!?;:\n]/);
             const end = spaceIdx === -1 ? converted.length : atIdx + 1 + spaceIdx;
             const mentionText = converted.slice(atIdx, end);
+            const username = mentionText.slice(1); // strip @
             segments.push(
-                <span key={atIdx} className="font-semibold" style={{color: '#79b4fd'}}>{mentionText}</span>
+                <span key={atIdx} className="font-semibold cursor-pointer hover:underline"
+                    style={{color: '#79b4fd'}}
+                    onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!onMentionClick) return;
+                        // Resolve username → peerId từ DB (telegram_peers table)
+                        try {
+                            const accId = useAccountStore.getState().activeAccountId || '';
+                            const peersRes = await ipc.telegramUser?.getPeers?.({ accountId: accId });
+                            const peer = peersRes?.peers?.find((p: any) => p.username === username);
+                            onMentionClick(peer?.peer_id || username, e);
+                        } catch {
+                            onMentionClick(username, e);
+                        }
+                    }}
+                >{mentionText}</span>
             );
             i = end;
         }

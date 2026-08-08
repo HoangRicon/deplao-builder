@@ -240,7 +240,7 @@ export class DataAccessor {
   static async setContactFlags(params: {
     zaloId: string;
     contactId: string;
-    flags: { is_muted?: number; mute_until?: number; is_in_others?: number };
+    flags: { is_muted?: number; mute_until?: number; is_in_others?: number; has_mention?: number };
   }) {
     if (isEmployee()) {
       return rest().patch(`/api/command/conversations/${params.contactId}/flags`, params);

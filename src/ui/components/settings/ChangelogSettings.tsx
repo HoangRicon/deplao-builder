@@ -15,6 +15,50 @@ interface VersionEntry {
 // ─── Changelog data - thêm entry mới vào ĐẦU mảng khi có bản cập nhật ────────
 const CHANGELOG: VersionEntry[] = [
   {
+    version: '26.8.2',
+    date: '08/2026',
+    type: 'minor',
+    highlights: [
+      '💬 Telegram reply/quote — Trả lời tin nhắn kèm trích dẫn nội dung gốc, @mention clickable mở profile',
+      '⚡ Chat ổn định hơn — Tải tin nhắn cũ bằng IntersectionObserver, phát hiện @mention chính xác, xóa cờ đã đọc tự động',
+      '💳 Thanh toán QR — Gia hạn tính năng quét nhóm ẩn tự động',
+      '🌐 Xây dựng kho Nhóm chung từ cộng đồng — Ai cũng có thể chia sẻ nhóm Zalo cho mọi thành viên sử dụng',
+    ],
+    changes: [
+      {
+        category: 'new',
+        items: [
+          'Tự động xác nhận thanh toán và cập nhật hạn Premium',
+          'Chia sẻ nhóm — Popup nhập link, validate bằng getGroupLinkInfo, chọn danh mục, ghi chú. 18 ngành nghề',
+          'Danh sách nhóm chung — Layout 2 bên (danh mục + nhóm), search bỏ dấu, phân trang, copy link',
+          'Telegram reply/quote — gửi tin nhắn trả lời kèm trích dẫn nội dung gốc, lưu quote_data vào DB',
+          'Telegram @mention clickable — nhấn @username mở profile Telegram trong trình duyệt',
+          'Workflow zalo.getMessageHistory đọc từ DB cục bộ thay vì gọi API Zalo — tránh lỗi 404/rate limit',
+        ],
+      },
+      {
+        category: 'improved',
+        items: [
+          'backendService.ts — Thêm API payment + shared groups, map response snake_case → camelCase, header x-api-key',
+          'GroupMembersTab — Premium section với nút "Mua ngay" / "Gia hạn thêm" mở popup',
+          'ShareGroupModal — Auto-validate link khi mở, scrollable trên màn hình nhỏ',
+          'Chat — Dùng IntersectionObserver thay scroll event để tải tin nhắn cũ, ổn định hơn',
+          'Chat — Fallback retry cho hội thoại <20 tin không load được trang cũ',
+          'Phát hiện @mention chính xác hơn — dùng regex thay vì includes(), phân biệt @all/@allStar, dùng username cho Telegram',
+          'Xóa cờ @mention khi mở hội thoại — tự động unset has_mention flag',
+          'Avatar badge trong chế độ gộp trang to hơn, dễ nhìn hơn',
+        ],
+      },
+      {
+        category: 'fixed',
+        items: [
+          'Sửa lỗi Buffer is not defined + createCipheriv not available trong encryptBody',
+          'Sửa lỗi Telegram false "đã chỉnh sửa" — cập nhật reaction không còn set nhầm is_edited=1',
+        ],
+      },
+    ],
+  },
+  {
     version: '26.8.1',
     date: '08/2026',
     type: 'patch',

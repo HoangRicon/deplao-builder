@@ -46,12 +46,21 @@ export function linkifyText(text: string): React.ReactNode[] {
     const raw = match[0];
 
     if (raw.startsWith('@')) {
-      // @username mention
+      // @username mention — link đến Telegram profile
       const username = raw.slice(1);
+      const profileUrl = `https://t.me/${username}`;
       parts.push(
-        React.createElement('span', {
+        React.createElement('a', {
           key: `mention-${match.index}`,
+          href: profileUrl,
+          target: '_blank',
+          rel: 'noopener noreferrer',
           className: 'text-blue-400 hover:text-blue-300 cursor-pointer font-medium',
+          onClick: (e: React.MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { window.electronAPI?.shell?.openExternal?.(profileUrl); } catch {}
+          },
           title: `@${username}`,
         }, raw)
       );

@@ -1371,13 +1371,14 @@ class WorkflowEngineService {
       }
 
       case 'zalo.getMessageHistory': {
-        const api = this.getApi(ctx.pageId);
-        const result: any = await api.getGroupChatHistory({
-          groupId: cfg.threadId,
-          lastMsgId: cfg.lastMsgId || '',
-          count: Number(cfg.count ?? 20),
-        } as any);
-        return { messages: result?.data || [] };
+        // Read from local DB instead of Zalo API (API may 404 or rate-limit)
+        const zaloId = ctx.pageId;
+        const threadId = cfg.threadId || ctx.trigger?.threadId || '';
+        const count = Number(cfg.count ?? 20);
+        const before = cfg.before ? Number(cfg.before) : undefined;
+        if (!threadId) throw new Error('[zalo.getMessageHistory] threadId required');
+        const messages = DatabaseService.getInstance().getMessages(zaloId, threadId, count, 0, before);
+        return { messages: messages || [] };
       }
 
       case 'zalo.forwardMessage': {

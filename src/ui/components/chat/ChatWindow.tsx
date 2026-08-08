@@ -1,5 +1,6 @@
 import { Spinner } from '@/components/common/PageLoading';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { MESSAGE_LOAD_LIMIT, MESSAGE_AROUND_LIMIT, GROUP_MEMBER_LIMIT, LOAD_MORE_TIMEOUT_MS, PAGE_SIZE, MAX_PAGES, GROUP_INFO_CACHE_TTL_MS } from '@/lib/chat/constants';
 import { getMessageCacheKey, useChatStore } from '@/store/chatStore';
 import { useAccountStore } from '@/store/accountStore';
 import { useAppStore } from '@/store/appStore';
@@ -32,11 +33,9 @@ import PollBubble from './PollBubble';
 import FriendRequestBar from './FriendRequestBar';
 import { ReactionContextMenu, ReactionPopup, parseReactions, parseReactionsFull, displayReactionEmoji } from './ReactionComponents';
 import {
-  EmployeeAvatar, FileBubble, MediaBubble, VideoBubble, VoiceBubble,
+  EmployeeAvatar, FileBubble, MediaBubble, VoiceBubble,
   QuotedStickerPreview, StickerGroupBubble, getGroupLayoutId, MediaGroupBubble,
-  SingleImageInGroup, StickerBubble, MsgActionBtn, EcardBubble, CardBubble,
-  LinkBubble, CallBubble, ContactCardBubble, applyRtfStyles, TextWithMentions,
-  RtfBubble, ActionRow,
+  StickerBubble, MsgActionBtn, EcardBubble, CardBubble, TextWithMentions, RtfBubble,
 } from './ChatWindowBubbles';
 
 export default function ChatWindow() {
@@ -54,6 +53,7 @@ export default function ChatWindow() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const firstMsgRef = useRef<HTMLDivElement>(null);
   const pinnedBarWrapperRef = useRef<HTMLDivElement>(null);
   const prevPinnedBarHeightRef = useRef(0);
   const prevLastMsgIdRef = useRef<string>('');
@@ -61,6 +61,7 @@ export default function ChatWindow() {
   const shouldRestoreScrollRef = useRef(false);
   const isInitialThreadLoadRef = useRef(true);
   const initialScrollDoneRef = useRef(false);
+  const [initialScrollDone, setInitialScrollDone] = useState(false);
   // nearBottomRef: cập nhật realtime từ scroll event (không gây re-render)
   // dùng cho ResizeObserver + realtime scroll — tránh stale closure
   const nearBottomRef = useRef(true);
@@ -645,6 +646,9 @@ export default function ChatWindow() {
     setHasMore(true);
     setLoadError(false);
     setAtTop(false);
+    hasMoreRetryRef.current = false;
+    initialScrollDoneRef.current = false;
+    setInitialScrollDone(false);
     setAtBottom(true);
     setIsViewingHistory(false);
     prevLastMsgIdRef.current = '';      // reset để luôn trigger scroll khi load messages
@@ -655,6 +659,7 @@ export default function ChatWindow() {
     setMessagesReady(false);
     setInitialLoading(true);
     initialScrollDoneRef.current = false;
+    setInitialScrollDone(false);
     lastScrolledThreadRef.current = null;
     prevPinnedBarHeightRef.current = 0;
     // Reset selection mode when switching threads
@@ -749,6 +754,7 @@ export default function ChatWindow() {
     const lockScroll = () => {
       if (cancelled) return;
       initialScrollDoneRef.current = true;
+      setInitialScrollDone(true);
       lastScrolledThreadRef.current = threadKey;
       setAtTop(false);
       setAtBottom(true);
@@ -1058,7 +1064,7 @@ export default function ChatWindow() {
 
     // Check cache còn mới (< 5 phút) và có members → skip load
     const existingCache = useAppStore.getState().groupInfoCache?.[activeAccountId]?.[activeThreadId];
-    const CACHE_TTL = 5 * 60 * 1000; // 5 phút
+    const CACHE_TTL = GROUP_INFO_CACHE_TTL_MS;
     if (existingCache?.members?.length > 0 &&
         existingCache.fetchedAt &&
         Date.now() - existingCache.fetchedAt < CACHE_TTL) {
@@ -1125,7 +1131,7 @@ export default function ChatWindow() {
             );
           if (needsTelegramHydration) {
             const adapter = getAdapter('telegram_user') as any;
-            const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: 200 });
+            const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: GROUP_MEMBER_LIMIT });
             if (memberRes?.success) {
               const hydratedMembers = (memberRes.members || [])
                 .map((member: any) => ({
@@ -1152,7 +1158,7 @@ export default function ChatWindow() {
 
             if (isTelegramCh(acc.channel)) {
               const adapter = getAdapter('telegram_user') as any;
-              const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: 200 });
+              const memberRes = await adapter.getGroupMembers({ accountId, threadId: groupId, limit: GROUP_MEMBER_LIMIT });
               if (!memberRes?.success) return;
 
               const rawMembers = (memberRes.members || [])
@@ -1435,30 +1441,39 @@ export default function ChatWindow() {
   const loadMoreFnRef = useRef<() => void>(() => {});
   const hasMoreRef = useRef(true);
   const loadingMoreRef = useRef(false);
+  const hasMoreRetryRef = useRef(false); // tránh retry vô hạn
   useEffect(() => { loadMoreFnRef.current = handleLoadMore; });
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
   useEffect(() => { loadingMoreRef.current = loadingMore; }, [loadingMore]);
+  // Fallback: nếu có >15 tin nhắn mà hasMore=false → retry 1 lần (không cần đủ 20)
+  const FALLBACK_MIN_MSGS = 15;
   useEffect(() => {
-    const el = messagesContainerRef.current;
-    if (!el || !activeThreadId) return;
-    let rafId = 0;
-    // Preload threshold: trigger when user scrolls within 800px of top
-    // (~10-15 messages depending on message height)
-    const SCROLL_THRESHOLD = 550;
-    const onScroll = () => {
-      if (rafId) return;
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        // Only trigger loadMore if container is actually scrollable (content > viewport)
-        const isScrollable = el.scrollHeight > el.clientHeight + 10;
-        if (el.scrollTop < SCROLL_THRESHOLD && hasMoreRef.current && !loadingMoreRef.current && isScrollable) {
+    if (initialLoading || !initialScrollDoneRef.current || hasMore || loadingMore || hasMoreRetryRef.current) return;
+    const storeMsgs = useChatStore.getState().messages[getMessageCacheKey(activeAccountId || '', activeThreadId || '', activeTopicId)] || [];
+    const realMsgs = storeMsgs.filter((m: any) => !m.msg_id?.startsWith('temp_'));
+    if (realMsgs.length >= FALLBACK_MIN_MSGS) {
+      hasMoreRetryRef.current = true;
+      setHasMore(true);
+    }
+  }, [msgs.length, hasMore, loadingMore, initialLoading]);
+  // Auto-load tin nhắn cũ: khi tin nhắn đầu tiên (cũ nhất) xuất hiện trong viewport
+  // Chỉ activate SAU khi initial scroll-to-bottom hoàn tất
+  useEffect(() => {
+    if (initialLoading || !initialScrollDone) return;
+    const target = firstMsgRef.current;
+    const container = messagesContainerRef.current;
+    if (!target || !container || !activeThreadId) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMoreRef.current && !loadingMoreRef.current) {
           loadMoreFnRef.current();
         }
-      });
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => { el.removeEventListener('scroll', onScroll); if (rafId) cancelAnimationFrame(rafId); };
-  }, [activeThreadId]);
+      },
+      { root: container, rootMargin: '0px', threshold: 0 }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [activeThreadId, msgs.length, initialLoading, initialScrollDone]);
 
   // ─── Scroll to bottom khi AI suggestions bar xuất hiện/biến mất ──────────
   useEffect(() => {
@@ -1490,9 +1505,11 @@ export default function ChatWindow() {
         if (isInitial) {
           const realMsgs = msgs.filter(m => !m.msg_id.startsWith('temp_'));
           const realCount = realMsgs.length;
-          if (realCount < 20) {
-            setHasMore(false);
-          } else if (realCount === 20 && activeAccountId && activeThreadId) {
+          // Don't set hasMore=false on initial load when realCount < limit.
+          // Let user scroll up → handleLoadMore will probe DB and set hasMore=false
+          // if there truly are no more messages. This keeps the auto-load + manual
+          // button active on the first page.
+          if (realCount === MESSAGE_LOAD_LIMIT && activeAccountId && activeThreadId) {
             // Exactly 20 items → probe if there are actually more
             const minTs = realMsgs.reduce((min, m) => {
               const ts = m.timestamp || 0;
@@ -1572,7 +1589,7 @@ export default function ChatWindow() {
         setLoadingMore(false);
         loadingMoreRef.current = false;
       }
-    }, 10000);
+    }, LOAD_MORE_TIMEOUT_MS);
 
     // Re-read msgs from store to get the freshest oldest message
     // IMPORTANT: Use reduce to find MIN timestamp, not array order (array might not be sorted)
@@ -1613,7 +1630,7 @@ export default function ChatWindow() {
         const restResult = await DataAccessor.getMessages({
           zaloId: activeAccountId,
           threadId: activeThreadId,
-          limit: 20,
+          limit: MESSAGE_LOAD_LIMIT,
           before,
           topicId: activeTopicId || undefined,
         });
@@ -1622,7 +1639,7 @@ export default function ChatWindow() {
         res = await DataAccessor.getMessages({
           zaloId: activeAccountId,
           threadId: activeThreadId,
-          limit: 20,
+          limit: MESSAGE_LOAD_LIMIT,
           before,
           topicId: activeTopicId || undefined,
         });
@@ -1686,7 +1703,7 @@ export default function ChatWindow() {
           })();
         }
         // Edge case: exactly 20 items returned → probe if there are actually more
-        if (res.messages.length === 20) {
+        if (res.messages.length === MESSAGE_LOAD_LIMIT) {
           const probeRes = await DataAccessor.getMessages({
             zaloId: activeAccountId,
             threadId: activeThreadId,
@@ -1695,7 +1712,7 @@ export default function ChatWindow() {
             topicId: activeTopicId || undefined,
           });
           if (!probeRes?.messages?.length) setHasMore(false);
-        } else if (res.messages.length < 20) {
+        } else if (res.messages.length < MESSAGE_LOAD_LIMIT) {
           setHasMore(false);
         }
         return;
@@ -1722,7 +1739,7 @@ export default function ChatWindow() {
               accountId: activeAccountId,
               chatId: activeThreadId,
               offsetId: Number(oldestMsgId),
-              limit: 20,
+              limit: MESSAGE_LOAD_LIMIT,
               topicRootMessageId: activeTopicId || undefined,
             });
             if (tgRes?.success && tgRes.messages?.length > 0) {
@@ -1734,7 +1751,7 @@ export default function ChatWindow() {
               const dbRes = await DataAccessor.getMessages({
                 zaloId: activeAccountId,
                 threadId: activeThreadId,
-                limit: 20,
+                limit: MESSAGE_LOAD_LIMIT,
                 before: updatedBefore,
                 topicId: activeTopicId || undefined,
               });
@@ -2037,7 +2054,7 @@ export default function ChatWindow() {
         zaloId: activeAccountId,
         threadId: activeThreadId,
         timestamp: Number(targetMsg.timestamp),
-        limit: 200,
+        limit: MESSAGE_AROUND_LIMIT,
       });
       const aroundMsgs = aroundRes?.messages;
       if (!aroundMsgs?.length) return;
@@ -2289,8 +2306,6 @@ export default function ChatWindow() {
     }
 
     if (!activeAccountId || !activeThreadId) return;
-    const PAGE_SIZE = 200;
-    const MAX_PAGES = 100;
     const fullImages: MediaViewerImage[] = [];
 
     try {
@@ -2783,8 +2798,11 @@ export default function ChatWindow() {
             });
           };
 
+          // First visible message: attach ref for IntersectionObserver (loadMore trigger)
+          const isFirstVisible = idx === 0 && !groupedSkipIds.has(msg.msg_id) && !pollSkipIds.has(msg.msg_id) && !groupedStickerSkipIds.has(msg.msg_id);
           return (
             <div key={msg.msg_id + idx} id={`msg-${msg.msg_id}`}
+              ref={isFirstVisible ? firstMsgRef : undefined}
               className={`flex flex-col mb-0.5 rounded-lg transition-colors ${isEcardMsg ? 'items-center' : isSent ? 'items-end' : 'items-start'} group/msg${isMsgSelected ? ' bg-blue-500/10 ring-1 ring-blue-500/40 rounded-lg' : ''}${isSelecting && !isEcardMsg ? ' cursor-pointer' : ''}`}
               onClick={isSelecting && !isEcardMsg ? (e) => {
                 // Skip click nếu vừa kết thúc drag-select (tránh toggle ngay sau drag)
@@ -3054,7 +3072,7 @@ export default function ChatWindow() {
                       isRtf={isRtf}
                       isBankCard={isBankCardMsg}
                       isLocation={isLocationMsg}
-                      renderGroupMedia={() => <MediaGroupBubble msgs={groupMediaMsgs!} onView={openViewer} isSelecting={isSelecting} selectedMsgIds={selectedMsgIds} onToggleSelect={(id) => {
+                      renderGroupMedia={() => <MediaGroupBubble msgs={groupMediaMsgs!} onView={openViewer} isSent={isSent} isSelecting={isSelecting} selectedMsgIds={selectedMsgIds} onToggleSelect={(id) => {
                         setSelectedMsgIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
                       }} />}
                       renderPoll={() => (
@@ -3814,5 +3832,3 @@ async function sendOneForward(
     await ipc.zalo?.sendMessage({ auth, message: composeText, threadId: target.threadId, type: target.threadType });
   }
 }
-
-// FriendRequestBar extracted to ./FriendRequestBar.tsx
