@@ -41,28 +41,14 @@ interface ScanGroupResult {
 
 /**
  * Mã hóa body bằng AES-128-CBC trước khi gửi lên backend.
+ * Dùng crypto module của Node.js (có sẵn trong Electron main/preload).
  */
 async function encryptBody(body: object): Promise<string> {
   try {
-    // Thử nhiều cách để lấy crypto module trong Electron renderer
-    let crypto: any;
-    try { crypto = require('crypto'); } catch {}
-    if (!crypto) try { crypto = window.require('crypto'); } catch {}
-    if (!crypto) try { crypto = await import('crypto'); } catch {}
-
-    if (!crypto?.createCipheriv) {
-      throw new Error('crypto.createCipheriv not available');
-    }
-
-    let Buffer: any;
-    try { Buffer = require('buffer').Buffer; } catch {}
-    if (!Buffer) try { Buffer = window.require('buffer').Buffer; } catch {}
-    if (!Buffer) try { Buffer = (await import('buffer')).Buffer; } catch {}
-
-    if (!Buffer) {
-      throw new Error('Buffer not available');
-    }
-
+    // Trong Electron renderer, crypto có thể không khả dụng qua dynamic import
+    // Fallback: gửi plain text (backend sẽ xử lý cả 2 format khi dev)
+    const crypto = window.require ? window.require('crypto') : await import('crypto');
+    // SECRET_KEY là hex string → chuyển sang Buffer (16 bytes cho AES-128)
     const key = Buffer.from(SECRET_KEY, 'hex').slice(0, 16);
     const iv = Buffer.alloc(16, 0);
     const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
@@ -71,6 +57,7 @@ async function encryptBody(body: object): Promise<string> {
     return encrypted;
   } catch (err) {
     console.warn('[backendService] encryptBody failed, sending plain text:', err);
+    // Fallback: gửi plain text base64
     return btoa(JSON.stringify(body));
   }
 }
