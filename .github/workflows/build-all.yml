@@ -95,6 +95,9 @@ jobs:
           NODE_ENV: production
           BUILD_TARGET: production
 
+      - name: 🔧 Rebuild native modules for Electron
+        run: npm run rebuild:native
+
       - name: 📦 Build Windows app (x64)
         run: npx electron-builder --win --x64 --publish never
 
@@ -144,6 +147,9 @@ jobs:
         env:
           NODE_ENV: production
           BUILD_TARGET: production
+
+      - name: 🔧 Rebuild native modules for Electron
+        run: npm run rebuild:native
 
       - name: 📦 Build macOS app (arm64)
         run: npx electron-builder --mac --arm64 --publish never
@@ -211,6 +217,9 @@ jobs:
         env:
           NODE_ENV: production
           BUILD_TARGET: production
+
+      - name: 🔧 Rebuild native modules for Electron
+        run: npm run rebuild:native
 
       - name: 📦 Build Linux app (x64 - AppImage + deb)
         run: npx electron-builder --linux --x64 --publish never
