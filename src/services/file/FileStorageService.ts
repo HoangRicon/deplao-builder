@@ -281,8 +281,8 @@ class FileStorageService {
     ): Promise<string> {
         try {
             const dir = this.getAccountDir(zaloId);
-            // Sanitize filename
-            const safeFilename = filename.replace(/[/\\?%*:|"<>]/g, '_').trim() || `file_${Date.now()}`;
+            // Sanitize filename: remove illegal chars, trailing dots/spaces (Windows rejects "file.")
+            const safeFilename = filename.replace(/[/\\?%*:|"<>]/g, '_').replace(/[. ]+$/, '').trim() || `file_${Date.now()}`;
             const localPath = path.join(dir, safeFilename);
 
             if (fs.existsSync(localPath)) {

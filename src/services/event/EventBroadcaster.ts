@@ -718,8 +718,9 @@ class EventBroadcaster {
                     const extFromParams = paramsData.fileExt ? `.${paramsData.fileExt}` : '';
                     const extFromTitle = path.extname(fileTitle);
                     const finalExt = extFromParams || extFromTitle || '';
+                    // Sanitize: remove illegal chars, then trailing dots/spaces (Windows rejects "file.")
                     const safeFilename = (fileTitle.includes('.') ? fileTitle : `${fileTitle}${finalExt}`)
-                        .replace(/[/\\?%*:|"<>]/g, '_').trim() || `file_${Date.now()}${finalExt}`;
+                        .replace(/[/\\?%*:|"<>]/g, '_').replace(/[. ]+$/, '').trim() || `file_${Date.now()}${finalExt}`;
                     FileStorageService.downloadFile(zaloId, fileHref, safeFilename).then((localPath) => {
                         DatabaseService.getInstance().updateLocalPaths(zaloId, String(msgId), { file: localPath, fileName: safeFilename });
                         EventBroadcaster.send('event:localPath', { zaloId, msgId: String(msgId), threadId: message.threadId, localPaths: { file: localPath, fileName: safeFilename } });
