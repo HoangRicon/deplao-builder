@@ -37,6 +37,7 @@ import CRMQueueService from '../src/services/crm/CRMQueueService';
 import FileStorageService from '../src/services/file/FileStorageService';
 import TrackingService from '../src/services/tracking/TrackingService';
 import { SHOW_DEV_TOOLS, IS_DEV_BUILD } from '../src/configs/BuildConfig';
+import Logger from '../src/utils/Logger';
 
 // CHANNEL constant — same as src/ui/lib/channelHelper.ts (electron build excludes src/ui/)
 const CHANNEL = { ZALO: 'zalo', FACEBOOK: 'facebook', TELEGRAM_BOT: 'telegram_bot', TELEGRAM_USER: 'telegram_user' } as const;
@@ -477,6 +478,16 @@ function registerWindowControls() {
   });
 
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false);
+
+  // ─── Nhật ký (Logger) → renderer ─────────────────────────────────
+  // Hook console toàn cục để cả console.* thẳng (không qua Logger) cũng vào buffer
+  Logger.installConsoleHook();
+  // Forward mỗi log mới sang tab Nhật ký (throttle-free, buffer đã giới hạn 2000 dòng)
+  Logger.onEntry((entry) => {
+    try { mainWindow?.webContents.send('log:entry', entry); } catch { /* window đã đóng */ }
+  });
+  ipcMain.handle('log:getBuffer', () => Logger.getBuffer());
+  ipcMain.handle('log:clear', () => { Logger.clearBuffer(); return true; });
 
   // Open external link in browser
   ipcMain.on('shell:openExternal', (_event, url: string) => {

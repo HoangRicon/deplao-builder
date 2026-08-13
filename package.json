@@ -23,6 +23,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
     "bytenode": "^1.5.7",
+    "@ngrok/ngrok": "^1.7.0",
     "cloudflared": "^0.7.1",
     "dompurify": "^3.4.1",
     "electron-store": "^8.2.0",
@@ -107,6 +108,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "node_modules/@ngrok/ngrok/",
+        "to": "node_modules/@ngrok/ngrok/",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "directories": {
@@ -117,11 +125,13 @@
       "dist-electron/**/*",
       "resources/**/*",
       "node_modules/ffmpeg-static/**/*",
+      "node_modules/@ngrok/ngrok/**/*",
       "node_modules/cloudflared/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "resources/icons/**",
+      "node_modules/@ngrok/ngrok/**",
       "node_modules/better-sqlite3/**",
       "node_modules/cloudflared/**",
       "node_modules/ffmpeg-static/**"

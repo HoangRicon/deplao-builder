@@ -336,6 +336,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     rendererReady: () => ipcRenderer.send('update:renderer-ready'),
   },
 
+  // ─── Nhật ký (Logger) ─────────────────────────────────────────────
+  logs: {
+    getBuffer: () => ipcRenderer.invoke('log:getBuffer'),
+    clear:     () => ipcRenderer.invoke('log:clear'),
+  },
+
   // ─── Integration Hub ──────────────────────────────────────────────
   integration: {
     list:            () => ipcRenderer.invoke('integration:list'),
@@ -445,6 +451,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startTunnel:         () => ipcRenderer.invoke('relay:startTunnel'),
     stopTunnel:          () => ipcRenderer.invoke('relay:stopTunnel'),
     getTunnelStatus:     () => ipcRenderer.invoke('relay:getTunnelStatus'),
+    getTunnelConfig:     () => ipcRenderer.invoke('relay:getTunnelConfig'),
+    setTunnelConfig:     (cfg: { provider?: string; authtoken?: string; domain?: string }) => ipcRenderer.invoke('relay:setTunnelConfig', cfg),
   },
 
   // ─── Facebook ─────────────────────────────────────────────────────
@@ -736,6 +744,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:openThread',
       'app:windowFocus',
       'app:drawBadge',
+      'log:entry',
       'crm:queueUpdate',
       'crm:queueStatus',
       'crm:campaignDone',
