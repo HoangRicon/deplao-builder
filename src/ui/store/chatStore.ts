@@ -89,6 +89,9 @@ export interface MessageItem {
   is_edited?: number;    // 1 = tin nhắn đã chỉnh sửa
   edit_history?: string; // JSON array của các phiên bản cũ: [{oldBody, editedAt, editCount}]
   reactions?: ReactionData | Record<string, string> | string;
+  is_seen?: number;   // 1 = người nhận đã xem (Zalo seen)
+  seen_uids?: string; // JSON array của uid đã xem (nhóm)
+  seen_at?: number;   // epoch ms thời điểm seen
   quote_data?: string;
   reply_to_id?: string | null;
   /** Telegram forum root message ID. Null for a normal chat timeline. */

@@ -21,6 +21,12 @@ export interface Message {
     is_recalled?: number;
     recalled_content?: string | null;
     deleted_by?: string | null;
+    /** Đã được người nhận xem (Zalo seen) — 1 = đã xem */
+    is_seen?: number;
+    /** JSON array của uid những người đã xem (nhóm) */
+    seen_uids?: string;
+    /** epoch ms thời điểm seen lần đầu */
+    seen_at?: number;
     /** ID of the message being replied to (Facebook/others) */
     reply_to_id?: string | null;
     topic_id?: string | null;

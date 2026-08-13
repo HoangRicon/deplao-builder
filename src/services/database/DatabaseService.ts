@@ -1517,6 +1517,15 @@ class DatabaseService {
                 Logger.log('[DatabaseService] Migration: added is_edited column');
             }
 
+            const hasIsSeen = cols.some((c: any) => c.name === 'is_seen');
+            if (!hasIsSeen) {
+                db!.exec(`ALTER TABLE messages ADD COLUMN is_seen INTEGER DEFAULT 0`);
+                db!.exec(`ALTER TABLE messages ADD COLUMN seen_uids TEXT DEFAULT NULL`);
+                db!.exec(`ALTER TABLE messages ADD COLUMN seen_at INTEGER DEFAULT NULL`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added is_seen/seen_uids/seen_at columns');
+            }
+
             // Add listener_active column to accounts if missing
             const accCols = this.query<any>(`PRAGMA table_info(accounts)`);
             const hasListenerActive = accCols.some((c: any) => c.name === 'listener_active');
