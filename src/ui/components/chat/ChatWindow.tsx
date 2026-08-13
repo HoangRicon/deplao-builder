@@ -3398,21 +3398,6 @@ export default function ChatWindow() {
                         const isGroup = Number(msg.thread_type) === 1;
                         const isSeen = msg.is_seen === 1 || (isGroup && seenUids.length > 0);
                         const isDelivered = !!msg.delivered_at;
-                        const nameByUid: Record<string, string> = {};
-                        for (const uid of seenUids) {
-                          const c = contactList[uid];
-                          nameByUid[uid] = c?.display_name || c?.name || uid;
-                        }
-                        const title = (() => {
-                          if (isSeen) {
-                            if (!isGroup || seenUids.length === 0) return 'Đã xem';
-                            if (seenUids.length === 1) return `Đã xem bởi ${nameByUid[seenUids[0]]}`;
-                            const names = seenUids.map(uid => nameByUid[uid]).filter(Boolean);
-                            return `Đã xem bởi ${names.join(', ')}`;
-                          }
-                          return isDelivered ? 'Đã nhận' : 'Đã gửi';
-                        })();
-                        const tickColor = isSeen ? 'text-sky-400' : 'text-gray-400';
                         if (!isSeen && !isDelivered) {
                           // 1 tick xám = đã gửi
                           return (
@@ -3423,20 +3408,36 @@ export default function ChatWindow() {
                             </span>
                           );
                         }
-                        // 2 tick (xám = đã nhận, xanh = đã xem) — nhìn như Zalo
+                        if (isSeen) {
+                          // Đã xem → hiển thị avatar người xem (nhóm: stack avatar + label dưới)
+                          const viewerUid = seenUids[0] || activeThreadId || '';
+                          const c = contactList[viewerUid];
+                          const viewerName = c?.display_name || c?.name || viewerUid;
+                          if (isGroup) return null; // nhóm: avatar stack hiển thị ở dòng dưới
+                          // 1-1: avatar người đối diện đã xem
+                          return (
+                            <span title={`Đã xem bởi ${viewerName}`}>
+                              {c?.avatar_url ? (
+                                <img src={c.avatar_url} alt={viewerName}
+                                  className="w-4 h-4 rounded-full border border-gray-700 bg-gray-700 object-cover"
+                                  onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
+                              ) : (
+                                <span className="w-4 h-4 rounded-full border border-gray-700 bg-gray-700 text-gray-300 text-[9px] flex items-center justify-center">
+                                  {(viewerName || '?').charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                            </span>
+                          );
+                        }
+                        // 2 tick xám = đã nhận (chưa đọc)
                         return (
-                          <span title={title} className="group relative inline-flex items-center">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={tickColor}>
+                          <span title="Đã nhận" className="inline-flex items-center">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-gray-400">
                               <polyline points="20 6 9 17 4 12"/>
                             </svg>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`${tickColor} -ml-1.5`}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-gray-400 -ml-1.5">
                               <polyline points="20 6 9 17 4 12"/>
                             </svg>
-                            {isGroup && isSeen && seenUids.length > 0 && (
-                              <span className="absolute bottom-full right-0 mb-1 hidden whitespace-nowrap rounded bg-gray-800 border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200 group-hover:block z-50 shadow-lg">
-                                {title}
-                              </span>
-                            )}
                           </span>
                         );
                       })()}
