@@ -3411,14 +3411,17 @@ export default function ChatWindow() {
                         if (isSeen) {
                           // Đã xem → hiển thị avatar người xem (nhóm: stack avatar + label dưới)
                           const viewerUid = seenUids[0] || activeThreadId || '';
-                          const c = contactList[viewerUid];
-                          const viewerName = c?.display_name || c?.name || viewerUid;
+                          // Người xem trong 1-1 chính là contact của thread → avatar chuẩn nhất
+                          const threadContact = getContact(activeThreadId || '');
+                          const viewerContact = threadContact?.avatar_url ? threadContact : getContact(viewerUid);
+                          const viewerName = viewerContact?.display_name || viewerContact?.name || viewerUid;
+                          const viewerAvatar = toLocalMediaUrl(viewerContact?.avatar_url || '');
                           if (isGroup) return null; // nhóm: avatar stack hiển thị ở dòng dưới
                           // 1-1: avatar người đối diện đã xem
                           return (
                             <span title={`Đã xem bởi ${viewerName}`}>
-                              {c?.avatar_url ? (
-                                <img src={c.avatar_url} alt={viewerName}
+                              {viewerAvatar ? (
+                                <img src={viewerAvatar} alt={viewerName}
                                   className="w-4 h-4 rounded-full border border-gray-700 bg-gray-700 object-cover"
                                   onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
                               ) : (
@@ -3457,13 +3460,15 @@ export default function ChatWindow() {
                         const label = names.length === 0 ? 'Đã xem'
                           : names.length === 1 ? `${names[0]}: Đã xem`
                           : `${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}: Đã xem`;
-                        // Avatar stack người đã xem (như Zalo)
+                        // Avatar stack người đã xem (như Zalo) — ưu tiên avatar thành viên nhóm, fallback contact
                         const avatars = seenUids.slice(0, 4).map((uid) => {
-                          const c = contactList[uid];
+                          const gm = getGroupMember(uid);
+                          const ct = getContact(uid);
+                          const name = gm?.displayName || ct?.display_name || ct?.name || uid;
                           return {
                             uid,
-                            name: nameByUid[uid] || uid,
-                            url: c?.avatar_url || '',
+                            name,
+                            url: toLocalMediaUrl(gm?.avatar || ct?.avatar_url || ''),
                           };
                         });
                         return (
