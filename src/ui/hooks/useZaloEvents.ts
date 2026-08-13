@@ -723,7 +723,7 @@ async function fetchGroupInfoAndMembers(zaloId: string, groupId: string, forceNo
 
 export function useZaloEvents() {
   const { updateAccountStatus, updateListenerActive } = useAccountStore();
-  const { addMessage, updateContact, incrementUnread, updateMessageReaction, replaceMessageReactions, updateMessageLocalPath, setTyping, setSeen, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
+  const { addMessage, updateContact, incrementUnread, updateMessageReaction, replaceMessageReactions, updateMessageLocalPath, setTyping, setSeen, markMessageSeen, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
   const { showNotification, setGroupInfo } = useAppStore();
 
   // Track window focus state from main process (reliable, unlike document.hasFocus())
@@ -1647,6 +1647,7 @@ export function useZaloEvents() {
       const { zaloId, threadId, msgId, isGroup, seenUids } = data;
       if (zaloId && threadId) {
         setSeen(zaloId, threadId, seenUids || [], msgId || '', !!isGroup);
+        markMessageSeen(zaloId, threadId, msgId || '', seenUids || [], !!isGroup);
       }
     });
 
