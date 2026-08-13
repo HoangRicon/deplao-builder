@@ -133,6 +133,7 @@ type Message struct {
 	ReplyTo     *ReplyTo      `json:"replyTo,omitempty"`
 	Mentions    []*Mention    `json:"mentions,omitempty"`
 	IsAdminMsg  bool          `json:"isAdminMsg,omitempty"`
+	IsBackfill  bool          `json:"isBackfill,omitempty"`
 }
 
 // MessageEditEvent represents a message edit
@@ -258,18 +259,18 @@ func (c *Client) handleTable(tbl *table.LSTable) {
 	}
 
 	// Process wrapped messages (includes attachments info)
-	// upsert = sync/backfill messages (should NOT emit events)
+	// upsert = sync/backfill messages (historical, e.g. when opening a thread)
 	// insert = new real-time messages (should emit events)
-	_, insert := tbl.WrapMessages()
+	upsert, insert := tbl.WrapMessages()
 
 	// Track handled message IDs to avoid duplicates
 	handledMsgIds := make(map[string]bool)
 
-	// NOTE: We do NOT emit events for upserted messages (sync/backfill)
-	// These are historical messages returned during thread fetch or initial sync
-	// Only insert messages (real-time new messages) should trigger events
+	// NOTE: We DO emit events for upserted messages (sync/backfill), but flagged
+	// with IsBackfill=true so the client can persist them to DB without
+	// treating them as new/unread incoming messages.
 
-	// Handle inserted messages (new real-time messages)
+	// Handle inserted messages (new real-time messages) - take priority
 	for _, msg := range insert {
 		if msg.MessageId != "" {
 			if handledMsgIds[msg.MessageId] {
@@ -286,6 +287,7 @@ func (c *Client) handleTable(tbl *table.LSTable) {
 			continue
 		}
 		threadName, threadType := c.threadMeta(msg.ThreadKey)
+		handledMsgIds[msg.MessageId] = true
 		c.emitEvent(EventTypeMessage, &Message{
 			ID:          msg.MessageId,
 			ThreadID:    msg.ThreadKey,
@@ -295,6 +297,25 @@ func (c *Client) handleTable(tbl *table.LSTable) {
 			Text:        msg.Text,
 			TimestampMs: msg.TimestampMs,
 		})
+	}
+
+	// Handle upserted messages (sync/backfill / history) - flagged as backfill
+	for _, ups := range upsert {
+		if ups == nil {
+			continue
+		}
+		for _, msg := range ups.Messages {
+			if msg == nil || msg.MessageId == "" {
+				continue
+			}
+			if handledMsgIds[msg.MessageId] {
+				continue
+			}
+			handledMsgIds[msg.MessageId] = true
+			m := c.convertWrappedMessage(msg)
+			m.IsBackfill = true
+			c.emitEvent(EventTypeMessage, m)
+		}
 	}
 
 	// Handle message edits

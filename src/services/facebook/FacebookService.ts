@@ -483,6 +483,7 @@ export class FacebookService {
     const threadId = msg.replyToID && msg.replyToID !== '0' ? msg.replyToID : null;
     const ts = parseInt(msg.timestamp) || Date.now();
     const isSelf = this.dataFB?.FacebookID && msg.userID === this.dataFB.FacebookID ? 1 : 0;
+    const isBackfill = !!msg.isBackfill;
 
     // ── Self-echo dedup: skip messages we already saved+broadcast locally ──
     // Khi gửi tin qua bridge (E2EE hoặc MQTT), bridge echo ngược lại message
@@ -667,14 +668,14 @@ export class FacebookService {
              last_message_time = excluded.last_message_time,
              unread_count = CASE WHEN ? = 0 THEN contacts.unread_count + 1 ELSE contacts.unread_count END,
              channel = 'facebook'`,
-          [this.getFacebookId(), threadId, threadName, contactType, isSelf ? 0 : 1, lastMsgText.slice(0, 200), ts, isSelf]
+          [this.getFacebookId(), threadId, threadName, contactType, (isBackfill || isSelf) ? 0 : 1, lastMsgText.slice(0, 200), ts, isBackfill ? 1 : isSelf]
         );
       } catch (err: any) {
         Logger.warn(`[FacebookService:${this.accountId}] DB persist error: ${err.message}`);
       }
 
-      // Fire-and-forget: nếu là user 1-1 chưa có tên, fetch từ HTML
-      if (msg.userID && /^\d+$/.test(msg.userID)) {
+      // Fire-and-forget: nếu là user 1-1 chưa có tên, fetch từ HTML (skip backfill - quá nhiều)
+      if (msg.userID && /^\d+$/.test(msg.userID) && !isBackfill) {
         this.checkAndFetchUserInfo(msg.userID);
       }
 
@@ -696,6 +697,12 @@ export class FacebookService {
     }
 
     // Broadcast - include isSelf + quote_data (if reply) so UI can display immediately
+    // Backfill (history sync) messages: persist only, do not broadcast as new
+    if (isBackfill) {
+      Logger.log(`[FacebookService:${this.accountId}] Backfill message persisted: msgId=${msg.messageID} threadId=${threadId} (no broadcast)`);
+      return;
+    }
+
     let broadcastQuoteData: string | undefined;
     if (msg.replyToMessageId) {
       try {
@@ -871,6 +878,30 @@ export class FacebookService {
       threadId: data.threadId,
       userId: data.actorFbId,
       timestamp: data.timestampMs || Date.now(),
+    });
+  }
+
+  /** Handle read receipt from Go bridge (LightSpeed LSUpdateReadReceipt) */
+  private handleReadReceipt(data: any): void {
+    const threadId = String(data.threadId || '');
+    const readerId = String(data.readerId || '');
+    const watermark = data.readWatermarkTimestampMs || data.timestampMs || Date.now();
+    if (!threadId || !readerId || readerId === this.getFacebookId()) return;
+
+    // Skip group read receipts from bridge - LightSpeed delivers read receipts for
+    // the whole thread. Persist per-thread seen sweep to DB + notify UI.
+    const fbId = this.getFacebookId();
+    try {
+      DatabaseService.getInstance().markFBThreadSeen(fbId, threadId, watermark, readerId);
+    } catch (err: any) {
+      Logger.warn(`[FacebookService:${this.accountId}] markFBThreadSeen error: ${err.message}`);
+    }
+
+    EventBroadcaster.emit('fb:onReadReceipt', {
+      fbAccountId: fbId,
+      threadId,
+      readerId,
+      timestamp: watermark,
     });
   }
 
@@ -1165,14 +1196,22 @@ export class FacebookService {
       }
 
       case 'typing': {
-        // data: { threadId, userId, isTyping }
+        // data: { threadId, senderId, isTyping } (bridge) hoặc { threadId, userId, isTyping }
         if (data?.threadId) {
           EventBroadcaster.emit('fb:onTyping', {
             fbAccountId: this.getFacebookId(),
-            threadId: data.threadId,
-            userId: data.userId || '',
+            threadId: String(data.threadId),
+            userId: String(data.senderId || data.userId || ''),
             isTyping: data.isTyping !== false,
           });
+        }
+        break;
+      }
+
+      case 'readReceipt': {
+        // data: { threadId, readerId, readWatermarkTimestampMs }
+        if (data?.threadId && data?.readerId) {
+          this.handleReadReceipt(data);
         }
         break;
       }
@@ -1387,6 +1426,7 @@ export class FacebookService {
       replyToMessageId: data.replyTo?.messageId,
       type: 'group',
       attachments: { id: 0, url: null },
+      isBackfill: !!data.isBackfill,
     };
 
     // Parse attachments tu bridge data (non-E2EE group messages)

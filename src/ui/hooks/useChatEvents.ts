@@ -488,6 +488,21 @@ export function useChatEvents(): void {
     });
     if (unsubSeen) unsubscribers.push(unsubSeen);
 
+    // ─── fb:onReadReceipt → chatStore seen status (Go bridge readReceipt) ──
+    const unsubReadReceipt = ipc.on?.('fb:onReadReceipt', (data: {
+      fbAccountId: string;
+      threadId: string;
+      readerId: string;
+      timestamp: number;
+    }) => {
+      if (!data?.fbAccountId || !data?.threadId || !data?.readerId) return;
+      const tid = String(data.threadId).replace(/@.*$/, '');
+      // DB sweep được xử lý ở main (markFBThreadSeen); UI cập nhật cả message objects lẫn seenInfo
+      useChatStore.getState().markMessageSeen(data.fbAccountId, tid, '', [data.readerId], true);
+      useChatStore.getState().setSeen(data.fbAccountId, tid, [data.readerId], '0', true);
+    });
+    if (unsubReadReceipt) unsubscribers.push(unsubReadReceipt);
+
     // ─── fb:onE2EEStatus → account status update ──────────────────────────
     const unsubE2EEStatus = ipc.on?.('fb:onE2EEStatus', (data: {
       fbAccountId: string;

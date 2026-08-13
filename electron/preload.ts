@@ -765,6 +765,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'fb:onDisconnect',
       'fb:onReconnect',
       'fb:onConnectionStatus',
+      'fb:onTyping',
+      'fb:onSeen',
+      'fb:onReadReceipt',
+      'fb:onContactUpdate',
       // ─── ERP events ──────────────────────────────────────────────────
       'erp:event:taskCreated',
       'erp:event:taskUpdated',

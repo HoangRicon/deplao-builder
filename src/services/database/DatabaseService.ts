@@ -3214,6 +3214,41 @@ class DatabaseService {
     }
 
     /**
+     * Đánh dấu tin nhắn Facebook đã xem theo watermark (Go bridge readReceipt / LSUpdateReadReceipt).
+     * Facebook chỉ báo watermark cuối (reader đã đọc tới timestamp nào) → sweep tất cả tin
+     * của mình gửi có timestamp <= watermark trong thread đó.
+     * @param ownerZaloId id Facebook của tài khoản sở hữu (accounts.zalo_id)
+     * @param threadId thread Facebook (có thể là fb id hoặc e2ee jid - strip @)
+     * @param watermarkTs timestamp đã đọc tới
+     * @param readerId id người đọc
+     */
+    public markFBThreadSeen(ownerZaloId: string, threadId: string, watermarkTs: number, readerId: string): void {
+        if (!this.initialized || !threadId || !ownerZaloId) return;
+        try {
+            const threadIdRaw = String(threadId).replace(/@.*$/, '');
+            const ts = watermarkTs || Date.now();
+            const now = Date.now();
+            const rows = this.query<{ msg_id: string; seen_uids: string | null }>(
+                `SELECT msg_id, seen_uids FROM messages
+                 WHERE owner_zalo_id = ? AND thread_id = ? AND timestamp <= ?
+                   AND sender_id = ? AND is_sent = 1 AND channel = 'facebook'`,
+                [ownerZaloId, threadIdRaw, ts, ownerZaloId]
+            );
+            for (const row of rows) {
+                let merged: string[] = [];
+                try { merged = row.seen_uids ? JSON.parse(row.seen_uids) : []; } catch {}
+                merged = Array.from(new Set([...merged, readerId]));
+                this.run(
+                    `UPDATE messages SET is_seen = 1, seen_at = ?, delivered_at = ?, seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
+                    [now, now, JSON.stringify(merged), row.msg_id, ownerZaloId]
+                );
+            }
+        } catch (error: any) {
+            Logger.error(`[DatabaseService] markFBThreadSeen error: ${error.message}`);
+        }
+    }
+
+    /**
      * Đánh dấu tin nhắn đã nhận (Zalo delivered event — máy người nhận nhận được, chưa đọc).
      * Tương tự seen: sweep-to-anchor — Zalo chỉ báo delivered cho tin cuối (anchor),
      * các tin của mình gửi trước anchor đều được đánh dấu delivered (nếu chưa seen).

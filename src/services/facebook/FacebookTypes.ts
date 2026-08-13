@@ -230,6 +230,8 @@ export interface FBMQTTMessage {
   senderJid?: string;
   /** Whether this message was decrypted by the E2EE bridge */
   isE2EE?: boolean;
+  /** Backfill/history message (sync upsert) - persist to DB but do not broadcast as new */
+  isBackfill?: boolean;
 }
 
 // ─── E2EE Bridge Types ───────────────────────────────────────────────────────

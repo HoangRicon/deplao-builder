@@ -3387,15 +3387,16 @@ export default function ChatWindow() {
                     </div>
                   )}
 
-                  {/* ── Zalo status: sent / delivered / seen (chỉ tin cuối của mình, như Zalo) ──── */}
-                  {isSent && isLastSent(msg) && (msg.channel || 'zalo') === 'zalo'
+                  {/* ── Status: sent / delivered / seen (chỉ tin cuối của mình, như Zalo) ──── */}
+                  {isSent && isLastSent(msg) && ((msg.channel || 'zalo') === 'zalo' || (msg.channel || 'zalo') === 'facebook')
                     && msg.send_status !== 'pending' && msg.send_status !== 'sending'
                     && msg.send_status !== 'failed' && msg.send_status !== 'timeout' && (
                     <div className="flex flex-col items-end mt-0.5 pr-1 gap-0.5">
                       {(() => {
                         let seenUids: string[] = [];
                         try { seenUids = msg.seen_uids ? JSON.parse(msg.seen_uids) : []; } catch {}
-                        const isGroup = Number(msg.thread_type) === 1;
+                        const isFb = (msg.channel || 'zalo') === 'facebook';
+                        const isGroup = Number(msg.thread_type) === 1 || (isFb && seenUids.length > 1);
                         const isSeen = msg.is_seen === 1 || (isGroup && seenUids.length > 0);
                         const isDelivered = !!msg.delivered_at;
                         if (!isSeen && !isDelivered) {
@@ -3448,7 +3449,8 @@ export default function ChatWindow() {
                         // Dòng "Tên: Đã xem" dưới tin cuối trong nhóm (như Zalo)
                         let seenUids: string[] = [];
                         try { seenUids = msg.seen_uids ? JSON.parse(msg.seen_uids) : []; } catch {}
-                        const isGroup = Number(msg.thread_type) === 1;
+                        const isFb = (msg.channel || 'zalo') === 'facebook';
+                        const isGroup = Number(msg.thread_type) === 1 || (isFb && seenUids.length > 1);
                         const isSeen = msg.is_seen === 1 || (isGroup && seenUids.length > 0);
                         if (!isGroup || !isSeen || seenUids.length === 0) return null;
                         const nameByUid: Record<string, string> = {};

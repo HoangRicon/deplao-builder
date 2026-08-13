@@ -135,10 +135,34 @@ export default function ChatHeader() {
 
     const storeContacts = useChatStore.getState().contacts[activeAccountId] || [];
     const ct = storeContacts.find((c) => c.contact_id === activeThreadId);
-    if (!ct) return;
 
     const acc = getActiveAccount();
-    const channel = ct.channel || acc?.channel || CHANNEL.ZALO;
+    const channel = ct?.channel || acc?.channel || CHANNEL.ZALO;
+    if (!ct) {
+      // Contact chưa có trong store (FB 1-1 mới phát hiện) → vẫn fetch thông tin
+      if (!isGroupThread && isFacebook(channel)) {
+        ipc.fb?.getUserInfoFacebookHtml({ accountId: activeAccountId, userId: activeThreadId })
+          .then((res: any) => {
+            if (res?.success && (res.name || res.avatarUrl)) {
+              const patch: any = { contact_id: activeThreadId, channel: 'facebook' };
+              if (res.name) patch.display_name = res.name;
+              if (res.avatarUrl) patch.avatar_url = res.avatarUrl;
+              updateContact(activeAccountId, patch);
+            }
+          })
+          .catch(() => {});
+        if (/^\d+$/.test(activeThreadId)) {
+          ipc.fb?.refreshContactAvatar({ accountId: activeAccountId, userId: activeThreadId })
+            .then((res: any) => {
+              if (res?.success && res.avatarUrl) {
+                updateContact(activeAccountId, { contact_id: activeThreadId, avatar_url: res.avatarUrl });
+              }
+            })
+            .catch(() => {});
+        }
+      }
+      return;
+    }
     // Kiểm tra nếu chưa có tên thật (display_name = contact_id hoặc chỉ toàn số)
     const hasRealName = !!(ct.display_name && ct.display_name !== activeThreadId && !/^\d+$/.test(ct.display_name));
     const hasAvatar = !!ct.avatar_url;
