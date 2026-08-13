@@ -230,6 +230,8 @@ interface ChatStore {
   setTyping: (zaloId: string, threadId: string, userId: string) => void;
   clearTypingForThread: (zaloId: string, threadId: string) => void;
   setSeen: (zaloId: string, threadId: string, seenUids: string[], msgId: string, isGroup: boolean) => void;
+  /** Đánh dấu đã xem cho tin msgId + các tin của mình trước đó trong thread (Zalo seen) */
+  markMessageSeen: (zaloId: string, threadId: string, msgId: string, seenUids: string[], isGroup: boolean) => void;
   // Presence (Telegram user status)
   userPresence: Record<string, { status: string; lastSeen?: number; updatedAt: number }>; // key=`${zaloId}_${userId}`
   setPresence: (zaloId: string, userId: string, status: string, wasOnline?: number) => void;
@@ -915,6 +917,34 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           [key]: { msgId: msgId || prev?.msgId || 'seen', seenUids: merged, isGroup },
         },
       };
+    });
+  },
+
+  markMessageSeen: (zaloId, threadId, msgId, seenUids, isGroup) => {
+    set((state) => {
+      const updatedMessages = { ...state.messages };
+      let changed = false;
+      for (const key of getMessageCacheKeysForThread(updatedMessages, zaloId, threadId)) {
+        const msgs = updatedMessages[key];
+        if (!msgs) continue;
+        const seenMsg = msgId
+          ? msgs.find(m => m.msg_id === msgId || m.real_msg_id === msgId || m.cli_msg_id === msgId)
+          : undefined;
+        const cutTs = seenMsg?.timestamp ?? Number.MAX_SAFE_INTEGER;
+        let anyChanged = false;
+        const updated = msgs.map((m) => {
+          if (m.is_sent !== 1 || m.sender_id !== zaloId) return m;
+          if (m.timestamp > cutTs) return m;
+          let prev: string[] = [];
+          try { prev = m.seen_uids ? JSON.parse(m.seen_uids) : []; } catch {}
+          const merged = isGroup ? Array.from(new Set([...prev, ...seenUids])) : prev;
+          if (m.is_seen === 1 && merged.length === prev.length) return m;
+          anyChanged = true;
+          return { ...m, is_seen: 1, seen_at: Date.now(), seen_uids: JSON.stringify(merged) };
+        });
+        if (anyChanged) { updatedMessages[key] = updated; changed = true; }
+      }
+      return changed ? { messages: updatedMessages } : state;
     });
   },
 
