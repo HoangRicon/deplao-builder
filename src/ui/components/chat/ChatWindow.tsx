@@ -3382,7 +3382,9 @@ export default function ChatWindow() {
                   )}
 
                   {/* ── Zalo seen ticks ──── */}
-                  {isSent && msg.send_status === 'sent' && (msg.channel || 'zalo') === 'zalo' && (
+                  {isSent && (msg.channel || 'zalo') === 'zalo'
+                    && msg.send_status !== 'pending' && msg.send_status !== 'sending'
+                    && msg.send_status !== 'failed' && msg.send_status !== 'timeout' && (
                     <div className="flex items-center justify-end mt-0.5 pr-1">
                       {(() => {
                         let seenUids: string[] = [];
