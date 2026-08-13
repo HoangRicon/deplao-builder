@@ -3456,7 +3456,34 @@ export default function ChatWindow() {
                         const label = names.length === 0 ? 'Đã xem'
                           : names.length === 1 ? `${names[0]}: Đã xem`
                           : `${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}: Đã xem`;
-                        return <span className="text-[10px] leading-tight text-gray-500">{label}</span>;
+                        // Avatar stack người đã xem (như Zalo)
+                        const avatars = seenUids.slice(0, 4).map((uid) => {
+                          const c = contactList[uid];
+                          return {
+                            uid,
+                            name: nameByUid[uid] || uid,
+                            url: c?.avatar_url || '',
+                          };
+                        });
+                        return (
+                          <div className="flex items-center gap-1" title={label}>
+                            <div className="flex -space-x-1.5">
+                              {avatars.map((a) => (
+                                a.url ? (
+                                  <img key={a.uid} src={a.url} alt={a.name}
+                                    className="w-4 h-4 rounded-full border border-gray-700 bg-gray-700 object-cover"
+                                    onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
+                                ) : (
+                                  <span key={a.uid} title={a.name}
+                                    className="w-4 h-4 rounded-full border border-gray-700 bg-gray-700 text-gray-300 text-[8px] flex items-center justify-center overflow-hidden">
+                                    {(a.name || '?').charAt(0).toUpperCase()}
+                                  </span>
+                                )
+                              ))}
+                            </div>
+                            <span className="text-[10px] leading-tight text-gray-500">{label}</span>
+                          </div>
+                        );
                       })()}
                     </div>
                   )}
