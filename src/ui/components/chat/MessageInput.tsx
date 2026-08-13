@@ -854,7 +854,15 @@ export default function MessageInput() {
     if (isNonZalo(account.channel)) {
       return { cookies: '', imei: '', userAgent: '' };
     }
-    return { cookies: account.cookies, imei: account.imei, userAgent: account.user_agent };
+    return {
+      cookies: account.cookies,
+      imei: account.imei,
+      userAgent: account.user_agent,
+      // Preserve the account identity so zaloIpc can resolve the correct live
+      // connection when stored cookies have been refreshed or multiple Zalo
+      // accounts are connected.
+      zaloId: account.zalo_id || activeAccountId,
+    };
   };
 
   // ── Nhận file từ ChatWindow drop (drag-and-drop trên vùng tin nhắn) ──
@@ -2004,6 +2012,9 @@ export default function MessageInput() {
               ...(mentions.length > 0 ? { mentions } : {}),
               ...(finalStyles ? { styles: finalStyles } : {}),
             });
+            if (!res?.success) {
+              return { success: false, error: res?.error || 'Gửi tin nhắn Zalo thất bại' };
+            }
             return { success: true, ...extractMsgIdFromResponse(res, 'zalo') };
           } catch (err: any) {
             return { success: false, error: err?.message || String(err) };
@@ -2057,6 +2068,9 @@ export default function MessageInput() {
             return { success: true, msgId: res?.messageId };
           } else {
             const res = await ipc.zalo?.sendMessage({ auth, threadId: activeThreadId, type: activeThreadType, message: '👍' });
+            if (!res?.success) {
+              return { success: false, error: res?.error || 'Gửi tin nhắn Zalo thất bại' };
+            }
             return { success: true, ...extractMsgIdFromResponse(res, 'zalo') };
           }
         } catch (err: any) {

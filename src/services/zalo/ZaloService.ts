@@ -151,6 +151,7 @@ export default class ZaloService {
     private async initialize(isReconnection: boolean = false): Promise<void> {
         Logger.log(`[${new Date().toISOString()}] [ZaloService] Initializing${isReconnection ? ' (reconnection mode)' : ''}...`);
 
+<<<<<<< Updated upstream
         // First try: reuse existing connection by zaloId (avoids authKey mismatch
         // when DB stores encrypted cookies but QR login stored plain cookies).
         const existingZaloId = this.auth.accountId || this.auth.zalo_id || this.auth.zaloId || '';
@@ -166,6 +167,33 @@ export default class ZaloService {
 
         // Fallback: get or create connection via auth cookies
         const connection = await ConnectionManager.getOrCreateConnection(this.auth, false, undefined, isReconnection);
+=======
+        // ── Reuse live connection when auth carries a explicit zaloId hint ──
+        // UI luôn gửi kèm auth.zalo_id. Nếu account này đã có connection đang
+        // hoạt động (cookies đã được refresh khi login) → dùng thẳng API live,
+        // tránh tạo connection MỚI bằng cookies cũ và ghi đè connection tốt.
+        const authHint = (this.auth as any)?.zalo_id || (this.auth as any)?.zaloId;
+        let reuseConnection: any;
+
+        if (authHint) {
+            const live = ConnectionManager.getConnection(String(authHint));
+            const liveAuthKey = live?.authKey || '';
+            const thisAuthKey = Buffer.from(this.auth.cookies || '').toString('base64');
+            if (live && liveAuthKey && liveAuthKey !== thisAuthKey) {
+                Logger.log(`[ZaloService] initialize(${authHint}): cookies stale - reusing live connection instead of creating new`);
+                reuseConnection = live;
+            }
+        }
+
+        // GET API FROM CONNECTION MANAGER (not create new!)
+        // Pass startListener=false for API-only operations (no WebSocket listener)
+        // Pass isReconnection to force recreation if needed
+        // LẤY API TỪ CONNECTION MANAGER (không tạo mới!)
+        // Truyền startListener=false cho các thao tác chỉ dùng API (không có listener WebSocket)
+        // Truyền isReconnection để buộc tạo lại nếu cần
+        const connection = reuseConnection
+            ?? await ConnectionManager.getOrCreateConnection(this.auth, false, undefined, isReconnection);
+>>>>>>> Stashed changes
 
         this.api = connection.api;
         this.zaloId = this.api.getOwnId();
