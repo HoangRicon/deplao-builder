@@ -3154,6 +3154,58 @@ class DatabaseService {
         }
     }
 
+    /**
+     * Đánh dấu tin nhắn đã xem (Zalo seen event).
+     * Seen 1 tin = đã mở hội thoại → đánh dấu cả các tin của mình gửi trước tin đó.
+     * @param ownerZaloId tài khoản sở hữu (người gửi)
+     * @param threadId hội thoại
+     * @param msgId msgId tin được seen (có thể rỗng)
+     * @param seenUids danh sách uid đã xem (nhóm: nhiều người, 1-1: 1 người)
+     * @param isGroup true nếu hội thoại nhóm
+     */
+    public markMessageSeen(ownerZaloId: string, threadId: string, msgId: string, seenUids: string[] = [], isGroup: boolean = false): void {
+        if (!this.initialized || !threadId || !ownerZaloId) return;
+        try {
+            // Tìm timestamp của tin được seen để giới hạn phạm vi đánh dấu
+            let seenTs: number | null = null;
+            if (msgId) {
+                const rows = this.query<{ timestamp: number }>(
+                    `SELECT timestamp FROM messages WHERE owner_zalo_id = ? AND thread_id = ? AND (msg_id = ? OR cli_msg_id = ?) LIMIT 1`,
+                    [ownerZaloId, threadId, msgId, msgId]
+                );
+                seenTs = rows?.[0]?.timestamp ?? null;
+            }
+
+            const tsFilter = seenTs != null ? ' AND timestamp <= ?' : '';
+            const selectParams: any[] = [ownerZaloId, threadId];
+            if (seenTs != null) selectParams.push(seenTs);
+            selectParams.push(ownerZaloId);
+
+            const rows = this.query<{ msg_id: string; seen_uids: string | null }>(
+                `SELECT msg_id, seen_uids FROM messages
+                 WHERE owner_zalo_id = ? AND thread_id = ?${tsFilter}
+                   AND sender_id = ? AND is_sent = 1
+                   AND (channel IS NULL OR channel = '' OR channel = 'zalo')`,
+                selectParams
+            );
+
+            const now = Date.now();
+            for (const row of rows) {
+                let merged: string[] = [];
+                if (isGroup) {
+                    try { merged = row.seen_uids ? JSON.parse(row.seen_uids) : []; } catch {}
+                    merged = Array.from(new Set([...merged, ...seenUids]));
+                }
+                this.run(
+                    `UPDATE messages SET is_seen = 1, seen_at = ?, seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
+                    [now, JSON.stringify(merged), row.msg_id, ownerZaloId]
+                );
+            }
+        } catch (error: any) {
+            Logger.error(`[DatabaseService] markMessageSeen error: ${error.message}`);
+        }
+    }
+
     public getMessages(ownerZaloId: string, threadId: string, limit = 50, offset = 0, before?: number, topicId?: string): Message[] {
         if (!this.initialized) return [];
         // Telegram General has UI topic ID "1", but its messages do not carry
