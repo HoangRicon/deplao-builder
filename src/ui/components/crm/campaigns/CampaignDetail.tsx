@@ -55,7 +55,8 @@ export default function CampaignDetail({ campaign, zaloId, allLabels, localLabel
     setLoading(false);
   }, [campaign.id]);
 
-  useEffect(() => { loadContacts(); }, [loadContacts]);
+  // Re-load contacts when campaign object changes (e.g. after adding contacts from parent)
+  useEffect(() => { loadContacts(); }, [loadContacts, campaign]);
 
   const handleDeleteContact = useCallback(async (contactId: string) => {
     if (!confirm('Xóa liên hệ này khỏi chiến dịch?')) return;
