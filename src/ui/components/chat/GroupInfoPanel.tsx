@@ -18,6 +18,7 @@ import { CHANNEL, isZalo as isZaloCh, isTelegram as isTelegramCh, isFacebook as 
 import { Spinner } from '@/components/common/PageLoading';
 import * as channelIpc from '@/lib/channelIpc';
 import { getAdapter } from '@/lib/adapters/registry';
+import { usePremiumMemberSync } from '@/hooks/usePremiumMemberSync';
 import { ArrowDownIcon, ArrowUpIcon, BellIcon, BellOffIcon, CloseIcon, MapPinIcon, PinIcon, SettingsIcon, TrashIcon, UserIcon, UsersIcon } from '@/components/common/icons';
 
 
@@ -963,6 +964,12 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
   channelCap?: ChannelCapability;
   onShowProfile?: (userId: string, x: number, y: number) => void;
 }) {
+  // ── Premium member sync hook ──────────────────────────────────────────
+  const { syncMembers } = usePremiumMemberSync({
+    accountId: myAccountId,
+    groupId,
+    onMembersSynced: () => onRefresh(),
+  });
   const { getActiveAccount } = useAccountStore();
   const { showNotification } = useAppStore();
   const userPresence = useChatStore(state => state.userPresence);
@@ -980,6 +987,9 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
     if (reloading) return;
     setReloading(true);
     try {
+      // Use premium hook for scan API fallback
+      await syncMembers();
+      // Always call onRefresh to update the UI
       await onRefresh();
     } finally {
       setReloading(false);

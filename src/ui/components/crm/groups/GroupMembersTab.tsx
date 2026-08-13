@@ -13,6 +13,7 @@ import ShareGroupModal from '@/components/crm/groups/ShareGroupModal';
 import SharedGroupsCategoryPopup from '@/components/crm/groups/SharedGroupsCategoryPopup';
 import { syncZaloGroups, MemberPlaceholder, SyncGroupsProgress } from '@/lib/zaloGroupUtils';
 import { AlertIcon, CheckIcon, SearchIcon } from '@/components/common/icons';
+import { usePremiumMemberSync } from '@/hooks/usePremiumMemberSync';
 
 interface ZaloGroup {
   contact_id: string;
@@ -190,6 +191,18 @@ export default function GroupMembersTab() {
 
   const selectedGroup = groups.find(g => g.contact_id === selectedGroupId) ?? null;
 
+  // ── Premium member sync hook ──────────────────────────────────────────
+  const { syncMembers } = usePremiumMemberSync({
+    accountId: activeAccountId || '',
+    groupId: selectedGroupId || '',
+    onMembersSynced: async () => {
+      if (selectedGroupId) {
+        await loadMembersFromDB(selectedGroupId);
+        await loadGroupsFromDB();
+      }
+    },
+  });
+
   // ── Load groups from contacts (contact_type='group') ──────────────────────
   const loadGroupsFromDB = useCallback(async () => {
     if (!activeAccountId) return;
@@ -275,37 +288,21 @@ export default function GroupMembersTab() {
     }
   }, [activeAccountId, loadGroupsFromDB]);
 
-  // ── Fetch members - delegates to syncZaloGroups (single-group mode) ───────
+  // ── Fetch members - uses premium hook for scan API fallback ───────────
   const fetchMembersFromAPI = useCallback(async () => {
     if (!activeAccountId || !selectedGroupId) return;
-    const acc = useAccountStore.getState().getActiveAccount();
-    if (!acc) return;
-    const auth = buildZaloAuth(acc, activeAccountId);
 
     setMembersLoading(true);
     manualLoadStopRef.current = false;
     setManualLoadProgress(null);
 
     try {
-      await syncZaloGroups({
-        activeAccountId,
-        auth,
-        groupId: selectedGroupId,   // ← single-group mode, skips getAllGroups
+      await syncMembers({
         onProgress: (p: SyncGroupsProgress) => {
           if (p.phase === 'members') {
             setMembersLoading(false); // transition: spinner → progress bar
             setManualLoadProgress({ current: p.current, total: p.total });
           }
-        },
-        onPhase1Done: async () => {
-          // Placeholders saved → show UIDs in list immediately
-          await loadMembersFromDB(selectedGroupId);
-        },
-        onGroupEnriched: async () => {
-          setManualLoadProgress(null);
-          manualLoadStopRef.current = false;
-          await loadMembersFromDB(selectedGroupId);
-          await loadGroupsFromDB();
         },
         stopRef: manualLoadStopRef,
       });
@@ -314,7 +311,7 @@ export default function GroupMembersTab() {
       setManualLoadProgress(null);
       manualLoadStopRef.current = false;
     }
-  }, [activeAccountId, selectedGroupId, loadMembersFromDB, loadGroupsFromDB]);
+  }, [activeAccountId, selectedGroupId, syncMembers]);
 
   // ── Scan group by invite link ─────────────────────────────────────────────
   const scanGroupByLink = useCallback(async () => {
