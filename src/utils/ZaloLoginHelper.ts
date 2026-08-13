@@ -897,10 +897,26 @@ class ZaloLoginHelper {
             } catch {}
         });
 
-        listener.on("seen", (data: any) => {
-            Logger.log(`[ZaloLoginHelper] 📩 RAW seen event: ${JSON.stringify(data)}`);
+        // zca-js 2.1.2 emit `seen_messages` (array), KHÔNG emit `seen`.
+        // Zalo CHỈ báo seen cho tin CUỐI cùng người dùng đọc tới (anchor msgId).
+        listener.on("seen_messages", (messages: any[]) => {
+            Logger.log(`[ZaloLoginHelper] 📩 RAW seen_messages event: ${JSON.stringify((messages || []).slice(0, 3))}`);
             try {
-                EventBroadcaster.broadcastSeen(zaloId, data);
+                for (const m of messages || []) {
+                    if (m?.data?.msgId) EventBroadcaster.broadcastSeen(zaloId, m);
+                }
+            } catch {}
+        });
+
+        // Zalo báo delivered (máy nhận, chưa đọc). Đôi khi merged seen=1/seenUids → coi như seen luôn.
+        listener.on("delivered_messages", (messages: any[]) => {
+            Logger.log(`[ZaloLoginHelper] 📩 RAW delivered_messages event: ${JSON.stringify((messages || []).slice(0, 3))}`);
+            try {
+                for (const m of messages || []) {
+                    const hasSeenFlag = m?.data?.seen === 1 || m?.data?.seen === true
+                        || (Array.isArray(m?.data?.seenUids) && m.data.seenUids.length > 0);
+                    if (m?.data?.msgId) EventBroadcaster.broadcastDelivered(zaloId, m, !!hasSeenFlag);
+                }
             } catch {}
         });
 

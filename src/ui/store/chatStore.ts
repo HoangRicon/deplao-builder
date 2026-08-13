@@ -116,6 +116,8 @@ export interface MessageItem {
   media_type?: 'text' | 'image' | 'file' | 'video' | 'voice' | 'sticker' | 'link';
   /** Progress upload (0-100), chỉ áp dụng cho media */
   upload_progress?: number;
+  /** epoch ms thời điểm delivered (máy người nhận nhận được, chưa đọc) */
+  delivered_at?: number;
 }
 
 export interface ContactItem {
@@ -232,6 +234,8 @@ interface ChatStore {
   setSeen: (zaloId: string, threadId: string, seenUids: string[], msgId: string, isGroup: boolean) => void;
   /** Đánh dấu đã xem cho tin msgId + các tin của mình trước đó trong thread (Zalo seen) */
   markMessageSeen: (zaloId: string, threadId: string, msgId: string, seenUids: string[], isGroup: boolean) => void;
+  /** Đánh dấu đã nhận (delivered) cho tin msgId + các tin của mình trước đó (Zalo delivered) */
+  markMessageDelivered: (zaloId: string, threadId: string, msgId: string, deliveredUids: string[], isGroup: boolean) => void;
   // Presence (Telegram user status)
   userPresence: Record<string, { status: string; lastSeen?: number; updatedAt: number }>; // key=`${zaloId}_${userId}`
   setPresence: (zaloId: string, userId: string, status: string, wasOnline?: number) => void;
@@ -940,7 +944,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const merged = isGroup ? Array.from(new Set([...prev, ...seenUids])) : prev;
           if (m.is_seen === 1 && merged.length === prev.length) return m;
           anyChanged = true;
-          return { ...m, is_seen: 1, seen_at: Date.now(), seen_uids: JSON.stringify(merged) };
+          return { ...m, is_seen: 1, seen_at: Date.now(), delivered_at: m.delivered_at ?? Date.now(), seen_uids: JSON.stringify(merged) };
+        });
+        if (anyChanged) { updatedMessages[key] = updated; changed = true; }
+      }
+      return changed ? { messages: updatedMessages } : state;
+    });
+  },
+
+  /** Đánh dấu tin của mình ≤ anchor là đã nhận (delivered), chưa seen */
+  markMessageDelivered: (zaloId, threadId, msgId, _deliveredUids, _isGroup) => {
+    set((state) => {
+      const updatedMessages = { ...state.messages };
+      let changed = false;
+      for (const key of getMessageCacheKeysForThread(updatedMessages, zaloId, threadId)) {
+        const msgs = updatedMessages[key];
+        if (!msgs) continue;
+        const deliveredMsg = msgId
+          ? msgs.find(m => m.msg_id === msgId || m.real_msg_id === msgId || m.cli_msg_id === msgId)
+          : undefined;
+        const cutTs = deliveredMsg?.timestamp ?? Number.MAX_SAFE_INTEGER;
+        let anyChanged = false;
+        const updated = msgs.map((m) => {
+          if (m.is_sent !== 1 || m.sender_id !== zaloId) return m;
+          if (m.timestamp > cutTs) return m;
+          if (m.delivered_at || m.is_seen === 1) return m;
+          anyChanged = true;
+          return { ...m, delivered_at: Date.now() };
         });
         if (anyChanged) { updatedMessages[key] = updated; changed = true; }
       }

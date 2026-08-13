@@ -723,7 +723,7 @@ async function fetchGroupInfoAndMembers(zaloId: string, groupId: string, forceNo
 
 export function useZaloEvents() {
   const { updateAccountStatus, updateListenerActive } = useAccountStore();
-  const { addMessage, updateContact, incrementUnread, updateMessageReaction, replaceMessageReactions, updateMessageLocalPath, setTyping, setSeen, markMessageSeen, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
+  const { addMessage, updateContact, incrementUnread, updateMessageReaction, replaceMessageReactions, updateMessageLocalPath, setTyping, setSeen, markMessageSeen, markMessageDelivered, markReplied, clearUnread, setActiveThread, setMessages } = useChatStore();
   const { showNotification, setGroupInfo } = useAppStore();
 
   // Track window focus state from main process (reliable, unlike document.hasFocus())
@@ -1651,6 +1651,18 @@ export function useZaloEvents() {
       }
     });
 
+    const unsubDelivered = ipc.on('event:delivered', (data: any) => {
+      const { zaloId, threadId, msgId, isGroup, deliveredUids, hasSeenFlag, seenUids } = data;
+      if (zaloId && threadId) {
+        if (hasSeenFlag) {
+          setSeen(zaloId, threadId, seenUids || [], msgId || '', !!isGroup);
+          markMessageSeen(zaloId, threadId, msgId || '', seenUids || [], !!isGroup);
+        } else {
+          markMessageDelivered(zaloId, threadId, msgId || '', deliveredUids || [], !!isGroup);
+        }
+      }
+    });
+
     // ─── Group info update (background fetch result) ──────────────────────
     const unsubGroupInfoUpdate = ipc.on('event:groupInfoUpdate', (data: any) => {
       const { zaloId, groupId, name, avatar, data: rawData } = data;
@@ -1963,6 +1975,7 @@ export function useZaloEvents() {
       unsubListenerDead();
       unsubTyping();
       unsubSeen();
+      unsubDelivered();
       unsubGroupInfoUpdate();
       unsubForumTopicsChanged();
       unsubGroupMemberAvatar();

@@ -1526,6 +1526,13 @@ class DatabaseService {
                 Logger.log('[DatabaseService] Migration: added is_seen/seen_uids/seen_at columns');
             }
 
+            const hasDeliveredAt = cols.some((c: any) => c.name === 'delivered_at');
+            if (!hasDeliveredAt) {
+                db!.exec(`ALTER TABLE messages ADD COLUMN delivered_at INTEGER DEFAULT NULL`);
+                this.save();
+                Logger.log('[DatabaseService] Migration: added delivered_at column');
+            }
+
             // Add listener_active column to accounts if missing
             const accCols = this.query<any>(`PRAGMA table_info(accounts)`);
             const hasListenerActive = accCols.some((c: any) => c.name === 'listener_active');
@@ -3197,12 +3204,60 @@ class DatabaseService {
                     merged = Array.from(new Set([...merged, ...seenUids]));
                 }
                 this.run(
-                    `UPDATE messages SET is_seen = 1, seen_at = ?, seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
-                    [now, JSON.stringify(merged), row.msg_id, ownerZaloId]
+                    `UPDATE messages SET is_seen = 1, seen_at = ?, delivered_at = ?, seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
+                    [now, now, JSON.stringify(merged), row.msg_id, ownerZaloId]
                 );
             }
         } catch (error: any) {
             Logger.error(`[DatabaseService] markMessageSeen error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Đánh dấu tin nhắn đã nhận (Zalo delivered event — máy người nhận nhận được, chưa đọc).
+     * Tương tự seen: sweep-to-anchor — Zalo chỉ báo delivered cho tin cuối (anchor),
+     * các tin của mình gửi trước anchor đều được đánh dấu delivered (nếu chưa seen).
+     * @param ownerZaloId tài khoản sở hữu (người gửi)
+     * @param threadId hội thoại
+     * @param msgId msgId tin được delivered (anchor)
+     * @param deliveredUids danh sách uid đã nhận
+     * @param isGroup true nếu hội thoại nhóm
+     */
+    public markMessageDelivered(ownerZaloId: string, threadId: string, msgId: string, deliveredUids: string[] = [], isGroup: boolean = false): void {
+        if (!this.initialized || !threadId || !ownerZaloId) return;
+        try {
+            let deliveredTs: number | null = null;
+            if (msgId) {
+                const rows = this.query<{ timestamp: number }>(
+                    `SELECT timestamp FROM messages WHERE owner_zalo_id = ? AND thread_id = ? AND (msg_id = ? OR cli_msg_id = ?) LIMIT 1`,
+                    [ownerZaloId, threadId, msgId, msgId]
+                );
+                deliveredTs = rows?.[0]?.timestamp ?? null;
+            }
+
+            const tsFilter = deliveredTs != null ? ' AND timestamp <= ?' : '';
+            const selectParams: any[] = [ownerZaloId, threadId];
+            if (deliveredTs != null) selectParams.push(deliveredTs);
+            selectParams.push(ownerZaloId);
+
+            const rows = this.query<{ msg_id: string }>(
+                `SELECT msg_id FROM messages
+                 WHERE owner_zalo_id = ? AND thread_id = ?${tsFilter}
+                   AND sender_id = ? AND is_sent = 1
+                   AND delivered_at IS NULL AND is_seen = 0
+                   AND (channel IS NULL OR channel = '' OR channel = 'zalo')`,
+                selectParams
+            );
+
+            const now = Date.now();
+            for (const row of rows) {
+                this.run(
+                    `UPDATE messages SET delivered_at = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
+                    [now, row.msg_id, ownerZaloId]
+                );
+            }
+        } catch (error: any) {
+            Logger.error(`[DatabaseService] markMessageDelivered error: ${error.message}`);
         }
     }
 

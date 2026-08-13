@@ -1340,11 +1340,11 @@ class EventBroadcaster {
                     this.send('event:seen', { zaloId, threadId, msgId, isGroup: true, seenUids });
                 }
             } else {
-                // UserSeenMessage
+                // UserSeenMessage: data = { idTo, msgId, realMsgId }
+                // idTo = người đối diện đã seen tin của mình (anchor = tin cuối họ đọc tới)
                 const threadId = data?.threadId || data?.data?.idTo || data?.data?.uidFrom || '';
                 const msgId    = data?.data?.msgId || data?.data?.realMsgId || data?.msgId || '';
-                // userId = người đối diện đã seen (không phải mình)
-                const userId   = data?.data?.uidFrom || data?.uidFrom || threadId;
+                const userId   = data?.data?.idTo || data?.data?.uidFrom || data?.uidFrom || threadId;
                 if (threadId) {
                     try {
                         DatabaseService.getInstance().markMessageSeen(zaloId, threadId, msgId, [userId], false);
@@ -1354,6 +1354,50 @@ class EventBroadcaster {
             }
         } catch (e: any) {
             Logger.warn(`[EventBroadcaster] broadcastSeen error: ${e.message}`);
+        }
+    }
+
+    /**
+     * Broadcast delivered (đã nhận, chưa đọc).
+     * UserDeliveredMessage: data = { msgId, realMsgId, seen, mSTs } (threadId = idTo)
+     * GroupDeliveredMessage: data = { msgId, groupId, deliveredUids[], seenUids[], seen }
+     * @param hasSeenFlag true nếu SDK merged delivered+seen trong 1 event (data.seen=1 hoặc seenUids non-empty)
+     */
+    public static broadcastDelivered(zaloId: string, data: any, hasSeenFlag: boolean = false): void {
+        try {
+            const isGroup = data?.type === 1 || data?.data?.groupId;
+            if (isGroup) {
+                const threadId = data?.threadId || data?.data?.groupId || '';
+                const msgId    = data?.data?.msgId || data?.msgId || '';
+                const deliveredUids: string[] = data?.data?.deliveredUids || [];
+                const seenUids: string[] = data?.data?.seenUids || [];
+                if (threadId && msgId) {
+                    try {
+                        if (hasSeenFlag) {
+                            DatabaseService.getInstance().markMessageSeen(zaloId, threadId, msgId, seenUids, true);
+                        } else {
+                            DatabaseService.getInstance().markMessageDelivered(zaloId, threadId, msgId, deliveredUids, true);
+                        }
+                    } catch {}
+                    this.send('event:delivered', { zaloId, threadId, msgId, isGroup: true, deliveredUids, seenUids, hasSeenFlag });
+                }
+            } else {
+                const threadId = data?.threadId || data?.data?.idTo || data?.data?.uidFrom || '';
+                const msgId    = data?.data?.msgId || data?.data?.realMsgId || data?.msgId || '';
+                const userId   = data?.data?.idTo || data?.data?.uidFrom || data?.uidFrom || threadId;
+                if (threadId && msgId) {
+                    try {
+                        if (hasSeenFlag) {
+                            DatabaseService.getInstance().markMessageSeen(zaloId, threadId, msgId, [userId], false);
+                        } else {
+                            DatabaseService.getInstance().markMessageDelivered(zaloId, threadId, msgId, [userId], false);
+                        }
+                    } catch {}
+                    this.send('event:delivered', { zaloId, threadId, msgId, isGroup: false, deliveredUids: [userId], hasSeenFlag });
+                }
+            }
+        } catch (e: any) {
+            Logger.warn(`[EventBroadcaster] broadcastDelivered error: ${e.message}`);
         }
     }
 

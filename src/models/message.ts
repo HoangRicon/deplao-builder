@@ -27,6 +27,8 @@ export interface Message {
     seen_uids?: string;
     /** epoch ms thời điểm seen lần đầu */
     seen_at?: number;
+    /** epoch ms thời điểm delivered (máy người nhận nhận được, chưa đọc) */
+    delivered_at?: number;
     /** ID of the message being replied to (Facebook/others) */
     reply_to_id?: string | null;
     topic_id?: string | null;

@@ -270,6 +270,12 @@ export default function ChatWindow() {
   const msgs = threadKey ? (messages[threadKey] || []) : [];
   msgsRef.current = msgs;
 
+  // Zalo-style: trạng thái (sent/delivered/seen) chỉ hiển thị trên TIN CUỐI CÙNG của mình.
+  const lastSentTs = msgs.reduce((max, m) =>
+    (m.is_sent === 1 && m.sender_id === activeAccountId && (m.timestamp || 0) > max) ? (m.timestamp || 0) : max, 0);
+  const isLastSent = (m: any) => m.is_sent === 1 && m.sender_id === activeAccountId
+    && (m.timestamp || 0) >= lastSentTs && lastSentTs > 0;
+
   useEffect(() => {
     quoteRepairAttemptedRef.current.clear();
     emptyMessageRepairAttemptedRef.current.clear();
@@ -3301,8 +3307,8 @@ export default function ChatWindow() {
                   })()}
 
                   {/* ── Send status indicator (optimistic messages) ──── */}
-                  {/* Employee: mọi channel; Boss: chỉ Zalo (FB/Telegram gửi trực tiếp) */}
-                  {isSent && msg.send_status && msg.send_status !== 'received' && (useEmployeeStore.getState().mode === 'employee' || (msg.channel || 'zalo') === 'zalo') && (
+                  {/* Employee: mọi channel; Boss: chỉ Zalo (FB/Telegram gửi trực tiếp). Chỉ tin cuối của mình */}
+                  {isSent && isLastSent(msg) && msg.send_status && msg.send_status !== 'received' && (useEmployeeStore.getState().mode === 'employee' || (msg.channel || 'zalo') === 'zalo') && (
                     <div className="flex items-center gap-1 mt-0.5 px-1">
                       {msg.send_status === 'pending' && (
                         <span title="Đang chờ gửi">
@@ -3381,16 +3387,34 @@ export default function ChatWindow() {
                     </div>
                   )}
 
-                  {/* ── Zalo seen ticks ──── */}
-                  {isSent && (msg.channel || 'zalo') === 'zalo'
+                  {/* ── Zalo status: sent / delivered / seen (chỉ tin cuối của mình, như Zalo) ──── */}
+                  {isSent && isLastSent(msg) && (msg.channel || 'zalo') === 'zalo'
                     && msg.send_status !== 'pending' && msg.send_status !== 'sending'
                     && msg.send_status !== 'failed' && msg.send_status !== 'timeout' && (
-                    <div className="flex items-center justify-end mt-0.5 pr-1">
+                    <div className="flex flex-col items-end mt-0.5 pr-1 gap-0.5">
                       {(() => {
                         let seenUids: string[] = [];
                         try { seenUids = msg.seen_uids ? JSON.parse(msg.seen_uids) : []; } catch {}
-                        const isSeen = msg.is_seen === 1 || (Number(msg.thread_type) === 1 && seenUids.length > 0);
-                        if (!isSeen) {
+                        const isGroup = Number(msg.thread_type) === 1;
+                        const isSeen = msg.is_seen === 1 || (isGroup && seenUids.length > 0);
+                        const isDelivered = !!msg.delivered_at;
+                        const nameByUid: Record<string, string> = {};
+                        for (const uid of seenUids) {
+                          const c = contactList[uid];
+                          nameByUid[uid] = c?.display_name || c?.name || uid;
+                        }
+                        const title = (() => {
+                          if (isSeen) {
+                            if (!isGroup || seenUids.length === 0) return 'Đã xem';
+                            if (seenUids.length === 1) return `Đã xem bởi ${nameByUid[seenUids[0]]}`;
+                            const names = seenUids.map(uid => nameByUid[uid]).filter(Boolean);
+                            return `Đã xem bởi ${names.join(', ')}`;
+                          }
+                          return isDelivered ? 'Đã nhận' : 'Đã gửi';
+                        })();
+                        const tickColor = isSeen ? 'text-sky-400' : 'text-gray-400';
+                        if (!isSeen && !isDelivered) {
+                          // 1 tick xám = đã gửi
                           return (
                             <span title="Đã gửi">
                               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-gray-400">
@@ -3399,34 +3423,40 @@ export default function ChatWindow() {
                             </span>
                           );
                         }
-                        const nameByUid: Record<string, string> = {};
-                        for (const uid of seenUids) {
-                          const c = contactList[uid];
-                          nameByUid[uid] = c?.display_name || c?.name || uid;
-                        }
-                        const isGroup = Number(msg.thread_type) === 1;
-                        const title = (() => {
-                          if (!isGroup || seenUids.length === 0) return 'Đã xem';
-                          if (seenUids.length === 1) return `Đã xem bởi ${nameByUid[seenUids[0]]}`;
-                          const names = seenUids.map(uid => nameByUid[uid]).filter(Boolean);
-                          return `Đã xem bởi ${names.join(', ')}`;
-                        })();
+                        // 2 tick (xám = đã nhận, xanh = đã xem) — nhìn như Zalo
                         return (
                           <span title={title} className="group relative inline-flex items-center">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-sky-400">
-                              <polyline points="20 6 9 17 4 12"/>
-                              <polyline points="14 6 3 17 -2 12" opacity="0"/>
-                            </svg>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-sky-400 -ml-1.5">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={tickColor}>
                               <polyline points="20 6 9 17 4 12"/>
                             </svg>
-                            {isGroup && seenUids.length > 0 && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`${tickColor} -ml-1.5`}>
+                              <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                            {isGroup && isSeen && seenUids.length > 0 && (
                               <span className="absolute bottom-full right-0 mb-1 hidden whitespace-nowrap rounded bg-gray-800 border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200 group-hover:block z-50 shadow-lg">
                                 {title}
                               </span>
                             )}
                           </span>
                         );
+                      })()}
+                      {(() => {
+                        // Dòng "Tên: Đã xem" dưới tin cuối trong nhóm (như Zalo)
+                        let seenUids: string[] = [];
+                        try { seenUids = msg.seen_uids ? JSON.parse(msg.seen_uids) : []; } catch {}
+                        const isGroup = Number(msg.thread_type) === 1;
+                        const isSeen = msg.is_seen === 1 || (isGroup && seenUids.length > 0);
+                        if (!isGroup || !isSeen || seenUids.length === 0) return null;
+                        const nameByUid: Record<string, string> = {};
+                        for (const uid of seenUids) {
+                          const c = contactList[uid];
+                          nameByUid[uid] = c?.display_name || c?.name || uid;
+                        }
+                        const names = seenUids.map(uid => nameByUid[uid]).filter(Boolean);
+                        const label = names.length === 0 ? 'Đã xem'
+                          : names.length === 1 ? `${names[0]}: Đã xem`
+                          : `${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}: Đã xem`;
+                        return <span className="text-[10px] leading-tight text-gray-500">{label}</span>;
                       })()}
                     </div>
                   )}
