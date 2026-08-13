@@ -804,7 +804,19 @@ export function QuickMessageDropdown({
         i.keyword.toLowerCase().startsWith(filter.toLowerCase()) ||
         i.keyword.toLowerCase().includes(filter.toLowerCase()) ||
         i.message.title.toLowerCase().includes(filter.toLowerCase())
-      )
+      ).sort((a, b) => {
+        const fl = filter.toLowerCase();
+        const aKw = a.keyword.toLowerCase();
+        const bKw = b.keyword.toLowerCase();
+        // Priority: keyword starts with filter > keyword contains filter > title contains filter
+        const aStarts = aKw.startsWith(fl) ? 0 : 1;
+        const bStarts = bKw.startsWith(fl) ? 0 : 1;
+        if (aStarts !== bStarts) return aStarts - bStarts;
+        const aKwInc = aKw.includes(fl) ? 0 : 1;
+        const bKwInc = bKw.includes(fl) ? 0 : 1;
+        if (aKwInc !== bKwInc) return aKwInc - bKwInc;
+        return 0;
+      })
     : items;
 
 
