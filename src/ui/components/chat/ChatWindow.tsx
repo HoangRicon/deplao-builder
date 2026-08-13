@@ -3301,8 +3301,8 @@ export default function ChatWindow() {
                   })()}
 
                   {/* ── Send status indicator (optimistic messages) ──── */}
-                  {/* Only show in employee mode — boss sends directly via Zalo (fast, no need for status) */}
-                  {isSent && msg.send_status && msg.send_status !== 'received' && useEmployeeStore.getState().mode === 'employee' && (
+                  {/* Employee: mọi channel; Boss: chỉ Zalo (FB/Telegram gửi trực tiếp) */}
+                  {isSent && msg.send_status && msg.send_status !== 'received' && (useEmployeeStore.getState().mode === 'employee' || (msg.channel || 'zalo') === 'zalo') && (
                     <div className="flex items-center gap-1 mt-0.5 px-1">
                       {msg.send_status === 'pending' && (
                         <span title="Đang chờ gửi">
@@ -3318,7 +3318,7 @@ export default function ChatWindow() {
                           </svg>
                         </span>
                       )}
-                      {msg.send_status === 'sent' && (
+                      {msg.send_status === 'sent' && (msg.channel || 'zalo') !== 'zalo' && (
                         <span title="Đã gửi">
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-gray-400">
                             <polyline points="20 6 9 17 4 12"/>
@@ -3378,6 +3378,54 @@ export default function ChatWindow() {
                           )}
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* ── Zalo seen ticks ──── */}
+                  {isSent && msg.send_status === 'sent' && (msg.channel || 'zalo') === 'zalo' && (
+                    <div className="flex items-center justify-end mt-0.5 pr-1">
+                      {(() => {
+                        let seenUids: string[] = [];
+                        try { seenUids = msg.seen_uids ? JSON.parse(msg.seen_uids) : []; } catch {}
+                        const isSeen = msg.is_seen === 1 || (Number(msg.thread_type) === 1 && seenUids.length > 0);
+                        if (!isSeen) {
+                          return (
+                            <span title="Đã gửi">
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-gray-400">
+                                <polyline points="20 6 9 17 4 12"/>
+                              </svg>
+                            </span>
+                          );
+                        }
+                        const nameByUid: Record<string, string> = {};
+                        for (const uid of seenUids) {
+                          const c = contactList[uid];
+                          nameByUid[uid] = c?.display_name || c?.name || uid;
+                        }
+                        const isGroup = Number(msg.thread_type) === 1;
+                        const title = (() => {
+                          if (!isGroup || seenUids.length === 0) return 'Đã xem';
+                          if (seenUids.length === 1) return `Đã xem bởi ${nameByUid[seenUids[0]]}`;
+                          const names = seenUids.map(uid => nameByUid[uid]).filter(Boolean);
+                          return `Đã xem bởi ${names.join(', ')}`;
+                        })();
+                        return (
+                          <span title={title} className="group relative inline-flex items-center">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-sky-400">
+                              <polyline points="20 6 9 17 4 12"/>
+                              <polyline points="14 6 3 17 -2 12" opacity="0"/>
+                            </svg>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-sky-400 -ml-1.5">
+                              <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                            {isGroup && seenUids.length > 0 && (
+                              <span className="absolute bottom-full right-0 mb-1 hidden whitespace-nowrap rounded bg-gray-800 border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200 group-hover:block z-50 shadow-lg">
+                                {title}
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
 
