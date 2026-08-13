@@ -5508,6 +5508,23 @@ class DatabaseService {
         } catch (err: any) { Logger.error(`[DB] getCampaignContacts: ${err.message}`); return []; }
     }
 
+    public deleteCampaignContacts(campaignId: number, contactIds: string[]): void {
+        if (!this.initialized || !contactIds.length) return;
+        try {
+            const placeholders = contactIds.map(() => '?').join(',');
+            this.run(`DELETE FROM crm_campaign_contacts WHERE campaign_id=? AND contact_id IN (${placeholders})`, [campaignId, ...contactIds]);
+            this.save();
+        } catch (err: any) { Logger.error(`[DB] deleteCampaignContacts: ${err.message}`); }
+    }
+
+    public deleteAllCampaignContacts(campaignId: number): void {
+        if (!this.initialized) return;
+        try {
+            this.run(`DELETE FROM crm_campaign_contacts WHERE campaign_id=?`, [campaignId]);
+            this.save();
+        } catch (err: any) { Logger.error(`[DB] deleteAllCampaignContacts: ${err.message}`); }
+    }
+
     public updateCampaignContactStatus(id: number, status: CRMContactStatus, error?: string): void {
         if (!this.initialized) return;
         try {

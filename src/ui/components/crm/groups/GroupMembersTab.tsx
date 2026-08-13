@@ -147,6 +147,9 @@ export default function GroupMembersTab() {
   const [scanJoinMsg, setScanJoinMsg] = useState('');
   const [scanJoinType, setScanJoinType] = useState<'idle' | 'success' | 'pending' | 'already' | 'error'>('idle');
 
+  // ── Export notification state ──────────────────────────────────────────
+  const [exportNotif, setExportNotif] = useState<{ message: string; folderPath?: string } | null>(null);
+
   // ── Premium state ────────────────────────────────────────────────────
   const [premiumLoaded, setPremiumLoaded] = useState(false);
   const [premiumLoading, setPremiumLoading] = useState(false);
@@ -1307,6 +1310,43 @@ export default function GroupMembersTab() {
                 {membersLoading ? SpinIcon : RefreshIcon}
                 {membersLoading ? 'Đang tải...' : 'Tải thông tin thành viên'}
               </button>
+              {/* Xuất danh sách thành viên */}
+              {filteredMembers.length > 0 && (
+                <button onClick={() => {
+                  const escapeCSV = (v: any): string => {
+                    const s = String(v ?? '');
+                    // Excel tự chuyển số dài (SĐT, UID) thành scientific notation → ép giữ dạng text
+                    if (/^\d+$/.test(s) && s.length >= 5) return '="' + s + '"';
+                    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r'))
+                      return '"' + s.replace(/"/g, '""') + '"';
+                    return s;
+                  };
+                  const headers = ['STT', 'Tên', 'UID', 'Số điện thoại', 'Vai trò'];
+                  const rows = filteredMembers.map((m, i) => [
+                    i + 1,
+                    escapeCSV(m.display_name || ''),
+                    escapeCSV(m.member_id),
+                    escapeCSV(m.phone || ''),
+                    escapeCSV(roleLabel(m.role).text),
+                  ].join(','));
+                  const csv = [headers.join(','), ...rows].join('\r\n');
+                  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `thanh_vien_${selectedGroup?.display_name || selectedGroupId}_${new Date().toISOString().split('T')[0]}.csv`;
+                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                  setExportNotif({ message: `Đã xuất ${filteredMembers.length} thành viên` });
+                  setTimeout(() => setExportNotif(null), 4000);
+                }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors flex-shrink-0">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  Xuất danh sách
+                </button>
+              )}
               {/* Stop button shown only during getUserInfo fallback */}
               {manualLoadProgress !== null && (
                 <button onClick={() => { manualLoadStopRef.current = true; }}
@@ -1417,26 +1457,40 @@ export default function GroupMembersTab() {
               )}
             </div>
 
-            {/* ── Bottom action bar (when members selected) ─────────────────── */}
-            {selectedMemberIds.size > 0 && (
-              <div className="absolute bottom-0 left-72 right-0 bg-gray-800/95 backdrop-blur border-t border-gray-600 px-5 py-3 flex items-center gap-3 z-10">
-                <span className="text-sm text-white font-medium">
-                  Đã chọn <span className="text-blue-400">{selectedMemberIds.size}</span> thành viên
-                </span>
-                <div className="flex-1"/>
-                <button onClick={clearSelection}
-                  className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">
-                  Bỏ chọn
-                </button>
-                <button onClick={openCampaignPicker}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors">
+            {/* ── Bottom action bar ─────────────────── */}
+            <div className="absolute bottom-0 left-72 right-0 bg-gray-800/95 backdrop-blur border-t border-gray-600 px-5 py-3 z-10">
+              {/* Row 1: Selection info + Bỏ chọn */}
+              {selectedMemberIds.size > 0 && (
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-sm text-white font-medium">
+                    Đã chọn <span className="text-blue-400">{selectedMemberIds.size}</span> thành viên
+                  </span>
+                  <div className="flex-1"/>
+                  <button onClick={clearSelection}
+                    className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">
+                    Bỏ chọn
+                  </button>
+                </div>
+              )}
+              {/* Row 2: Action buttons (always visible, disabled when none selected) */}
+              <div className="flex items-center gap-3">
+                <button onClick={openCampaignPicker} disabled={selectedMemberIds.size === 0}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    selectedMemberIds.size === 0
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
                   </svg>
                   Thêm vào chiến dịch
                 </button>
-                <button onClick={() => setShowAddToContacts(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors">
+                <button onClick={() => setShowAddToContacts(true)} disabled={selectedMemberIds.size === 0}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    selectedMemberIds.size === 0
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                      : 'bg-green-600 hover:bg-green-700 text-white'
+                  }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/>
                     <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
@@ -1444,7 +1498,7 @@ export default function GroupMembersTab() {
                   Thêm vào liên hệ
                 </button>
               </div>
-            )}
+            </div>
           </>
         )}
       </div>
@@ -1847,6 +1901,35 @@ export default function GroupMembersTab() {
           }}
         />
       )}
+
+      {/* ── Export success notification ──────────────────────────────── */}
+      {exportNotif && (
+        <div className="fixed bottom-4 right-4 z-50 bg-gray-800 border border-green-500/30 rounded-xl shadow-2xl px-4 py-3 flex items-center gap-3 max-w-sm"
+          style={{ animation: 'slideUp 0.2s ease-out' }}>
+          <div className="w-8 h-8 rounded-lg bg-green-500/15 flex items-center justify-center flex-shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-white font-medium">{exportNotif.message}</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">File đã được tải xuống</p>
+          </div>
+          <button onClick={() => setExportNotif(null)}
+            className="text-gray-500 hover:text-gray-300 transition-colors p-1 flex-shrink-0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }

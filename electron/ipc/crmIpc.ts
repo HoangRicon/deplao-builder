@@ -166,6 +166,20 @@ export function registerCRMIpc(): void {
         catch (e: any) { return { success: false, error: e.message }; }
     });
 
+    ipcMain.handle('crm:deleteCampaignContacts', async (_e, { campaignId, contactIds }: { campaignId: number; contactIds: string[] }) => {
+        try {
+            DatabaseService.getInstance().deleteCampaignContacts(campaignId, contactIds);
+            return { success: true };
+        } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
+    ipcMain.handle('crm:deleteAllCampaignContacts', async (_e, { campaignId }: { campaignId: number }) => {
+        try {
+            DatabaseService.getInstance().deleteAllCampaignContacts(campaignId);
+            return { success: true };
+        } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
     // ─── Send Log ──────────────────────────────────────────────────────────
     ipcMain.handle('crm:getSendLog', async (_e, { zaloId, opts }: { zaloId: string; opts?: any }) => {
         try { return { success: true, logs: DatabaseService.getInstance().getSendLog(zaloId, opts || {}) }; }

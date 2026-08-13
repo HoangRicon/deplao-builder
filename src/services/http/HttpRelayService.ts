@@ -2076,6 +2076,18 @@ class HttpRelayService {
                 db.addCampaignContacts(parseInt(params.campaignId) || 0, zaloId, params.contacts || []);
                 return { success: true };
             }
+            if (pathname === '/api/command/crm/campaigns/contacts/all' && (_method === 'DELETE' || _method === 'POST')) {
+                db.deleteAllCampaignContacts(parseInt(params.campaignId) || 0);
+                return { success: true };
+            }
+            if (pathname === '/api/command/crm/campaigns/contacts/delete' && _method === 'POST') {
+                db.deleteCampaignContacts(parseInt(params.campaignId) || 0, params.contactIds || []);
+                return { success: true };
+            }
+            if (pathname === '/api/command/crm/campaigns/contacts' && _method === 'DELETE') {
+                db.deleteCampaignContacts(parseInt(params.campaignId) || 0, params.contactIds || []);
+                return { success: true };
+            }
 
             // ── Friends — CRUD ──
             if (pathname === '/api/command/friends/batch') {

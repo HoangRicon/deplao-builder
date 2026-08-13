@@ -242,6 +242,8 @@ declare global {
         updateCampaignStatus: (params: { campaignId: number; status: string }) => Promise<{ success: boolean }>;
         addCampaignContacts: (params: { zaloId: string; campaignId: number; contacts: any[] }) => Promise<{ success: boolean }>;
         getCampaignContacts: (params: { campaignId: number }) => Promise<{ success: boolean; contacts: any[] }>;
+        deleteCampaignContacts: (params: { campaignId: number; contactIds: string[] }) => Promise<{ success: boolean }>;
+        deleteAllCampaignContacts: (params: { campaignId: number }) => Promise<{ success: boolean }>;
         getSendLog: (params: { zaloId: string; opts?: any }) => Promise<{ success: boolean; logs: any[] }>;
         getQueueStatus: (params: { zaloId: string }) => Promise<{ success: boolean; status: any }>;
         getCampaignStats: (params: { zaloId: string; limit?: number }) => Promise<{ success: boolean; stats: any[] }>;

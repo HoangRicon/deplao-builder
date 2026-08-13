@@ -255,6 +255,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateCampaignStatus: (params: any) => ipcRenderer.invoke('crm:updateCampaignStatus', params),
     addCampaignContacts: (params: any) => ipcRenderer.invoke('crm:addCampaignContacts', params),
     getCampaignContacts: (params: any) => ipcRenderer.invoke('crm:getCampaignContacts', params),
+    deleteCampaignContacts: (params: any) => ipcRenderer.invoke('crm:deleteCampaignContacts', params),
+    deleteAllCampaignContacts: (params: any) => ipcRenderer.invoke('crm:deleteAllCampaignContacts', params),
     getSendLog: (params: any) => ipcRenderer.invoke('crm:getSendLog', params),
     getQueueStatus: (params: any) => ipcRenderer.invoke('crm:getQueueStatus', params),
     getCampaignStats: (params: any) => ipcRenderer.invoke('crm:getCampaignStats', params),
