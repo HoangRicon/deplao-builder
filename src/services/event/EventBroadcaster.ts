@@ -1334,6 +1334,9 @@ class EventBroadcaster {
                 const msgId    = data?.data?.msgId || data?.msgId || '';
                 const seenUids: string[] = data?.data?.seenUids || [];
                 if (threadId) {
+                    try {
+                        DatabaseService.getInstance().markMessageSeen(zaloId, threadId, msgId, seenUids, true);
+                    } catch {}
                     this.send('event:seen', { zaloId, threadId, msgId, isGroup: true, seenUids });
                 }
             } else {
@@ -1343,6 +1346,9 @@ class EventBroadcaster {
                 // userId = người đối diện đã seen (không phải mình)
                 const userId   = data?.data?.uidFrom || data?.uidFrom || threadId;
                 if (threadId) {
+                    try {
+                        DatabaseService.getInstance().markMessageSeen(zaloId, threadId, msgId, [userId], false);
+                    } catch {}
                     this.send('event:seen', { zaloId, threadId, msgId, isGroup: false, seenUids: [userId] });
                 }
             }
