@@ -358,11 +358,11 @@ export const CHANNEL_CONFIG: Record<Channel, ChannelCapability> = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function getCapability(channel: Channel): ChannelCapability {
-  return CHANNEL_CONFIG[channel];
+  return CHANNEL_CONFIG[channel] ?? CHANNEL_CONFIG.zalo;
 }
 
 export function channelSupports(channel: Channel, feature: keyof ChannelCapability): boolean {
-  return !!(CHANNEL_CONFIG[channel] as any)[feature];
+  return !!(CHANNEL_CONFIG[channel] ?? CHANNEL_CONFIG.zalo)[feature];
 }
 
 export function getAllChannels(): Channel[] {
@@ -370,11 +370,11 @@ export function getAllChannels(): Channel[] {
 }
 
 export function getChannelLabel(channel: Channel): string {
-  return CHANNEL_CONFIG[channel].label;
+  return CHANNEL_CONFIG[channel]?.label ?? 'Zalo';
 }
 
 export function getChannelColor(channel: Channel): string {
-  return CHANNEL_CONFIG[channel].color;
+  return CHANNEL_CONFIG[channel]?.color ?? '#0068FF';
 }
 
 /**
@@ -382,6 +382,7 @@ export function getChannelColor(channel: Channel): string {
  * Dùng cho workflow, DB records, import data.
  */
 export function normalizeChannel(ch?: string): Channel {
+  if (ch === 'facebook_page' || ch === 'facebook_page_comment' || ch === 'facebook_page_post') return 'facebook';
   if (ch && ch in CHANNEL_CONFIG) return ch as Channel;
   return 'zalo'; // default legacy
 }

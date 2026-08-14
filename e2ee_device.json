@@ -1,0 +1,13 @@
+{
+  "noise_key_priv": "sIMLRzNzcux9djzIHHFR1V5KX8QqHi5ULGmjSdCtJVE=",
+  "identity_key_priv": "ENFOMCPBsgAwuPM7kwBKhdtwZ0911UsAl3mAVv5XdUM=",
+  "signed_pre_key_priv": "sCBXbdTpWdnfOIuuPUnMxvTuN+RFv2gm0M03csfStVc=",
+  "signed_pre_key_id": 1,
+  "signed_pre_key_sig": "dhVYDtnFR4aR7Xjij1rBoNfEGVL6HI1HDj1+6Es7UlDAIxNHgnegC1wu9E7CkX0HN9ddeFl2MFfrs2iGIWyYCg==",
+  "registration_id": 11008,
+  "adv_secret_key": "VsZqiw/BiZ5GnKYhAf8DNjp4m+hNZaOnfVj75EBf4Bo=",
+  "facebook_uuid": "6471b404-f36c-403c-acfe-039342a67adf",
+  "jid_user": "100056964890740",
+  "jid_device": 205,
+  "next_pre_key_id": 1
+}

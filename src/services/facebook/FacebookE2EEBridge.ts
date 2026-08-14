@@ -392,6 +392,7 @@ export class FacebookE2EEBridge extends EventEmitter {
     logLevel?: string;
     e2eeMemoryOnly?: boolean;
     devicePath?: string;
+    deviceData?: string;
   }): Promise<void> {
     await this.call('newClient', {
       cookies: config.cookies,
@@ -399,7 +400,16 @@ export class FacebookE2EEBridge extends EventEmitter {
       logLevel: config.logLevel || 'none',
       e2eeMemoryOnly: config.e2eeMemoryOnly ?? true,
       ...(config.devicePath ? { devicePath: config.devicePath } : {}),
+      ...(config.deviceData ? { deviceData: config.deviceData } : {}),
     });
+  }
+
+  /**
+   * Lấy toàn bộ device data (E2EE keys) dưới dạng JSON string.
+   * Dùng để lưu backup → connect lần sau giữ nguyên device → FB sync lịch sử.
+   */
+  public async getDeviceData(): Promise<{ deviceData: string }> {
+    return this.call('getDeviceData') as Promise<{ deviceData: string }>;
   }
 
   /**

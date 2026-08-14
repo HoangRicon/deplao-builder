@@ -29,7 +29,7 @@ import EventBroadcaster from '../event/EventBroadcaster';
 import DatabaseService from '../database/DatabaseService';
 import FileStorageService from '../file/FileStorageService';
 import { createProxyAgent } from '../../utils/ProxyHelper';
-import { secureGet } from '../secure/SecureSettingsService';
+import { secureGet, secureSet } from '../secure/SecureSettingsService';
 import path from 'path';
 import Logger from '../../utils/Logger';
 
@@ -37,6 +37,11 @@ import Logger from '../../utils/Logger';
 
 function fbCookieKey(accountId: string): string {
   return `fb_cookie_${accountId}`;
+}
+
+/** Key lưu E2EE device data (signal keys + FacebookUUID) - giữ device ổn định giữa các lần connect */
+function fbE2EEDeviceKey(accountId: string): string {
+  return `fb_e2ee_device_${accountId}`;
 }
 
 export class FacebookService {
@@ -973,11 +978,20 @@ export class FacebookService {
       }
 
       // 3. newClient + connect + connectE2EE
+      // Persist device E2EE: nếu đã có deviceData (lưu lần connect trước) → dùng lại
+      // device cũ → FB nhận diện thiết bị quen thuộc → đồng bộ được lịch sử tin nhắn E2EE.
+      const savedDeviceData = secureGet(fbE2EEDeviceKey(this.accountId)) || undefined;
       await this.e2eeBridge.newClient({
         cookies,
         logLevel: 'error',
-        e2eeMemoryOnly: true,
+        e2eeMemoryOnly: false,
+        ...(savedDeviceData ? { deviceData: savedDeviceData } : {}),
       });
+      if (savedDeviceData) {
+        Logger.log(`[FacebookService:${this.accountId}] E2EE using persisted device (deviceData=${savedDeviceData.length} chars)`);
+      } else {
+        Logger.log(`[FacebookService:${this.accountId}] E2EE no persisted device - will generate + save after pairing`);
+      }
 
       // Timeout ngắn để không block group messaging nếu bridge không respond
       const info = await this.e2eeBridge.connect(30000);
@@ -985,6 +999,17 @@ export class FacebookService {
 
       await this.e2eeBridge.connectE2EE(20000);
       Logger.log(`[FacebookService:${this.accountId}] E2EE pairing complete`);
+
+      // Lưu device data ngay sau pairing (backup an toàn qua safeStorage)
+      try {
+        const { deviceData } = await this.e2eeBridge.getDeviceData();
+        if (deviceData) {
+          secureSet(fbE2EEDeviceKey(this.accountId), deviceData);
+          Logger.log(`[FacebookService:${this.accountId}] E2EE device data persisted (${deviceData.length} chars) - history sync will work on next connect`);
+        }
+      } catch (err: any) {
+        Logger.warn(`[FacebookService:${this.accountId}] Failed to persist E2EE device data: ${err.message}`);
+      }
 
       this.setE2EEStatus('connected');
 
@@ -1139,6 +1164,18 @@ export class FacebookService {
       case 'e2eeConnected':
         Logger.log(`[FacebookService:${this.accountId}] E2EE bridge: e2eeConnected`);
         this.setE2EEStatus('connected');
+        break;
+
+      case 'deviceDataChanged':
+        // Bridge báo device data thay đổi (session/prekey mới...) - persist để không mất
+        if (data?.deviceData) {
+          try {
+            secureSet(fbE2EEDeviceKey(this.accountId), data.deviceData);
+            Logger.log(`[FacebookService:${this.accountId}] E2EE device data updated + persisted (${data.deviceData.length} chars)`);
+          } catch (err: any) {
+            Logger.warn(`[FacebookService:${this.accountId}] deviceDataChanged persist error: ${err.message}`);
+          }
+        }
         break;
 
       case 'disconnected':

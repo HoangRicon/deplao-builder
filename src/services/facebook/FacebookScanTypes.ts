@@ -135,7 +135,6 @@ export const SCAN_CONFIGS: ScanConfig[] = [
     requiresUrl: true,
     urlPlaceholder: 'https://facebook.com/groups/...',
     showKeywordInput: false,
-    comingSoon: true,
   },
   {
     scanType: 'group_keyword',
@@ -165,7 +164,6 @@ export const SCAN_CONFIGS: ScanConfig[] = [
     requiresUrl: true,
     urlPlaceholder: 'https://facebook.com/.../posts/...',
     showKeywordInput: false,
-    comingSoon: true,
   },
   {
     scanType: 'post_keyword',

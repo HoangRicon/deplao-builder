@@ -658,10 +658,15 @@ export class FacebookScanService {
       // Helper: extract docId từ JS text bằng module name
       const extractDocIdFromJS = (jsText: string, moduleName: string): string | null => {
         const escapedName = moduleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Pattern: "ModuleName"[...]exports = "123456" (có thể có/và không space quanh =)
-        const r = new RegExp('"' + escapedName + '"[\\s\\S]{0,400}?\\.exports\\s*=\\s*"(\\d+)"');
-        const m = r.exec(jsText);
-        return m ? m[1] : null;
+        // Pattern 1 (2026): __d("ModuleName",[],(function(t,n,r,o,a,i){a.exports="123456"}),null)
+        // Pattern 2: "ModuleName"[...].exports = "123456" (có thể có/và không space quanh =)
+        const r1 = new RegExp('"' + escapedName + '"[\\s\\S]{0,600}?\\.exports\\s*=\\s*"(\\d+)"');
+        const m1 = r1.exec(jsText);
+        if (m1) return m1[1];
+        // Pattern fallback: tìm exports trực tiếp sau module name
+        const r2 = new RegExp('"' + escapedName + '"[\\s\\S]{0,300}?(\\d{12,})');
+        const m2 = r2.exec(jsText);
+        return m2 ? m2[1] : null;
       };
 
       // ── Module names mapping ── (thêm cả bare name không suffix để fallback)
@@ -858,6 +863,33 @@ export class FacebookScanService {
             log(`loadDocId: ✅ Found docId by friendly name: ${docId}`);
             break;
           }
+        }
+      }
+
+      // ── Bước 5: Fallback hardcoded docIds ──
+      // Facebook không còn expose module names / exports = "docId" trong HTML serve cho
+      // non-browser clients (verified 08/2026). Các docId dưới đây là query IDs mới nhất
+      // thu thập từ cộng đồng, vẫn được Facebook GraphQL chấp nhận.
+      if (!docId) {
+        const FALLBACK_DOC_IDS: Record<string, string[]> = {
+          // GroupsCometMembersPageNewMembersSectionRefetchQuery - verified hoạt động (08/2026)
+          group: ['6621621524622624'],
+          // SearchCometResultsPaginatedResultsQuery (Dapunta/facebook-tools)
+          search: ['7704205549605925'],
+          // GroupsCometFeedRegularStoriesPaginationQuery (browser-act skill, 2026)
+          postGroup: ['26577462205242925'],
+          // ProfileCometTimelineFeedRefetchQuery (browser-act skill, 2026)
+          postProfile: ['27278869228466784'],
+          // CommentsListComponentsPaginationQuery - capture từ bundle FB (08/2026), verified
+          postComment: ['37454905204157523'],
+          // Depth1CommentsListPaginationQuery / Depth2CommentsListPaginationQuery - cùng bundle
+          postReact: ['37480094514909095'],
+          pagesList: [],
+        };
+        const fallbacks = FALLBACK_DOC_IDS[options.type] || [];
+        if (fallbacks.length > 0) {
+          docId = fallbacks[0];
+          log(`loadDocId: Using hardcoded fallback docId for type: ${options.type} → ${docId}`);
         }
       }
 
@@ -1686,13 +1718,13 @@ export class FacebookScanService {
         friendlyName = 'Depth2CommentsListPaginationQuery';
       }
     } else {
-      // Top-level comments
+      // Top-level comments (khớp với Facebook 2026 - commentsIntentToken null, không intent token)
       beforeParams = {
         'commentsAfterCount': -1,
         'commentsAfterCursor': cursor || null,
         'commentsBeforeCount': null,
         'commentsBeforeCursor': null,
-        'commentsIntentToken': 'RANKED_UNFILTERED_CHRONOLOGICAL_REPLIES_INTENT_V1',
+        'commentsIntentToken': null,
       };
     }
 
@@ -1700,7 +1732,8 @@ export class FacebookScanService {
       ...beforeParams,
       'feedLocation': 'POST_PERMALINK_DIALOG',
       'focusCommentID': null,
-      'scale': 2,
+      'scale': 1,
+      'targetDialect': null,
       'useDefaultActor': false,
       'id': feedbackTargetID,
       '__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider': 'ORIGINAL',

@@ -130,6 +130,18 @@ func handle(req *request) {
 		}
 		ok(req.ID, map[string]interface{}{})
 
+	case "getDeviceData":
+		if client == nil {
+			fail(req.ID, fmt.Errorf("client not initialised"))
+			return
+		}
+		data, err := client.DeviceStore.GetDeviceData()
+		if err != nil {
+			fail(req.ID, err)
+			return
+		}
+		ok(req.ID, map[string]interface{}{"deviceData": data})
+
 	case "isConnected":
 		if client == nil {
 			ok(req.ID, map[string]interface{}{"connected": false, "e2eeConnected": false})

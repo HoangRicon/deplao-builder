@@ -246,6 +246,8 @@ export interface FBE2EEBridgeConfig {
   logLevel: 'none' | 'error' | 'warn' | 'info' | 'debug';
   e2eeMemoryOnly: boolean;
   devicePath?: string;
+  /** JSON string của device E2EE (signal keys + FacebookUUID) - giữ device ổn định giữa các lần connect */
+  deviceData?: string;
 }
 
 /** JSON-RPC request sent to the Go bridge */
