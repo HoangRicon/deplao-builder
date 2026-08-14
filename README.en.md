@@ -1,27 +1,25 @@
-﻿# Deplao
-*Website Introduction*:  https://deplaoapp.com/
+﻿<div align="center">
 
-<p>
-  <strong>🌐 Language:</strong>
-  &nbsp;🇻🇳 <a href="./README.md">Tiếng Việt</a>
-  &nbsp;|&nbsp;
-  🇬🇧 <strong>English</strong>
-</p>
+<img src="https://deplaoapp.com/assets/icon-CuJ0M91u.png" alt="Deplao" width="120" />
 
----
+# Deplao
 
-> A multi-account Zalo, Facebook & Telegram desktop app with integrated CRM, ERP, POS, Workflow automation and AI Assistant - helping sales, customer care teams and marketing operate centrally on Zalo and Facebook in one single application.
+**Desktop app for managing multiple Zalo, Facebook & Telegram accounts**
+CRM · Marketing · ERP · POS · Workflow · AI Assistant — all in one unified workspace
 
-[![Version](https://img.shields.io/badge/version-26.8.2-22c55e)](#)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3b82f6)](#-runtime-requirements)
-[![Electron](https://img.shields.io/badge/Electron-41-47848f?logo=electron&logoColor=white)](#)
-[![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)](#)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](#)
-[![SQLite](https://img.shields.io/badge/SQLite-local--first-003b57?logo=sqlite&logoColor=white)](#)
-[![Vite](https://img.shields.io/badge/Vite-6-646cff?logo=vite&logoColor=white)](#)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)](#)
-[![License](https://img.shields.io/badge/license-MIT-22c55e)](#license)
-[![Support](https://img.shields.io/badge/support-GitHub_Issues-0ea5e9)](https://github.com/babyvibe/deplao-builder/issues)
+[🌐 Website](https://deplaoapp.com/) · [🇻🇳 Tiếng Việt](./README.md)
+
+![Version](https://img.shields.io/badge/version-26.8.2-22c55e)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Ubuntu-3b82f6)
+![Electron](https://img.shields.io/badge/Electron-41-47848f?logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)
+![License](https://img.shields.io/github/license/babyvibe/deplao-builder)
+![Stars](https://img.shields.io/github/stars/babyvibe/deplao-builder?style=social)
+![Forks](https://img.shields.io/github/forks/babyvibe/deplao-builder?style=social)
+
+</div>
 
 <p align="center">
   <a href="#-download">📥 Download</a> &nbsp;|&nbsp;
@@ -146,15 +144,17 @@ sudo dpkg -i Deplao_*_amd64.deb
 
 ## 🛠️ Tech Stack
 
-- **Core library:** zca-js - https://github.com/RFS-ADRENO/zca-js, fbchat-v2 (Facebook E2EE bridge Go)
+Deplao is built on the following core technologies:
+
+- **Core libraries:** zca-js & fbchat-v2
 - **AI Gateway:** 9router
 - **Languages:** TypeScript, JavaScript, SQL, HTML, CSS
 - **Desktop:** Electron, React, Vite
 - **UI:** Tailwind CSS, PostCSS, React Router
 - **Local storage:** SQLite via `better-sqlite3`
-- **State & UI:** Zustand, React Flow, Recharts, Quill
+- **State & UI specialized:** Zustand, React Flow, Recharts, Quill
 - **Backend services:** Node.js + Express
-- **Integrations & automation:** Axios, Google APIs / Sheets, node-cron, Discord.js, Telegram Bot API, OpenAI API, etc.
+- **Integrations & automation:** Axios, Google APIs / Google Sheets, node-cron, Discord.js, Telegram Bot API, OpenAI API, etc.
 
 ---
 
@@ -326,7 +326,7 @@ flowchart LR
 
 ## Installation
 
-<details>
+<details open>
 <summary>🛠️ Build from source</summary>
 
 ### Requirements
@@ -372,15 +372,15 @@ At a glance, Deplao is:
 
 ## ✨ Highlights
 
-- 👤 **Multi-account Zalo** - unlimited accounts, quick switching
+- 👤 **Multi-account Zalo, Facebook, Telegram Bot, Telegram User** - unlimited accounts, quick switching
 - 💬 **Unified inbox** - merged mode combines conversations from all accounts in one view
-- 👥 **CRM & Campaigns** - manage contacts, labels, internal notes, re-engage existing customers; scan hidden group members to find new leads
+- 👥 **CRM & Campaigns** - manage contacts, labels, internal notes, re-engage existing customers; scan hidden group members and non-joined groups to find new leads
 - ⚙️ **Workflow automation** - drag-and-drop Trigger → Node → Action, or use AI to build flows - runs 24/7 without code
 - 🤖 **AI Assistant** - reply suggestions, in-chat AI, auto-classify and respond to customers around the clock
 - 🔗 **External integrations** - POS, shipping, payments, Google Sheets, Telegram, Discord, Email, HTTP Request - usable in chat and workflow
 - 📈 **Reports & analytics** - track messages, contacts, labels, employees, campaigns, workflows, AI usage
 - 🗂️ **Internal ERP** - tasks, calendar, notes and team operations in the same system
-- 🧑‍💼 **Boss ↔ Employee workspace** - connect over **LAN or WAN** (Cloudflare Tunnel), granular permissions, per-employee performance tracking
+- 🧑‍💼 **Boss ↔ Employee workspace** - connect over **LAN or WAN**, granular permissions, per-employee performance tracking
 - 🔒 **Per-account proxy** - assign an independent HTTP/HTTPS/SOCKS5 proxy to each Zalo account before login
 - 🔐 **Local-first data** - all data stays on the user's machine
 
@@ -461,27 +461,30 @@ Screens are ordered by typical usage flow: dashboard → chat → CRM → workfl
 
 ## 🎯 Who is it for?
 
-- Online shops and sales teams closing deals via Zalo
+Deplao is designed for:
+
+- Online shops and sales teams closing deals via Zalo, Facebook, Telegram
+- Automating workflows, combining marketing to find new customers, and automating customer care
 - SMEs that need multiple staff handling the inbox simultaneously
 - Marketing agencies or freelancers managing multiple client accounts
-- Spas, clinics, education, F&B - any business that needs recurring customer care
+- Spas, clinics, education, F&B and any business that needs recurring customer care
 - Teams wanting to combine chat, CRM, workflow, AI and ERP in one desktop app
 
 ## 🧩 Core feature groups
 
 ### 1) Multi-account & unified inbox
-- Log in to multiple Zalo accounts via QR Code
+- Log in to multiple Zalo, Facebook, Telegram bot, Telegram user accounts
 - Visual account management dashboard
-- Merge accounts into a single unified inbox
+- Merge multiple accounts into a single unified inbox
 - Search by name, nickname, phone number
 - Quick filters: unread, unanswered, labels, conversation status
-- **Per-account proxy**: assign an independent HTTP/HTTPS/SOCKS5 proxy to each Zalo account before login - fully isolated IPs across accounts
+- Assign proxy to each Zalo account
 
 ### 2) Full-featured chat
 - Send text, images, video, files
 - Emoji, stickers, reply, mention members
 - Polls, group notes, reminders, contact cards
-- Quick messages - save templates and trigger by keyword
+- Quick messages to save templates and trigger by keyword
 - Unlimited message pinning, media and attachment management
 
 ### 3) CRM & customer care
@@ -502,6 +505,7 @@ Screens are ordered by typical usage flow: dashboard → chat → CRM → workfl
 ### 5) Sales integrations
 - POS: KiotViet, Haravan, Sapo, Nhanh.vn, Pancake POS
 - Shipping: GHN, GHTK
+- Payments: Sepay, Casso
 - AI Assistant with reply suggestions and in-chat Q&A (see section 7)
 - Easy to combine into end-to-end sales and customer care pipelines
 
@@ -512,11 +516,11 @@ Screens are ordered by typical usage flow: dashboard → chat → CRM → workfl
 - Track work performance per person and per time period
 
 ### 7) 🤖 AI Assistant
-- Smart reply suggestions in Zalo and Facebook conversations
+- Smart reply suggestions in conversations
 - Real-time Q&A with AI directly in the chat window
 - Create workflows using plain natural language commands - no drag-and-drop needed
 - Use AI action nodes in workflows to build 24/7 auto-reply chatbots
-- Multi-platform AI support: OpenAI, Claude, Gemini and 9Router (local AI gateway)
+- Multi-platform AI support: OpenAI, Claude, Gemini, Deepseek, Grok, and local AI gateways like 9Router, OpenRouter, etc.
 
 ## 🔒 Security & data
 
@@ -524,7 +528,7 @@ Deplao prioritizes a local-first architecture:
 
 - All messages, contacts, CRM data, settings and media are stored on the user's machine
 - Login via QR Code - no Zalo password stored; cookies are encrypted on-device
-- Users can move the storage directory to another drive at any time
+- Users can change the storage directory to another drive when needed
 - Ideal for teams that require strict internal data control
 
 ## 💻 Runtime requirements
@@ -540,10 +544,14 @@ Deplao prioritizes a local-first architecture:
 
 ## 🙏 Acknowledgements
 
-Deplao would like to thank the project:
-👉 https://github.com/RFS-ADRENO/zca-js
-👉 https://github.com/m008v/fbchat-v2
-Without the contributions and foundation from this project, Deplao would not have been possible.
+Deplao would like to thank the projects: zca-js & fbchat-v2.
+
+---
+
+## 📝 License
+
+This project is distributed under the **MIT License**.
+See the [LICENSE](LICENSE) file for details.
 
 ---
 
