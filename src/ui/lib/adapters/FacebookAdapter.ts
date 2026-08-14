@@ -24,8 +24,10 @@ export class FacebookAdapter extends BaseChannelAdapter {
     } catch { return undefined; }
   }
 
-  private typeChat(threadType?: number): 'user' | undefined {
-    return threadType === 0 ? 'user' : undefined;
+  private typeChat(threadType?: number): 'user' | null {
+    // 0 = 1:1 → 'user'; group (1) → null RÕ RÀNG (không undefined, tránh
+    // fallback auto-detect trong main đoán sai group thành 1:1)
+    return threadType === 0 ? 'user' : null;
   }
 
   async sendMessage(params: SendMessageParams): Promise<ActionResult> {

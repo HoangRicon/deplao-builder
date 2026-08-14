@@ -1358,6 +1358,49 @@ export default function ChatWindow() {
       return;
     }
 
+    // Facebook: fetch sender info qua profile HTML (group chat / 1-1 sender lạ)
+    if (acc && isFacebook(acc.channel)) {
+      for (const senderId of unknownSenders) {
+        const senderKey = `${activeAccountId}__${senderId}__${activeThreadId}`;
+        requestedMemberInfoRef.current.add(senderKey);
+        const load = async () => {
+          try {
+            const res = await ipc.fb?.getUserInfoFacebookHtml({ accountId: activeAccountId!, userId: senderId });
+            if (!res?.success || !res.name) return;
+            if (res.name === senderId || /^-?\d+$/.test(res.name)) return;
+            useChatStore.getState().updateContact(activeAccountId!, {
+              contact_id: senderId,
+              channel: 'facebook',
+              ...(res.name ? { display_name: res.name } : {}),
+              ...(res.avatarUrl ? { avatar_url: res.avatarUrl } : {}),
+            });
+            if (res.avatarUrl) {
+              ipc.fb?.refreshContactAvatar({ accountId: activeAccountId!, userId: senderId }).catch(() => {});
+            }
+            if (activeThreadId) {
+              const cache = useAppStore.getState().groupInfoCache?.[activeAccountId!]?.[activeThreadId];
+              if (cache?.members) {
+                const members = [...cache.members];
+                const idx = members.findIndex(m => m.userId === senderId);
+                if (idx >= 0) {
+                  members[idx] = { ...members[idx], ...(res.name ? { displayName: res.name } : {}), ...(res.avatarUrl ? { avatar: res.avatarUrl } : {}) };
+                } else {
+                  members.push({ userId: senderId, displayName: res.name, avatar: res.avatarUrl || '', role: 0 });
+                }
+                useAppStore.getState().setGroupInfo(activeAccountId!, activeThreadId, { ...cache, members, fetchedAt: Date.now() });
+              }
+            }
+            DataAccessor.updateContactProfile({
+              zaloId: activeAccountId!, contactId: senderId,
+              displayName: res.name, avatarUrl: res.avatarUrl || '', phone: '',
+            }).catch(() => {});
+          } catch {}
+        };
+        load();
+      }
+      return;
+    }
+
     // Zalo: fetch individual user info
     for (const senderId of unknownSenders) {
       const senderKey = `${activeAccountId}__${senderId}__${activeThreadId}`;

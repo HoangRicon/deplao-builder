@@ -390,9 +390,16 @@ export function registerFacebookIpc(): void {
       const info = await getUserInfoFacebookHtml(cookie, userId);
       if (info) {
         Logger.log(`[facebookIpc] fb:getUserInfoFacebookHtml: resolved ${userId} → name="${info.name}"`);
-        // Lưu vào DB nếu có tên
+        // Upsert vào DB: sender trong group chat thường chưa có row contacts
+        // → INSERT OR IGNORE trước rồi mới UPDATE (UNIQUE(owner_zalo_id, contact_id))
         if (info.name) {
-          DatabaseService.getInstance()['run']?.(
+          const db = DatabaseService.getInstance();
+          db['run']?.(
+            `INSERT OR IGNORE INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, channel)
+             VALUES (?, ?, ?, ?, 0, 'user', 'facebook')`,
+            [internalId, userId, info.name, info.avatarUrl || null]
+          );
+          db['run']?.(
             `UPDATE contacts SET display_name = ?, avatar_url = ? WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook'`,
             [info.name, info.avatarUrl || null, internalId, userId]
           );

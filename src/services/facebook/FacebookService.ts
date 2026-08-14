@@ -1062,17 +1062,22 @@ export class FacebookService {
   private _startE2EEHeartbeat(bridgeInstance: FacebookE2EEBridge, bridgeGen: number, fbId: string): void {
     this._clearE2EEHeartbeat();
     this._e2eeHeartbeatFailCount = 0;
+    // Grace period: sync đầu tiên (threads/messages/backfill) có thể mất 30-60s
+    // và làm bridge bận → bỏ qua 2 chu kỳ heartbeat đầu tiên.
+    const startedAt = Date.now();
+    const GRACE_MS = 90000;
     this._e2eeHeartbeatTimer = setInterval(async () => {
       // Chỉ check nếu bridge instance không thay đổi (tránh stale timer)
       if (this.e2eeBridge !== bridgeInstance || this.e2eeBridgeGen !== bridgeGen) {
         this._clearE2EEHeartbeat();
         return;
       }
+      if (Date.now() - startedAt < GRACE_MS) return;
       try {
-        // Gọi isConnected với timeout 5s - nếu bridge treo, call() sẽ timeout
+        // Gọi isConnected với timeout 10s - nếu bridge treo, call() sẽ timeout
         await Promise.race([
-          bridgeInstance.call('isConnected', {}, 5000),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('heartbeat_timeout')), 6000)),
+          bridgeInstance.call('isConnected', {}, 8000),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('heartbeat_timeout')), 10000)),
         ]);
         this._e2eeHeartbeatFailCount = 0; // Reset on success
       } catch {
@@ -1770,6 +1775,16 @@ export class FacebookService {
     return this.e2eeStatus === 'connected' && this.e2eeBridge?.isAlive() === true;
   }
 
+  /** Chờ E2EE bridge lên status connected (sync đầu tiên chậm). Không kill bridge. */
+  public async waitForE2EEConnected(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.isE2EEConnected()) return true;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return this.isE2EEConnected();
+  }
+
   /** Lấy trạng thái E2EE hiện tại */
   public getE2EEStatus(): FBE2EEStatus {
     return this.e2eeStatus;
@@ -1976,8 +1991,18 @@ export class FacebookService {
           // làm fallback khi DB lookup không trả về gì.
           const myFbId = this.getFacebookId();
           if (/^\d+$/.test(threadId) && threadId !== myFbId) {
-            is1on1 = true;
-            Logger.log(`[FacebookService:${this.accountId}] Auto-detected 1:1 from numeric threadId=${threadId} (not self)`);
+            // Group evidence: nếu thread đã có tin nhắn của người khác
+            // (sender != mình) → đây là group chat, không phải 1:1
+            const othersCount = DatabaseService.getInstance().queryOne?.(
+              `SELECT COUNT(*) AS c FROM messages WHERE thread_id = ? AND owner_zalo_id = ? AND channel = 'facebook' AND sender_id != ? AND sender_id != '' LIMIT 1`,
+              [threadId, myFbId, myFbId]
+            ) as { c?: number } | undefined;
+            if (!othersCount || !othersCount.c) {
+              is1on1 = true;
+              Logger.log(`[FacebookService:${this.accountId}] Auto-detected 1:1 from numeric threadId=${threadId} (not self)`);
+            } else {
+              Logger.log(`[FacebookService:${this.accountId}] Auto-detected GROUP from sender evidence threadId=${threadId}`);
+            }
           }
         }
       } catch {}
@@ -1995,16 +2020,15 @@ export class FacebookService {
 
     if (is1on1) {
       // ── PATH A: E2EE trước ────────────────────────────────────────────
-      // Nếu bridge chưa có E2EE session → retryE2EE trước
-      // BỎ QUA nếu thread đã biết non-E2EE
+      // Nếu bridge chưa có E2EE session → chờ status connected (sync đầu tiên
+      // có thể mất vài chục giây). KHÔNG kill + respawn - retryE2EE chỉ dùng
+      // khi bridge process đã chết hẳn.
       if (!this._nonE2EEThreads.has(threadId)) {
         let e2eeReady = this.isE2EEConnected();
         if (!e2eeReady && this.e2eeBridge?.isAlive()) {
-          try {
-            Logger.log(`[FacebookService:${this.accountId}] 1:1 send - E2EE not ready, retrying...`);
-            await this.retryE2EE();
-            e2eeReady = this.isE2EEConnected();
-          } catch {}
+          Logger.log(`[FacebookService:${this.accountId}] 1:1 send - E2EE not ready, waiting for connection...`);
+          await this.waitForE2EEConnected(15000);
+          e2eeReady = this.isE2EEConnected();
         }
 
         if (e2eeReady) {

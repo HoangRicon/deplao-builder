@@ -299,7 +299,13 @@ func (c *Client) handleTable(tbl *table.LSTable) {
 		})
 	}
 
-	// Handle upserted messages (sync/backfill / history) - flagged as backfill
+	// Handle upserted messages (sync/backfill / history) - flagged as backfill.
+	// Pacing: backfill batches can be large (thousands on first sync). Emitting
+	// them all at once floods stdout, blocks the pipe and makes the heartbeat
+	// (isConnected) unresponsive → TS watchdog kills + respawns the bridge.
+	// Emit in small batches with short sleeps so the client keeps up.
+	backfillBatchSize := 30
+	backfillSent := 0
 	for _, ups := range upsert {
 		if ups == nil {
 			continue
@@ -315,6 +321,10 @@ func (c *Client) handleTable(tbl *table.LSTable) {
 			m := c.convertWrappedMessage(msg)
 			m.IsBackfill = true
 			c.emitEvent(EventTypeMessage, m)
+			backfillSent++
+			if backfillSent%backfillBatchSize == 0 {
+				time.Sleep(15 * time.Millisecond)
+			}
 		}
 	}
 
