@@ -193,29 +193,49 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
         window.dispatchEvent(new CustomEvent('local-labels-changed', { detail: { zaloId: accountId } }));
       }
 
-      // 3. Assign Zalo labels if selected
+      // 3. Assign Zalo labels if selected — batch in chunks to avoid API limit
       if (tagTab === CHANNEL.ZALO && selectedZaloLabelIds.length > 0) {
         try {
           const acc = getActiveAccount();
           if (acc) {
-            const auth = buildZaloAuth(acc);
-            const freshRes = await ipc.zalo?.getLabels({ auth });
-            const freshLabels: LabelData[] = freshRes?.response?.labelData || zaloLabels;
-            const version: number = freshRes?.response?.version || 0;
-
+            const auth = buildZaloAuth(acc, accountId);
+            const BATCH_SIZE = 50;
             const contactIds = finalContacts.map(c => c.contactId);
-            const updated = freshLabels.map(label => {
-              if (!selectedZaloLabelIds.includes(label.id)) return label;
-              const existing = new Set(label.conversations || []);
-              contactIds.forEach(id => existing.add(id));
-              return { ...label, conversations: [...existing] };
-            });
 
-            const res = await ipc.zalo?.updateLabels({ auth, labelData: updated, version });
-            if (res?.success) {
+            // Process in batches to avoid Zalo API limit
+            for (let i = 0; i < contactIds.length; i += BATCH_SIZE) {
+              const batch = contactIds.slice(i, i + BATCH_SIZE);
+
+              // Fetch fresh labels each batch (version changes after each update)
+              const freshRes = await ipc.zalo?.getLabels({ auth });
+              const freshLabels: LabelData[] = freshRes?.response?.labelData || [];
+              const version: number = freshRes?.response?.version || 0;
+
+              if (freshLabels.length === 0) break;
+
+              const updated = freshLabels.map(label => {
+                if (!selectedZaloLabelIds.includes(label.id)) return label;
+                const existing = new Set(label.conversations || []);
+                batch.forEach(id => existing.add(id));
+                return { ...label, conversations: [...existing] };
+              });
+
+              const res = await ipc.zalo?.updateLabels({ auth, labelData: updated, version });
+              if (!res?.success) {
+                console.warn(`[AddToContacts] Zalo label batch ${i / BATCH_SIZE + 1} failed:`, res?.error);
+              }
+
+              // Small delay between batches to avoid rate limiting
+              if (i + BATCH_SIZE < contactIds.length) {
+                await new Promise(r => setTimeout(r, 300));
+              }
+            }
+
+            // Final sync: fetch and save latest labels
+            const finalRes = await ipc.zalo?.getLabels({ auth });
+            if (finalRes?.response?.labelData) {
               const { setLabels } = useAppStore.getState();
-              const finalLabels: LabelData[] = res.response?.labelData || updated;
-              setLabels(accountId, finalLabels);
+              setLabels(accountId, finalRes.response.labelData);
             }
           }
         } catch (err: any) {
