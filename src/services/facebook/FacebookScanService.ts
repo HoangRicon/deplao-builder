@@ -57,6 +57,20 @@ function fbCookieKey(accountId: string): string {
   return `fb_cookie_${accountId}`;
 }
 
+/**
+ * Chuyển post ID sang relay feedback ID cho CommentsListComponentsPaginationQuery.
+ * Facebook yêu cầu variables.id là relay ID dạng base64("feedback:<id>"):
+ * - ID số thuần (vd "2517468658747082") hoặc "postId_commentId" → base64("feedback:<id>")
+ * - ID đã là relay/base64 (chứa ":" hoặc không phải số) → giữ nguyên
+ */
+function toRelayFeedbackId(input: string): string {
+  const trimmed = (input || '').trim();
+  if (/^\d+(_\d+)?$/.test(trimmed)) {
+    return Buffer.from(`feedback:${trimmed}`).toString('base64');
+  }
+  return trimmed;
+}
+
 // ─── Interfaces ────────────────────────────────────────────────────────
 
 interface SiteData {
@@ -1728,6 +1742,11 @@ export class FacebookScanService {
       };
     }
 
+    // Facebook yêu cầu variables.id là relay feedback ID (base64("feedback:<id>"))
+    // cho cả post thường, group post, và post profile → convert trước khi gửi
+    const rawTargetID = feedbackTargetID;
+    const relayTargetID = toRelayFeedbackId(rawTargetID);
+
     const variables: any = {
       ...beforeParams,
       'feedLocation': 'POST_PERMALINK_DIALOG',
@@ -1735,7 +1754,7 @@ export class FacebookScanService {
       'scale': 1,
       'targetDialect': null,
       'useDefaultActor': false,
-      'id': feedbackTargetID,
+      'id': relayTargetID,
       '__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider': 'ORIGINAL',
       '__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider': false,
       '__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider': false,
@@ -1773,6 +1792,7 @@ export class FacebookScanService {
     let endCursor: string | null = null;
     let hasNextPage = false;
     const feedbackIds: any[] = [];
+    let parenItem: any = null;
 
     try {
       const data = result.data;
@@ -1784,7 +1804,7 @@ export class FacebookScanService {
         endCursor = pageInfo?.end_cursor || null;
         hasNextPage = pageInfo?.has_next_page || false;
       } else {
-        const parenItem = data?.data?.node?.comment_rendering_instance_for_feed_location?.comments
+        parenItem = data?.data?.node?.comment_rendering_instance_for_feed_location?.comments
           || data?.data?.node?.display_comments
           || data?.data?.feedback?.display_comments;
         edges = parenItem?.edges || [];
@@ -1816,6 +1836,12 @@ export class FacebookScanService {
       }
     } catch (e: any) {
       logError('scanPostComments parse error:', e.message);
+    }
+
+    // Fallback retry: query resolve node không phải Feedback (0 items, không có
+    // comments field) → thử 1 lần với ID gốc (edge case: relay id bị từ chối)
+    if (!level && items.length === 0 && !parenItem && retryCount < 1 && relayTargetID !== rawTargetID) {
+      return this.scanPostComments(accountId, rawTargetID, cursor, retryCount + 1, level, expansionToken);
     }
 
     return {
