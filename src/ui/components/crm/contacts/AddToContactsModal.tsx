@@ -246,6 +246,8 @@ export default function AddToContactsModal({ contacts, zaloId: overrideZaloId, o
       // Note: Workflow events are emitted by backend (databaseIpc.ts and zaloIpc.ts) to avoid duplicates
 
       showNotification(`Đã thêm ${finalContacts.length} liên hệ vào CRM`, 'success');
+      // Trigger contacts list refresh in CRMPage
+      window.dispatchEvent(new CustomEvent('crm-contacts-changed', { detail: { zaloId: accountId } }));
       onDone?.(finalContacts.length);
       onClose();
     } catch (err: any) {

@@ -202,6 +202,14 @@ export default function CRMPage() {
     loadContacts(); loadCampaigns(); loadGroupCount(); loadRequestCount();
   }, [activeAccountId]);
   useEffect(() => { loadContacts(); }, [store.searchText, store.filterContactTypes, store.sortBy, store.sortDir, store.page, store.pageSize]);
+
+  // Listen for crm-contacts-changed to refresh contacts list (e.g. after AddToContactsModal)
+  useEffect(() => {
+    const handler = () => { loadContacts(); };
+    window.addEventListener('crm-contacts-changed', handler);
+    return () => window.removeEventListener('crm-contacts-changed', handler);
+  }, [loadContacts]);
+
   useEffect(() => {
     if (activeAccountId && store.tab === 'requests') {
       clearCRMRequestUnseen(activeAccountId);
