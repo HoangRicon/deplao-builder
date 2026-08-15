@@ -541,15 +541,15 @@ export class FacebookService {
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    // ── Pre-fetch contact info for unknown users ──────────────────────────────
+      // ── Pre-fetch contact info for unknown users ──────────────────────────────
     // Trước khi save message, đảm bảo sender đã có display_name trong DB.
     // Tránh hiển thị UID thay vì tên người dùng trên client.
-    if (msg.userID && /^\d+$/.test(String(msg.userID)) && !isSelf) {
+    if (msg.userID && /^\d+$/.test(String(msg.userID)) && String(msg.userID) !== '0' && !isSelf) {
       try {
         const db = DatabaseService.getInstance();
         const existingSender = db.queryOne?.(
-          `SELECT display_name FROM contacts WHERE contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
-          [String(msg.userID)]
+          `SELECT display_name FROM contacts WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
+          [this.getFacebookId(), String(msg.userID)]
         ) as { display_name?: string } | undefined;
         if (!existingSender?.display_name) {
           // Chưa có tên → fetch trước khi save để broadcast có thông tin đầy đủ
@@ -654,8 +654,8 @@ export class FacebookService {
         // try to resolve from existing contacts table
         if (!threadName && contactType === 'user') {
           const existingContact = db.queryOne?.(
-            `SELECT display_name FROM contacts WHERE contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
-            [threadId]
+            `SELECT display_name FROM contacts WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
+            [fbIdForContacts, threadId]
           ) as { display_name?: string } | undefined;
           if (existingContact?.display_name) {
             threadName = existingContact.display_name;
@@ -680,7 +680,7 @@ export class FacebookService {
       }
 
       // Fire-and-forget: nếu là user 1-1 chưa có tên, fetch từ HTML (skip backfill - quá nhiều)
-      if (msg.userID && /^\d+$/.test(msg.userID) && !isBackfill) {
+      if (msg.userID && /^\d+$/.test(msg.userID) && String(msg.userID) !== '0' && !isBackfill) {
         this.checkAndFetchUserInfo(msg.userID);
       }
 
@@ -767,8 +767,8 @@ export class FacebookService {
         }
         if (fbThread?.type !== 'group') {
           const ct = dbInst.queryOne?.(
-            `SELECT display_name, avatar_url FROM contacts WHERE contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
-            [threadId]
+            `SELECT display_name, avatar_url FROM contacts WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
+            [this.getFacebookId(), threadId]
           ) as { display_name?: string; avatar_url?: string } | undefined;
           if (ct?.display_name) {
             broadcastContactName = ct.display_name;
@@ -1370,7 +1370,7 @@ export class FacebookService {
     const msg: FBMQTTMessage = {
       body: data.text || null,
       timestamp: String(data.timestampMs || Date.now()),
-      userID: data.senderId != null ? String(data.senderId) : '',
+      userID: data.senderId != null && String(data.senderId) !== '0' ? String(data.senderId) : '',
       messageID: data.id || '',
       replyToID: threadId,
       type: 'user', // E2EE luôn là 1:1
@@ -1620,9 +1620,10 @@ export class FacebookService {
     try {
       // Check DB trước: nếu đã có tên và avatar thì skip
       const db = DatabaseService.getInstance();
+      const fbIdForCheck = this.getFacebookId();
       const existing = db.queryOne?.(
-        `SELECT display_name, avatar_url FROM contacts WHERE contact_id = ? AND channel = 'facebook' LIMIT 1`,
-        [fbUserId]
+        `SELECT display_name, avatar_url FROM contacts WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook' LIMIT 1`,
+        [fbIdForCheck, fbUserId]
       ) as { display_name?: string; avatar_url?: string } | undefined;
       if (existing?.display_name && existing?.avatar_url) return;
 
@@ -2278,7 +2279,52 @@ export class FacebookService {
   public async getThreadList(): Promise<FBThread[]> {
     const session = this.requireSession();
     const result = await getThreadList(session, undefined, this.httpsAgent);
-    return parseThreadNodes(result.dataGet, this.accountId, session.FacebookID);
+    const threads = parseThreadNodes(result.dataGet, this.accountId, session.FacebookID);
+    this.persistThreadParticipants(threads);
+    return threads;
+  }
+
+  /**
+   * Persist tên + avatar của mọi participant (từ GraphQL thread list — nguồn sạch)
+   * vào contacts (owner = facebook_id numeric) và page_group_member cho group.
+   * Chỉ chấp nhận user ID dạng số (loại bỏ JID/agent không numeric).
+   */
+  private persistThreadParticipants(threads: FBThread[]): void {
+    try {
+      const db = DatabaseService.getInstance();
+      const fbId = this.getFacebookId();
+      if (!fbId || !threads.length) return;
+      for (const t of threads) {
+        const participants = t.participants || [];
+        for (const p of participants) {
+          if (!p.id || !/^\d+$/.test(p.id)) continue;
+          db.run?.(
+            `INSERT INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, unread_count, last_message, last_message_time, channel)
+             VALUES (?, ?, ?, ?, 0, 'user', 0, '', 0, 'facebook')
+             ON CONFLICT(owner_zalo_id, contact_id) DO UPDATE SET
+               display_name = COALESCE(NULLIF(excluded.display_name, ''), contacts.display_name),
+               avatar_url = COALESCE(excluded.avatar_url, contacts.avatar_url)`,
+            [fbId, String(p.id), p.name || '', p.avatar || '']
+          );
+        }
+        if (t.type === 'group' && participants.length > 0) {
+          db.saveGroupMembers(
+            fbId,
+            t.id,
+            participants
+              .filter((p) => /^\d+$/.test(p.id || ''))
+              .map((p) => ({
+                memberId: String(p.id),
+                displayName: p.name || '',
+                avatar: p.avatar || '',
+                role: 0,
+              }))
+          );
+        }
+      }
+    } catch (err: any) {
+      Logger.warn(`[FacebookService:${this.accountId}] persistThreadParticipants error: ${err.message}`);
+    }
   }
 
   /**

@@ -387,6 +387,9 @@ export function registerFacebookIpc(): void {
       const internalId = resolveInternalId(accountId);
       const cookie = secureGet(fbCookieKey(internalId));
       if (!cookie) return { success: false, error: 'Cookie not found' };
+      // Owner key phải là facebook_id (numeric) — đồng nhất với backend
+      const fbAcc = DatabaseService.getInstance().getFBAccount(internalId);
+      const fbId = fbAcc?.facebook_id || internalId;
       const info = await getUserInfoFacebookHtml(cookie, userId);
       if (info) {
         Logger.log(`[facebookIpc] fb:getUserInfoFacebookHtml: resolved ${userId} → name="${info.name}"`);
@@ -397,11 +400,11 @@ export function registerFacebookIpc(): void {
           db['run']?.(
             `INSERT OR IGNORE INTO contacts (owner_zalo_id, contact_id, display_name, avatar_url, is_friend, contact_type, channel)
              VALUES (?, ?, ?, ?, 0, 'user', 'facebook')`,
-            [internalId, userId, info.name, info.avatarUrl || null]
+            [fbId, userId, info.name, info.avatarUrl || null]
           );
           db['run']?.(
             `UPDATE contacts SET display_name = ?, avatar_url = ? WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook'`,
-            [info.name, info.avatarUrl || null, internalId, userId]
+            [info.name, info.avatarUrl || null, fbId, userId]
           );
         }
         return { success: true, name: info.name, avatarUrl: info.avatarUrl };

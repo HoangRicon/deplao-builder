@@ -6,7 +6,7 @@
 
 import axios from 'axios';
 import {
-  FBSessionData, FBThread, FBThreadDataResult, FBMessageRequest
+  FBSessionData, FBThread, FBThreadParticipant, FBThreadDataResult, FBMessageRequest
 } from './FacebookTypes';
 import { buildFormData, buildPostConfig, parseFBResponse, rateLimitDelay } from './FacebookUtils';
 import Logger from '../../utils/Logger';
@@ -148,6 +148,19 @@ export function parseThreadNodes(dataGet: string, accountId: string, fbUserId?: 
       }
       if (!threadName) threadName = 'Khng c tn';
 
+      // Expose participant info (id, name, avatar) để caller persist vào contacts
+      const participantsList: FBThreadParticipant[] = participants
+        .map((e: any) => {
+          const actor = e?.node?.messaging_actor;
+          if (!actor?.id) return null;
+          return {
+            id: String(actor.id),
+            name: actor?.name || '',
+            avatar: actor?.big_image_src?.uri || actor?.profile_picture?.uri || '',
+          } as FBThreadParticipant;
+        })
+        .filter((p: FBThreadParticipant | null): p is FBThreadParticipant => !!p);
+
       return {
         id: String(threadId || ''),
         account_id: accountId,
@@ -162,6 +175,7 @@ export function parseThreadNodes(dataGet: string, accountId: string, fbUserId?: 
         unread_count: 0,
         is_muted: false,
         metadata: avatarUrl ? { avatar_url: avatarUrl } : undefined,
+        participants: participantsList,
       } as FBThread;
     }).filter((t: FBThread) => t.id);
   } catch (err: any) {

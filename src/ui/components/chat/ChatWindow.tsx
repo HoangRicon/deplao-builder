@@ -1123,7 +1123,9 @@ export default function ChatWindow() {
     };
 
     // 1. Tải từ DB trước
-    DataAccessor.getGroupMembers({ zaloId: accountId, groupId })
+    const initAcc = useAccountStore.getState().accounts.find(a => a.zalo_id === accountId);
+    const fbOwnerId = isFacebook(initAcc?.channel) ? String((initAcc as any)?.facebook_id || accountId) : accountId;
+    DataAccessor.getGroupMembers({ zaloId: fbOwnerId, groupId })
       .then(async (res: any) => {
         if (res?.members?.length) {
           // DB có members → dùng luôn
@@ -1189,6 +1191,28 @@ export default function ChatWindow() {
                 DataAccessor.saveGroupMembers({ zaloId: accountId, groupId, members: rawMembers }).catch(() => {});
               }
               buildAndSetGroupInfo(rawMembers);
+              return;
+            }
+
+            if (isFacebook(acc.channel)) {
+              // FB: members được persist vào page_group_member (owner = facebook_id)
+              // bởi FacebookService khi refresh thread list
+              const fbOwnerId = String((acc as any).facebook_id || accountId);
+              const fbMembers = await DataAccessor.getGroupMembers({ zaloId: fbOwnerId, groupId });
+              if (fbMembers?.members?.length) {
+                const rawMembers = fbMembers.members
+                  .map((member: any) => ({
+                    userId: String(member.member_id || member.memberId || member.userId || ''),
+                    displayName: member.display_name || member.displayName || '',
+                    avatar: member.avatar || '',
+                    role: Number(member.role || 0),
+                  }))
+                  .filter((member: any) => member.userId);
+                if (rawMembers.length) {
+                  buildAndSetGroupInfo(rawMembers);
+                  return;
+                }
+              }
               return;
             }
 
@@ -1360,8 +1384,10 @@ export default function ChatWindow() {
 
     // Facebook: fetch sender info qua profile HTML (group chat / 1-1 sender lạ)
     if (acc && isFacebook(acc.channel)) {
+      const fbOwnerId = String((acc as any).facebook_id || activeAccountId);
       for (const senderId of unknownSenders) {
         const senderKey = `${activeAccountId}__${senderId}__${activeThreadId}`;
+        if (requestedMemberInfoRef.current.has(senderKey)) continue;
         requestedMemberInfoRef.current.add(senderKey);
         const load = async () => {
           try {
@@ -1391,10 +1417,14 @@ export default function ChatWindow() {
               }
             }
             DataAccessor.updateContactProfile({
-              zaloId: activeAccountId!, contactId: senderId,
+              zaloId: fbOwnerId, contactId: senderId,
               displayName: res.name, avatarUrl: res.avatarUrl || '', phone: '',
             }).catch(() => {});
           } catch {}
+          finally {
+            // Không failure-sticky: cho phép retry ở tin nhắn/lần sau
+            requestedMemberInfoRef.current.delete(senderKey);
+          }
         };
         load();
       }

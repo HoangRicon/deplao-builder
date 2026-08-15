@@ -7953,8 +7953,8 @@ class DatabaseService {
                 // try to resolve from existing contacts table
                 if (!threadName && contactType === 'user') {
                     const existing = this.queryOne<any>(
-                        `SELECT display_name FROM contacts WHERE contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
-                        [msg.thread_id]
+                        `SELECT display_name FROM contacts WHERE owner_zalo_id = ? AND contact_id = ? AND channel = 'facebook' AND display_name != '' LIMIT 1`,
+                        [ownerZaloId, msg.thread_id]
                     );
                     if (existing?.display_name) threadName = existing.display_name;
                 }

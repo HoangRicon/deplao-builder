@@ -73,6 +73,7 @@ export interface FBThread {
   is_muted: boolean;
   metadata?: Record<string, any>;
   synced_at?: number;
+  participants?: FBThreadParticipant[];
 }
 
 export interface FBThreadParticipant {

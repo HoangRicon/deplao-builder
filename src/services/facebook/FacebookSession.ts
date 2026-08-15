@@ -243,7 +243,47 @@ export async function getUserInfoFacebookHtml(cookie: string, userId: string, ht
       if (hrefMatch?.[1]) avatarUrl = decodeHtmlEntities(hrefMatch[1]);
     }
 
-    // Fallback avatar: collect all xlink:href → last
+    // Fallback avatar: profile_pic_uri (đáng tin hơn scontent cuối trang)
+    if (!avatarUrl) {
+      const picMatch = html.match(/"profile_pic_uri":"([^"]+)"/);
+      if (picMatch?.[1]) avatarUrl = picMatch[1].replace(/\\\//g, '/');
+    }
+
+    // ── Tên: og:title (title của profile = tên người đó) ──────────────
+    const ogTitleMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i)
+      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:title["'][^>]*>/i);
+    if (ogTitleMatch?.[1]) {
+      const raw = decodeHtmlEntities(ogTitleMatch[1]).trim();
+      // Strip suffix " | Facebook" / " - Facebook"
+      name = raw.replace(/\s*[|\-–]\s*Facebook\s*$/i, '').trim();
+    }
+
+    // Fallback tên: <h1> → <div role="button" tabindex="0"> text content
+    if (!name) {
+      const h1Match = html.match(/<h1[^>]*>[\s\S]*?<div[^>]*role="button"[^>]*>([^<&]+)/);
+      if (h1Match?.[1]) {
+        name = h1Match[1].trim();
+      }
+    }
+
+    // KHÔNG dùng fallback "NAME":"..." trong JSON — với profile page light
+    // (không render tên user), "NAME" đầu tiên luôn là ACTOR = tên chủ acc
+    // đang login → persist sẽ làm hỏng contact. Thay bằng mbasic <title>.
+
+    // ── Fallback: mbasic (HTML nhẹ, có <title> = tên user đúng) ────────
+    const mbasicInfo = await fetchMbasicInfo(cookie, userId, httpsAgent);
+    if (mbasicInfo) {
+      if (!name && mbasicInfo.name) name = mbasicInfo.name;
+      if (!avatarUrl && mbasicInfo.avatarUrl) avatarUrl = mbasicInfo.avatarUrl;
+    }
+
+    // ── Fallback CDN cho avatar nếu www + mbasic không có ────────
+    if (!avatarUrl) {
+      const cdnUrl = await tryFetchCdnRedirect(cookie, userId, httpsAgent);
+      if (cdnUrl) avatarUrl = cdnUrl;
+    }
+
+    // Fallback cuối: collect all xlink:href → last (chỉ dùng khi mọi cách trên fail)
     if (!avatarUrl) {
       const allXlink: string[] = [];
       const xlinkRe = /xlink:href="(https:\/\/[^"]*scontent[^"]+)"/g;
@@ -254,36 +294,13 @@ export async function getUserInfoFacebookHtml(cookie: string, userId: string, ht
       if (allXlink.length > 0) avatarUrl = decodeHtmlEntities(allXlink[allXlink.length - 1]);
     }
 
-    // Fallback avatar: profile_pic_uri
-    if (!avatarUrl) {
-      const picMatch = html.match(/"profile_pic_uri":"([^"]+)"/);
-      if (picMatch?.[1]) avatarUrl = picMatch[1].replace(/\\\//g, '/');
+    if (!name && !avatarUrl) return null;
+    // Guard: từ chối tên rác (login wall / placeholder / error page)
+    // để không persist tên sai vào contacts (tên đúng đến từ thread list GraphQL)
+    const junkNames = ['xem thêm', 'show more', 'error', 'lỗi', 'facebook', 'đăng nhập', 'login', 'trang chủ', 'home'];
+    if (name && (junkNames.includes(name.trim().toLowerCase()) || /^\d+$/.test(name.trim()))) {
+      name = '';
     }
-
-    // ── Tên: <h1> → <div role="button" tabindex="0"> text content ─────
-    const h1Match = html.match(/<h1[^>]*>[\s\S]*?<div[^>]*role="button"[^>]*>([^<&]+)/);
-    if (h1Match?.[1]) {
-      name = h1Match[1].trim();
-    }
-
-    // Fallback tên: "NAME":"..." trong JSON
-    if (!name) {
-      const nameMatch = html.match(/"NAME":"(.*?)"/);
-      if (nameMatch?.[1] && !nameMatch[1].match(/^\d+$/) && nameMatch[1].length < 100) {
-        name = decodeHtmlEntities(nameMatch[1]);
-      }
-    }
-
-    // ── Fallback CDN + mbasic cho avatar nếu www không có ────────
-    if (!avatarUrl) {
-      const cdnUrl = await tryFetchCdnRedirect(cookie, userId, httpsAgent);
-      if (cdnUrl) avatarUrl = cdnUrl;
-    }
-    if (!avatarUrl) {
-      const mbasicUrl = await tryFetchMbasic(cookie, userId, httpsAgent);
-      if (mbasicUrl) avatarUrl = mbasicUrl;
-    }
-
     if (!name && !avatarUrl) return null;
     return { name, avatarUrl: avatarUrl || '' };
   } catch (err: any) {
@@ -385,7 +402,7 @@ async function tryFetchWww(cookie: string, userId: string, httpsAgent?: any): Pr
   return null;
 }
 
-async function tryFetchMbasic(cookie: string, userId: string, httpsAgent?: any): Promise<string | null> {
+async function fetchMbasicInfo(cookie: string, userId: string, httpsAgent?: any): Promise<{ name: string; avatarUrl: string } | null> {
   try {
     const response = await axios.get(`https://mbasic.facebook.com/${userId}`, {
       headers: {
@@ -398,13 +415,29 @@ async function tryFetchMbasic(cookie: string, userId: string, httpsAgent?: any):
     });
     const html = response.data as string;
 
-    const imgMatch = html.match(/<img[^>]*src="([^"]*scontent[^"]+)"[^>]*>/);
-    if (imgMatch?.[1]) return decodeHtmlEntities(imgMatch[1]);
+    let name = '';
+    let avatarUrl = '';
 
-    const xlinkMatch = html.match(/xlink:href="(https:\/\/[^"]*scontent[^"]+)"/);
-    if (xlinkMatch?.[1]) return decodeHtmlEntities(xlinkMatch[1]);
+    // mbasic <title> = tên user (không phải chủ acc — đã verify)
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    if (titleMatch?.[1]) {
+      const raw = decodeHtmlEntities(titleMatch[1]).trim();
+      // Strip suffix " | Facebook" / " - Facebook" nếu có
+      name = raw.replace(/\s*[|\-–]\s*Facebook\s*$/i, '').trim();
+    }
+
+    const imgMatch = html.match(/<img[^>]*src="([^"]*scontent[^"]+)"[^>]*>/);
+    if (imgMatch?.[1]) avatarUrl = decodeHtmlEntities(imgMatch[1]);
+
+    if (!avatarUrl) {
+      const xlinkMatch = html.match(/xlink:href="(https:\/\/[^"]*scontent[^"]+)"/);
+      if (xlinkMatch?.[1]) avatarUrl = decodeHtmlEntities(xlinkMatch[1]);
+    }
+
+    if (!name && !avatarUrl) return null;
+    return { name, avatarUrl };
   } catch (err: any) {
-    Logger.debug(`[FacebookSession] tryFetchMbasic failed for ${userId}: ${err.message}`);
+    Logger.debug(`[FacebookSession] fetchMbasicInfo failed for ${userId}: ${err.message}`);
   }
   return null;
 }
