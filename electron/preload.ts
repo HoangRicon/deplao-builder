@@ -255,6 +255,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateCampaignStatus: (params: any) => ipcRenderer.invoke('crm:updateCampaignStatus', params),
     addCampaignContacts: (params: any) => ipcRenderer.invoke('crm:addCampaignContacts', params),
     getCampaignContacts: (params: any) => ipcRenderer.invoke('crm:getCampaignContacts', params),
+    deleteCampaignContacts: (params: any) => ipcRenderer.invoke('crm:deleteCampaignContacts', params),
+    deleteAllCampaignContacts: (params: any) => ipcRenderer.invoke('crm:deleteAllCampaignContacts', params),
     getSendLog: (params: any) => ipcRenderer.invoke('crm:getSendLog', params),
     getQueueStatus: (params: any) => ipcRenderer.invoke('crm:getQueueStatus', params),
     getCampaignStats: (params: any) => ipcRenderer.invoke('crm:getCampaignStats', params),
@@ -334,6 +336,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     download:      () => ipcRenderer.send('update:download'),
     install:       () => ipcRenderer.send('update:install'),
     rendererReady: () => ipcRenderer.send('update:renderer-ready'),
+  },
+
+  // ─── Nhật ký (Logger) ─────────────────────────────────────────────
+  logs: {
+    getBuffer: () => ipcRenderer.invoke('log:getBuffer'),
+    clear:     () => ipcRenderer.invoke('log:clear'),
   },
 
   // ─── Integration Hub ──────────────────────────────────────────────
@@ -445,6 +453,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startTunnel:         () => ipcRenderer.invoke('relay:startTunnel'),
     stopTunnel:          () => ipcRenderer.invoke('relay:stopTunnel'),
     getTunnelStatus:     () => ipcRenderer.invoke('relay:getTunnelStatus'),
+    getTunnelConfig:     () => ipcRenderer.invoke('relay:getTunnelConfig'),
+    setTunnelConfig:     (cfg: { provider?: string; authtoken?: string; domain?: string }) => ipcRenderer.invoke('relay:setTunnelConfig', cfg),
   },
 
   // ─── Facebook ─────────────────────────────────────────────────────
@@ -739,6 +749,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:openThread',
       'app:windowFocus',
       'app:drawBadge',
+      'log:entry',
       'crm:queueUpdate',
       'crm:queueStatus',
       'crm:campaignDone',

@@ -202,6 +202,14 @@ export default function CRMPage() {
     loadContacts(); loadCampaigns(); loadGroupCount(); loadRequestCount();
   }, [activeAccountId]);
   useEffect(() => { loadContacts(); }, [store.searchText, store.filterContactTypes, store.sortBy, store.sortDir, store.page, store.pageSize]);
+
+  // Listen for crm-contacts-changed to refresh contacts list (e.g. after AddToContactsModal)
+  useEffect(() => {
+    const handler = () => { loadContacts(); };
+    window.addEventListener('crm-contacts-changed', handler);
+    return () => window.removeEventListener('crm-contacts-changed', handler);
+  }, [loadContacts]);
+
   useEffect(() => {
     if (activeAccountId && store.tab === 'requests') {
       clearCRMRequestUnseen(activeAccountId);
@@ -277,8 +285,12 @@ export default function CRMPage() {
 
   // ── Campaign actions ─────────────────────────────────────────────────────
   const handleCreateCampaign = async (data: any) => {
-    if (!activeAccountId) return;
-    const res = await DataAccessor.saveCRMCampaign({ zaloId: activeAccountId, campaign: data });
+    // activeAccountId có thể còn null nếu bấm ngay lúc khởi động (account chưa auto-select xong).
+    // Fallback về account đầu tiên trong store để không mất thao tác tạo.
+    const acctId = activeAccountId || accounts?.[0]?.zalo_id;
+    if (!acctId) return;
+    if (!activeAccountId) setActiveAccount(acctId);
+    const res = await DataAccessor.saveCRMCampaign({ zaloId: acctId, campaign: data });
     if (res?.success) {
       await loadCampaigns();
       store.setActiveCampaign(res.id);

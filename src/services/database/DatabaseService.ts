@@ -812,7 +812,6 @@ class DatabaseService {
         try { this.exec(`ALTER TABLE crm_campaigns ADD COLUMN friend_request_message TEXT NOT NULL DEFAULT ''`); } catch {}
         try { this.exec(`ALTER TABLE crm_campaigns ADD COLUMN campaign_type TEXT NOT NULL DEFAULT 'message'`); } catch {}
         try { this.exec(`ALTER TABLE crm_campaigns ADD COLUMN mixed_config TEXT NOT NULL DEFAULT '{}'`); } catch {}
-        try { this.exec(`ALTER TABLE crm_campaign_contacts ADD COLUMN phone TEXT NOT NULL DEFAULT ''`); } catch {}
 
         this.exec(`
             CREATE TABLE IF NOT EXISTS crm_campaign_contacts (
@@ -832,6 +831,8 @@ class DatabaseService {
             CREATE INDEX IF NOT EXISTS idx_crm_cc_campaign ON crm_campaign_contacts(campaign_id, status);
             CREATE INDEX IF NOT EXISTS idx_crm_cc_owner ON crm_campaign_contacts(owner_zalo_id, status);
         `);
+        // Migration phải chạy SAU khi bảng đã tồn tại (DB mới sẽ throw nếu ALTER trước CREATE)
+        try { this.exec(`ALTER TABLE crm_campaign_contacts ADD COLUMN phone TEXT NOT NULL DEFAULT ''`); } catch {}
 
         this.exec(`
             CREATE TABLE IF NOT EXISTS crm_send_log (
@@ -5656,6 +5657,23 @@ class DatabaseService {
         try {
             return this.query<any>(`SELECT * FROM crm_campaign_contacts WHERE campaign_id=? ORDER BY id`, [campaignId]);
         } catch (err: any) { Logger.error(`[DB] getCampaignContacts: ${err.message}`); return []; }
+    }
+
+    public deleteCampaignContacts(campaignId: number, contactIds: string[]): void {
+        if (!this.initialized || !contactIds.length) return;
+        try {
+            const placeholders = contactIds.map(() => '?').join(',');
+            this.run(`DELETE FROM crm_campaign_contacts WHERE campaign_id=? AND contact_id IN (${placeholders})`, [campaignId, ...contactIds]);
+            this.save();
+        } catch (err: any) { Logger.error(`[DB] deleteCampaignContacts: ${err.message}`); }
+    }
+
+    public deleteAllCampaignContacts(campaignId: number): void {
+        if (!this.initialized) return;
+        try {
+            this.run(`DELETE FROM crm_campaign_contacts WHERE campaign_id=?`, [campaignId]);
+            this.save();
+        } catch (err: any) { Logger.error(`[DB] deleteAllCampaignContacts: ${err.message}`); }
     }
 
     public updateCampaignContactStatus(id: number, status: CRMContactStatus, error?: string): void {

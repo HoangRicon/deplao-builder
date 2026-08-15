@@ -874,6 +874,20 @@ export class DataAccessor {
     return window.electronAPI.crm.getCampaignContacts(params);
   }
 
+  static async deleteCampaignContacts(params: { campaignId: number; contactIds: string[] }) {
+    if (isEmployee()) {
+      return rest().post('/api/command/crm/campaigns/contacts/delete', params);
+    }
+    return window.electronAPI.crm.deleteCampaignContacts(params);
+  }
+
+  static async deleteAllCampaignContacts(params: { campaignId: number }) {
+    if (isEmployee()) {
+      return rest().post('/api/command/crm/campaigns/contacts/delete-all', params);
+    }
+    return window.electronAPI.crm.deleteAllCampaignContacts(params);
+  }
+
   static async getSendLog(params: { zaloId: string; opts?: any }) {
     if (isEmployee()) {
       const res = await rest().get('/api/query/crm/campaigns/send-log', params);

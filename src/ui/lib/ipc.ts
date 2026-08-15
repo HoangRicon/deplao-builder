@@ -242,6 +242,8 @@ declare global {
         updateCampaignStatus: (params: { campaignId: number; status: string }) => Promise<{ success: boolean }>;
         addCampaignContacts: (params: { zaloId: string; campaignId: number; contacts: any[] }) => Promise<{ success: boolean }>;
         getCampaignContacts: (params: { campaignId: number }) => Promise<{ success: boolean; contacts: any[] }>;
+        deleteCampaignContacts: (params: { campaignId: number; contactIds: string[] }) => Promise<{ success: boolean }>;
+        deleteAllCampaignContacts: (params: { campaignId: number }) => Promise<{ success: boolean }>;
         getSendLog: (params: { zaloId: string; opts?: any }) => Promise<{ success: boolean; logs: any[] }>;
         getQueueStatus: (params: { zaloId: string }) => Promise<{ success: boolean; status: any }>;
         getCampaignStats: (params: { zaloId: string; limit?: number }) => Promise<{ success: boolean; stats: any[] }>;
@@ -356,6 +358,10 @@ declare global {
       update: {
         download: () => void;
         install:  () => void;
+      };
+      logs: {
+        getBuffer: () => Promise<{ ts: number; level: string; msg: string }[]>;
+        clear:     () => Promise<boolean>;
       };
       workflow: {
         list: () => Promise<{ success: boolean; workflows: any[]; error?: string }>;
@@ -472,6 +478,8 @@ declare global {
         startTunnel: () => Promise<{ success: boolean; tunnelUrl?: string; error?: string }>;
         stopTunnel: () => Promise<{ success: boolean; error?: string }>;
         getTunnelStatus: () => Promise<{ success: boolean; active?: boolean; tunnelUrl?: string | null; error?: string }>;
+        getTunnelConfig: () => Promise<{ success: boolean; provider?: string; authtoken?: string; domain?: string; error?: string }>;
+        setTunnelConfig: (cfg: { provider?: string; authtoken?: string; domain?: string }) => Promise<{ success: boolean; error?: string }>;
       };
       // ─── Facebook ─────────────────────────────────────────────────────
       fb: {
@@ -793,6 +801,7 @@ export const ipc = {
   erp,
   lockScreen: window.electronAPI?.lockScreen,
   library: window.electronAPI?.library,
+  logs: window.electronAPI?.logs,
   on: window.electronAPI?.on,
   removeAllListeners: window.electronAPI?.removeAllListeners,
 };

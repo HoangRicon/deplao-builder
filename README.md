@@ -1,29 +1,25 @@
-﻿# Deplao
-*Website giới thiệu*:  https://deplaoapp.com/
+﻿<div align="center">
 
-<p>
-  <strong>🌐 Language:</strong>
-  &nbsp;🇻🇳 <strong>Tiếng Việt</strong>
-  &nbsp;|&nbsp;
-  🇬🇧 <a href="./README.en.md">English</a>
-</p>
+<img src="https://deplaoapp.com/assets/icon-CuJ0M91u.png" alt="Deplao" width="120" />
 
+# Deplao
 
----
+**Phần mềm desktop quản lý tài khoản Zalo, Facebook & Telegram đa tài khoản**
+Tích hợp CRM · MARKETING · ERP · POS · Workflow · Trợ lý AI - vận hành tập trung trong một app duy nhất
 
-> Phần mềm desktop quản lý Zalo, Facebook & Telegram cá nhân Đa tài khoản tích hợp CRM, ERP, POS, Workflow và AI Assistant giúp đội nhóm bán hàng, chăm sóc khách hàng và marketing trên Zalo và Facebook vận hành tập trung trong một ứng dụng duy nhất.
+[🌐 Website](https://deplaoapp.com/) · [🇬🇧 English](./README.en.md)
 
-[![Version](https://img.shields.io/badge/version-26.8.2-22c55e)](#)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-3b82f6)](#-runtime-requirements)
-[![Electron](https://img.shields.io/badge/Electron-41-47848f?logo=electron&logoColor=white)](#)
-[![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)](#)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](#)
-[![SQLite](https://img.shields.io/badge/SQLite-local--first-003b57?logo=sqlite&logoColor=white)](#)
-[![Vite](https://img.shields.io/badge/Vite-6-646cff?logo=vite&logoColor=white)](#)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)](#)
-[![License](https://img.shields.io/badge/license-MIT-22c55e)](#giấy-phép)
-[![Support](https://img.shields.io/badge/support-GitHub_Issues-0ea5e9)](https://github.com/babyvibe/deplao-builder/issues)
+![Version](https://img.shields.io/badge/version-26.8.3-22c55e)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Ubuntu-3b82f6)
+![Electron](https://img.shields.io/badge/Electron-41-47848f?logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)
+![License](https://img.shields.io/github/license/babyvibe/deplao-builder)
+![Stars](https://img.shields.io/github/stars/babyvibe/deplao-builder?style=social)
+![Forks](https://img.shields.io/github/forks/babyvibe/deplao-builder?style=social)
 
+</div>
 
 <p align="center">
   <a href="#-tải-xuống">📥 Tải xuống</a> &nbsp;|&nbsp;
@@ -43,41 +39,41 @@
 <tr>
 <td align="center" width="50%">
 
-<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-Setup-26.8.2.exe">
-<img src="https://img.shields.io/badge/🪟_Windows_10/11-v26.8.2-0078d4?style=for-the-badge&logo=windows&logoColor=white" alt="Download Windows" />
+<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-Setup-26.8.3.exe">
+<img src="https://img.shields.io/badge/🪟_Windows_10/11-v26.8.3-0078d4?style=for-the-badge&logo=windows&logoColor=white" alt="Download Windows" />
 </a>
 
-<big><strong>Deplao-Setup-26.8.2.exe</strong></big>
+<big><strong>Deplao-Setup-26.8.3.exe</strong></big>
 
 </td>
 <td align="center" width="50%">
 
-<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.2-arm64.dmg">
-<img src="https://img.shields.io/badge/🍎_macOS_M1+-v26.8.2-000000?style=for-the-badge&logo=apple&logoColor=white" alt="Download macOS Apple Silicon" />
+<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.3-arm64.dmg">
+<img src="https://img.shields.io/badge/🍎_macOS_M1+-v26.8.3-000000?style=for-the-badge&logo=apple&logoColor=white" alt="Download macOS Apple Silicon" />
 </a>
 
-<big><strong>Deplao-26.8.2-arm64.dmg</strong></big>
+<big><strong>Deplao-26.8.3-arm64.dmg</strong></big>
 
 </td>
 </tr>
 <tr>
 <td align="center" width="50%">
 
-<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.2.AppImage">
-<img src="https://img.shields.io/badge/🐧_Ubuntu_Linux-v26.8.2-e95420?style=for-the-badge&logo=ubuntu&logoColor=white" alt="Download Ubuntu" />
+<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.3.AppImage">
+<img src="https://img.shields.io/badge/🐧_Ubuntu_Linux-v26.8.3-e95420?style=for-the-badge&logo=ubuntu&logoColor=white" alt="Download Ubuntu" />
 </a>
 
-<big><strong>Deplao-26.8.2.AppImage</strong></big><br>
+<big><strong>Deplao-26.8.3.AppImage</strong></big><br>
 <big>chạy mọi distro - <code>chmod +x</code> là dùng được</big>
 
 </td>
 <td align="center" width="50%">
 
-<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.2.dmg">
-<img src="https://img.shields.io/badge/🍎_macOS_Intel-v26.8.2-555555?style=for-the-badge&logo=apple&logoColor=white" alt="Download macOS Intel" />
+<a href="https://github.com/babyvibe/deplao-builder/releases/latest/download/Deplao-26.8.3.dmg">
+<img src="https://img.shields.io/badge/🍎_macOS_Intel-v26.8.3-555555?style=for-the-badge&logo=apple&logoColor=white" alt="Download macOS Intel" />
 </a>
 
-<big><strong>Deplao-26.8.2.dmg</strong></big>
+<big><strong>Deplao-26.8.3.dmg</strong></big>
 
 </td>
 </tr>
@@ -326,7 +322,7 @@ flowchart TB
     EA --> MC
 ```
 
-> **Kiến trúc mới từ v26.8.2:** Employee gọi dữ liệu qua **REST API** (HTTP fetch → Boss) thay vì sync toàn bộ DB như trước. DataAccessor tự động routing: standalone/boss → IPC trực tiếp, employee → RestQueryService → Boss. Socket.IO thay SSE cho realtime event ổn định hơn. Media được cache local với cascade workspace → Boss → CDN. Employee vẫn có workspace riêng, nhưng không cần sync hàng GB khi vào app.
+> **Kiến trúc mới từ v26.8.3:** Employee gọi dữ liệu qua **REST API** (HTTP fetch → Boss) thay vì sync toàn bộ DB như trước. DataAccessor tự động routing: standalone/boss → IPC trực tiếp, employee → RestQueryService → Boss. Socket.IO thay SSE cho realtime event ổn định hơn. Media được cache local với cascade workspace → Boss → CDN. Employee vẫn có workspace riêng, nhưng không cần sync hàng GB khi vào app.
 
 ---
 
@@ -379,7 +375,7 @@ Nếu nhìn nhanh, có thể hiểu Deplao là:
 
 ## ✨ Điểm nổi bật
 
-- 👤 **Đa tài khoản Zalo** - đăng nhập không giới hạn tài khoản, chuyển đổi qua lại nhanh
+- 👤 **Đa tài khoản Zalo, Facebook, Telegram Bot, Telegram User** - đăng nhập không giới hạn tài khoản, chuyển đổi qua lại nhanh
 - 💬 **Hộp thư tập trung** - chế độ gộp tài khoản giúp gom và xử lý hội thoại từ nhiều tài khoản trong một giao diện duy nhất
 - 👥 **CRM & Campaign** - quản lý liên hệ, nhãn, ghi chú nội bộ, chăm sóc khách cũ. Quét thành viên nhóm ẩn, nhóm chưa tham gia để tìm khách mới.
 - ⚙️ **Workflow tự động hóa** - kéo-thả Trigger → Node → Action hoặc dùng AI tạo quy trình, chạy nền 24/7 không cần code
@@ -387,7 +383,7 @@ Nếu nhìn nhanh, có thể hiểu Deplao là:
 - 🔗 **Tích hợp ngoài** - POS, vận chuyển, thanh toán, Google Sheets, Telegram, Discord, Email, HTTP Request... Kết hợp sử dụng khi chat hoặc workflow
 - 📈 **Báo cáo & phân tích** - theo dõi tin nhắn, liên hệ, nhãn, nhân viên, chiến dịch, workflow, AI.
 - 🗂️ **ERP nội bộ** - task, lịch làm việc, notes và phối hợp vận hành nội bộ ngay trong cùng hệ thống
-- 🧑‍💼 **Workspace boss ↔ nhân viên** - kết nối qua **LAN hoặc WAN** (Cloudflare Tunnel), phân quyền chi tiết và theo dõi hiệu suất từng nhân viên
+- 🧑‍💼 **Workspace boss ↔ nhân viên** - kết nối qua **LAN hoặc WAN**, phân quyền chi tiết và theo dõi hiệu suất từng nhân viên
 - 🔒 **Proxy per-account** - gán Proxy riêng cho từng tài khoản Zalo trước khi đăng nhập
 - 🔐 **Dữ liệu lưu cục bộ** - ưu tiên quyền kiểm soát dữ liệu và bảo mật trên máy người dùng
 
@@ -471,76 +467,78 @@ Các màn hình dưới đây được sắp theo luồng sử dụng thực t�
 
 Deplao phù hợp cho:
 
-- shop online và đội ngũ chốt đơn qua Zalo
-- doanh nghiệp SME cần nhiều nhân viên xử lý inbox cùng lúc
-- marketing agency hoặc freelancer quản lý nhiều tài khoản khách hàng
-- spa, phòng khám, giáo dục, F&B và các mô hình cần chăm sóc khách hàng định kỳ
-- đội nhóm muốn kết hợp chat, CRM, workflow, AI và ERP trong một desktop app duy nhất
+- Shop online và đội ngũ chốt đơn qua Zalo, Facebook, Telegram
+- Tự động hoá quy trình làm việc, kết hợp marketing để tìm kiếm khách hàng mới, tự động hóa chăm sóc khách hàng
+- Doanh nghiệp SME cần nhiều nhân viên xử lý inbox cùng lúc
+- Marketing agency hoặc freelancer quản lý nhiều tài khoản khách hàng
+- Spa, phòng khám, giáo dục, F&B và các mô hình cần chăm sóc khách hàng định kỳ
+- Đội nhóm muốn kết hợp chat, CRM, workflow, AI và ERP trong một desktop app duy nhất
 
 ## 🧩 Các nhóm tính năng chính
 
 ### 1) Quản lý đa tài khoản & inbox tập trung
-- đăng nhập nhiều tài khoản Zalo bằng QR Code, Facebook bằng tài khoản hoặc cookie
-- dashboard quản lý tài khoản trực quan
-- gộp nhiều tài khoản vào một inbox hợp nhất
-- tìm kiếm theo tên, biệt danh, số điện thoại
-- lọc nhanh theo chưa đọc, chưa trả lời, nhãn và trạng thái hội thoại
-- **proxy per-account**: gán Proxy riêng cho từng tài khoản Zalo
+- Đăng nhập nhiều tài khoản Zalo, Facebook, Telegram bot, Telegram user
+- Dashboard quản lý tài khoản trực quan
+- Gộp nhiều tài khoản vào một inbox hợp nhất
+- Tìm kiếm theo tên, biệt danh, số điện thoại
+- Lọc nhanh theo chưa đọc, chưa trả lời, nhãn và trạng thái hội thoại
+- Gắn Proxy riêng cho từng tài khoản Zalo
 
 ### 2) Chat đầy đủ tính năng
-- gửi tin nhắn văn bản, ảnh, video, file
-- emoji, sticker, reply, tag thành viên
-- poll, ghi chú nhóm, nhắc nhở, gửi danh thiếp
-- quick messages để lưu mẫu tin và gọi nhanh bằng từ khóa
-- ghim tin nhắn không giới hạn, quản lý media và file đính kèm
+- Gửi tin nhắn văn bản, ảnh, video, file
+- Gửi emoji, sticker, reply, tag thành viên
+- Gửi poll, ghi chú nhóm, nhắc nhở, gửi danh thiếp
+- Gửi quick messages để lưu mẫu tin và gọi nhanh bằng từ khóa
+- Ghim tin nhắn không giới hạn, quản lý media và file đính kèm
 
 ### 3) CRM & chăm sóc khách hàng
-- đồng bộ bạn bè, thành viên nhóm và hồ sơ liên hệ
-- lưu số điện thoại, giới tính, ngày sinh, ghi chú nội bộ
-- tạo và quản lý nhãn Zalo hai chiều
-- lọc liên hệ theo nhiều tiêu chí để chăm sóc đúng nhóm khách hàng
-- tạo campaign gửi tin, kết bạn, mời vào nhóm với tiến độ realtime
+- Đồng bộ bạn bè, thành viên nhóm và hồ sơ liên hệ
+- Lưu số điện thoại, giới tính, ngày sinh, ghi chú nội bộ
+- Tạo và quản lý nhãn Zalo hai chiều
+- Lọc liên hệ theo nhiều tiêu chí để chăm sóc đúng nhóm khách hàng
+- Tạo campaign gửi tin, kết bạn, mời vào nhóm với tiến độ realtime
 
 ### 4) Workflow tự động hóa
-- workflow kéo-thả không cần code
-- tích hợp trợ lý AI tạo node và workflow bằng câu lệnh (xem mục 7)
-- hỗ trợ trigger từ tin nhắn, nhãn, react, lịch cron, sự kiện nhóm...
-- action gửi tin, gửi ảnh/file, tìm user, quản lý nhóm, mute, forward, recall...
-- tích hợp logic, Google Sheets, AI, Telegram, Discord, Email, Notion và HTTP Request
-- có lịch sử chạy để kiểm tra và debug dễ dàng
+- Workflow kéo-thả không cần code
+- Tích hợp trợ lý AI tạo node và workflow bằng câu lệnh (xem mục 7)
+- Hỗ trợ trigger từ tin nhắn, nhãn, react, lịch cron, sự kiện nhóm...
+- Action gửi tin, gửi ảnh/file, tìm user, quản lý nhóm, mute, forward, recall...
+- Tích hợp logic, Google Sheets, AI, Telegram, Discord, Email, Notion và HTTP Request
+- Có lịch sử chạy để kiểm tra và debug dễ dàng
 
 ### 5) Tích hợp phục vụ bán hàng
 - POS: KiotViet, Haravan, Sapo, Nhanh.vn, Pancake POS
-- vận chuyển: GHN, GHTK
+- Vận chuyển: GHN, GHTK
+- Thanh toán: Sepay, Casso
 - AI Assistant gợi ý trả lời, hỏi đáp trực tiếp trong hội thoại (xem mục 7)
-- dễ kết hợp thành quy trình bán hàng và chăm sóc khách hàng khép kín
+- Dễ kết hợp thành quy trình bán hàng và chăm sóc khách hàng khép kín
 
 ### 6) Báo cáo, ERP và nhân viên
-- báo cáo tin nhắn, liên hệ, chiến dịch, workflow, AI, nhân viên
+- Báo cáo tin nhắn, liên hệ, chiến dịch, workflow, AI, nhân viên
 - ERP nội bộ gồm Task, Calendar, Notes
-- mô hình boss ↔ nhân viên và phân quyền module
-- hỗ trợ theo dõi hiệu suất làm việc theo từng người và từng giai đoạn
+- Mô hình boss ↔ nhân viên và phân quyền module
+- Hỗ trợ theo dõi hiệu suất làm việc theo từng người và từng giai đoạn
 
 ### 7) 🤖 Trợ lý AI (AI Assistant)
-- gợi ý trả lời thông minh trong hội thoại Zalo và Facebook
-- hỏi đáp trực tiếp với AI ngay trong khung chat
-- tạo workflow tự động bằng câu lệnh tiếng Việt mà không cần kéo-thả
-- dùng node AI trong workflow để xây dựng chatbot trả lời tự động 24/7
-- hỗ trợ đa nền tảng AI: OpenAI, Claude, Gemini và 9router (AI gateway local)
+- Gợi ý trả lời thông minh trong hội thoại
+- Hỏi đáp trực tiếp với AI ngay trong khung chat
+- Tạo workflow tự động bằng câu lệnh tiếng Việt mà không cần kéo-thả
+- Dùng node AI trong workflow để xây dựng chatbot trả lời tự động 24/7
+- Hỗ trợ đa nền tảng AI: OpenAI, Claude, Gemini, Deepseek, Grok,... và các AI gateway local như 9Router, OpenRouter, v.v.
 
 ## 🔒 Bảo mật & dữ liệu
 
 Deplao ưu tiên kiến trúc chạy cục bộ trên máy người dùng:
 
-- tất cả dữ liệu tin nhắn, danh bạ, CRM, cài đặt và media được lưu trên máy
-- đăng nhập bằng QR Code, không yêu cầu lưu mật khẩu Zalo, Cookie được mã hóa lưu trên máy
-- người dùng có thể đổi thư mục lưu trữ dữ liệu sang ổ đĩa khác khi cần
-- phù hợp với đội nhóm muốn kiểm soát dữ liệu nội bộ chặt chẽ hơn
+- Tất cả dữ liệu tin nhắn, danh bạ, CRM, cài đặt và media được lưu trên máy
+- Đăng nhập bằng QR Code, không yêu cầu lưu mật khẩu Zalo, Cookie được mã hóa lưu trên máy
+- Người dùng có thể đổi thư mục lưu trữ dữ liệu sang ổ đĩa khác khi cần
+- Phù hợp với đội nhóm muốn kiểm soát dữ liệu nội bộ chặt chẽ hơn
 
 ## 💻 Yêu cầu vận hành
 
-- kết nối Internet 24/7 ổn định để đồng bộ hội thoại và automation
-- nên để app hoạt động liên tục nếu dùng workflow hoặc vận hành đội nhóm
+- Kết nối Internet 24/7 ổn định để đồng bộ hội thoại và automation
+- Nên để app hoạt động liên tục nếu dùng workflow hoặc vận hành đội nhóm
 
 
 ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -551,10 +549,7 @@ Deplao ưu tiên kiến trúc chạy cục bộ trên máy người dùng:
 
 ## 🙏 Lời cảm ơn
 
-Deplao xin gửi lời cảm ơn đến dự án:
-👉 https://github.com/RFS-ADRENO/zca-js
-👉 https://github.com/m008v/fbchat-v2
-Nhờ những đóng góp và nền tảng từ dự án này 💙
+Deplao xin gửi lời cảm ơn đến dự án: zca-js & fbchat-v2.
 
 ---
 

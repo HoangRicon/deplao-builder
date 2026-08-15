@@ -15,6 +15,49 @@ interface VersionEntry {
 // ─── Changelog data - thêm entry mới vào ĐẦU mảng khi có bản cập nhật ────────
 const CHANGELOG: VersionEntry[] = [
   {
+    version: '26.8.3',
+    date: '08/2026',
+    type: 'minor',
+    highlights: [
+      '📊 CRM nâng cấp — Xuất danh sách thành viên CSV, quản lý liên hệ chiến dịch, ưu tiên tìm kiếm theo từ khóa',
+      '🔍 Tìm kiếm tin nhắn nhanh — Gõ /1 ưu tiên mẫu có từ khóa /1 trước nội dung',
+      '⚡ Premium sync — Tự động dùng API quét nhóm khi tài khoản có Premium',
+      '👥 Thành viên nhóm — Luôn gọi getUserInfo lấy tên cho thành viên chưa có tên',
+    ],
+    changes: [
+      {
+        category: 'new',
+        items: [
+          'Nút "Xuất danh sách" thành viên nhóm — Export CSV với STT, Tên, UID, SĐT, Vai trò',
+          'Nút "Xuất danh sách" liên hệ chiến dịch — Export CSV với STT, Tên, UID, SĐT, Trạng thái, Thời gian gửi',
+          'Nút xóa liên hệ khỏi chiến dịch — Xóa từng liên hệ hoặc xóa tất cả (chỉ khi draft/tạm dừng)',
+          'Hook usePremiumMemberSync — Tự động dùng scan API khi tài khoản Premium, fallback syncZaloGroups khi không Premium',
+          'Event crm-contacts-changed — Tự động làm mới danh sách liên hệ sau khi thêm từ nhóm',
+        ],
+      },
+      {
+        category: 'improved',
+        items: [
+          'Tìm kiếm tin nhắn nhanh — Ưu tiên sắp xếp theo keyword trước nội dung (gõ /1 hiện /1 trước)',
+          'Xuất CSV — Dùng format ="..." cho UID và SĐT dài để Excel không chuyển sang scientific notation',
+          'Thông báo sau khi xuất CSV — Hiển thị toast thành công với số lượng liên hệ đã xuất',
+          'Bottom action bar nhóm — Luôn hiển thị 2 nút "Thêm vào chiến dịch" / "Thêm vào liên hệ", disable khi chưa chọn',
+          'getUserInfo fallback — Luôn gọi cho thành viên chưa có tên, bỏ ngưỡng 50%',
+        ],
+      },
+      {
+        category: 'fixed',
+        items: [
+          'Sửa lỗi file media tên kết thúc bằng dấu chấm — Windows không cho xóa/update file "filename."',
+          'Sửa lỗi gắn nhãn Zalo hàng loạt — Chia batch 50 liên hệ mỗi lần để tránh API limit',
+          'Sửa lỗi danh sách liên hệ chiến dịch không hiển thị ngay sau khi thêm SĐT',
+          'Sửa lỗi danh sách CRM không refresh sau khi thêm liên hệ từ nhóm',
+          'Sửa lỗi useRef temporal dead zone trong CRMPage',
+        ],
+      },
+    ],
+  },
+  {
     version: '26.8.2',
     date: '08/2026',
     type: 'minor',

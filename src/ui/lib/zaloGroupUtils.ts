@@ -160,19 +160,21 @@ async function _fetchGroupMembersComplete(opts: _EnrichOpts): Promise<void> {
     } catch (err) {
       console.warn('[zaloGroupUtils] getGroupMembersInfo error:', err);
     }
-
-    if (coveredByStep1.size >= membersWithoutNames.length * 0.5) {
-      console.log(`[zaloGroupUtils] Group ${groupId}: step1 sufficient (${coveredByStep1.size}/${membersWithoutNames.length}) → skip getUserInfo`);
-      onProgress?.(memberIds.length, memberIds.length);
-      return;
-    }
-    console.log(`[zaloGroupUtils] Group ${groupId}: step1 insufficient → getUserInfo fallback`);
   }
 
+  // Always use getUserInfo for remaining unnamed members
+  const remainingUnnamed = membersWithoutNames.filter(id => !coveredByStep1.has(id));
+  if (remainingUnnamed.length === 0) {
+    console.log(`[zaloGroupUtils] Group ${groupId}: all unnamed members covered → skip getUserInfo`);
+    onProgress?.(memberIds.length, memberIds.length);
+    return;
+  }
+  console.log(`[zaloGroupUtils] Group ${groupId}: ${remainingUnnamed.length} members still unnamed → getUserInfo fallback`);
+
   const BATCH = batchSize;
-  for (let j = 0; j < memberIds.length; j += BATCH) {
+  for (let j = 0; j < remainingUnnamed.length; j += BATCH) {
     if (stopRef?.current) break;
-    const batch = memberIds.slice(j, j + BATCH);
+    const batch = remainingUnnamed.slice(j, j + BATCH);
     try {
       const uRes = await ipc.zalo?.getUserInfo({ auth, userId: batch });
       if (uRes?.success && uRes.response) {
@@ -183,9 +185,7 @@ async function _fetchGroupMembersComplete(opts: _EnrichOpts): Promise<void> {
           const rawProfile = changedProfiles[memberId] ?? changedProfiles[`${memberId}_0`] ?? null;
           if (!rawProfile) continue;
           const { displayName, avatar, phone, gender, birthday } = extractUserProfile(rawProfile);
-          if (!coveredByStep1.has(memberId) && !existingNameSet.has(memberId)) {
-            memberUpdates.push({ memberId, displayName, avatar, role: roleMap[memberId] ?? 0 });
-          }
+          memberUpdates.push({ memberId, displayName, avatar, role: roleMap[memberId] ?? 0 });
           // Always save profile with gender/birthday/phone when available
           contactSaves.push(
             DataAccessor.updateContactProfile({
@@ -203,8 +203,8 @@ async function _fetchGroupMembersComplete(opts: _EnrichOpts): Promise<void> {
     } catch (err) {
       console.warn('[zaloGroupUtils] getUserInfo batch error:', err);
     }
-    onProgress?.(Math.min(j + BATCH, memberIds.length), memberIds.length);
-    if (!stopRef?.current && j + BATCH < memberIds.length) {
+    onProgress?.(Math.min(j + BATCH, remainingUnnamed.length), remainingUnnamed.length);
+    if (!stopRef?.current && j + BATCH < remainingUnnamed.length) {
       await new Promise(r => setTimeout(r, 200));
     }
   }
