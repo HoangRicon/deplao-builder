@@ -87,6 +87,37 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
   const accountChannel = resolveAccountChannel(acc);
   const isFacebookAcc = isFacebook(accountChannel);
   const isZaloAcc = isZalo(accountChannel);
+  const [retryingE2EE, setRetryingE2EE] = useState(false);
+  const e2eeStatus = useAccountStore((s) => s.accounts.find((a) => a.zalo_id === acc.zalo_id)?.e2eeStatus);
+
+  // Fetch E2EE status on mount (Facebook only)
+  useEffect(() => {
+    if (!isFacebookAcc) return;
+    ipc.fb?.getE2EEStatus({ accountId: acc.zalo_id }).then((res: any) => {
+      if (res?.success && res.status) {
+        useAccountStore.getState().setE2EEStatus(acc.zalo_id, res.status);
+      }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFacebookAcc]);
+
+  const handleRetryE2EE = async () => {
+    if (retryingE2EE) return;
+    setRetryingE2EE(true);
+    try {
+      const res = await ipc.fb?.retryE2EE({ accountId: acc.zalo_id });
+      if (res?.success) {
+        showNotification('Đang đồng bộ lại E2EE...', 'info');
+        useAccountStore.getState().setE2EEStatus(acc.zalo_id, 'connecting');
+      } else {
+        showNotification(res?.error || 'Đồng bộ E2EE thất bại', 'error');
+      }
+    } catch (err: any) {
+      showNotification('Lỗi đồng bộ E2EE: ' + err.message, 'error');
+    } finally {
+      setRetryingE2EE(false);
+    }
+  };
 
   // Close menu on outside click
   useEffect(() => {
@@ -462,6 +493,41 @@ export default function AccountCard({ account: acc, onReconnect, employeeChatOnl
         </div>
         )}
       </div>
+
+      {/* E2EE sync status (Facebook) */}
+      {isFacebookAcc && (
+        <div className="flex items-center justify-between gap-2 px-0.5 pb-1">
+          <span
+            className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full border ${
+              e2eeStatus === 'connected'
+                ? 'bg-green-900/40 text-green-400 border-green-700/50'
+                : e2eeStatus === 'connecting'
+                  ? 'bg-yellow-900/40 text-yellow-400 border-yellow-700/50'
+                  : e2eeStatus === 'error'
+                    ? 'bg-red-900/40 text-red-400 border-red-700/50'
+                    : 'bg-gray-700/50 text-gray-400 border-gray-600/50'
+            }`}
+            title="Tin nhắn E2EE đồng bộ tự động qua thiết bị đã lưu — không cần mã PIN"
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${e2eeStatus === 'connected' ? 'bg-green-400' : e2eeStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' : e2eeStatus === 'error' ? 'bg-red-400 animate-pulse' : 'bg-gray-500'}`} />
+            {e2eeStatus === 'connected' ? 'E2EE đã kết nối' : e2eeStatus === 'connecting' ? 'Đang đồng bộ E2EE…' : e2eeStatus === 'error' ? 'E2EE lỗi' : 'E2EE chưa kết nối'}
+          </span>
+          <button
+            onClick={handleRetryE2EE}
+            disabled={retryingE2EE}
+            title="Đồng bộ lại tin nhắn E2EE"
+            className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50"
+          >
+            {retryingE2EE ? <Spinner size={3} /> : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+              </svg>
+            )}
+            Đồng bộ lại
+          </button>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex flex-col gap-2">

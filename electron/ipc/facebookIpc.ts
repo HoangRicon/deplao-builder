@@ -1278,6 +1278,24 @@ export function registerFacebookIpc(): void {
   });
 
   /**
+   * Retry E2EE bridge (restart bridge, không đụng MQTT) — nút "Đồng bộ lại"
+   */
+  ipcMain.handle('fb:retryE2EE', async (_event, params: {
+    accountId: string;
+  }) => {
+    try {
+      const internalId = resolveInternalId(params.accountId);
+      const service = FacebookConnectionManager.get(internalId);
+      if (!service) return { success: false, error: 'Tài khoản chưa kết nối. Vui lòng kết nối lại Facebook.' };
+      await service.retryE2EE();
+      return { success: true };
+    } catch (err: any) {
+      Logger.error(`[facebookIpc] fb:retryE2EE error: ${err.message}`);
+      return { success: false, error: err.message };
+    }
+  });
+
+  /**
    * Gửi typing indicator (C6)
    */
   ipcMain.handle('fb:sendTyping', async (_event, params: {

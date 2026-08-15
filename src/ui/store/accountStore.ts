@@ -18,6 +18,7 @@ export interface AccountInfo {
   isOnline?: boolean;
   isConnected?: boolean;
   listenerActive?: boolean;
+  e2eeStatus?: string;
   channel?: Channel;
   facebook_id?: string;
   proxy_id?: number | null;
@@ -32,6 +33,7 @@ interface AccountStore {
   removeAccount: (zaloId: string) => void;
   updateAccountStatus: (zaloId: string, isOnline: boolean, isConnected: boolean) => void;
   updateListenerActive: (zaloId: string, active: boolean) => void;
+  setE2EEStatus: (zaloId: string, status: string) => void;
   updateAccount: (zaloId: string, fields: Partial<AccountInfo>) => void;
   setActiveAccount: (zaloId: string | null) => void;
   getActiveAccount: () => AccountInfo | undefined;
@@ -94,6 +96,13 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
     set((state) => ({
       accounts: state.accounts.map((a) =>
         a.zalo_id === zaloId ? { ...a, listenerActive: active } : a
+      ),
+    })),
+
+  setE2EEStatus: (zaloId, status) =>
+    set((state) => ({
+      accounts: state.accounts.map((a) =>
+        a.zalo_id === zaloId ? { ...a, e2eeStatus: status } : a
       ),
     })),
 

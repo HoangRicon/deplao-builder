@@ -505,6 +505,8 @@ declare global {
         editMessage:          (params: { accountId: string; messageId: string; text: string }) => Promise<{ success: boolean; error?: string }>;
         createPoll:           (params: { accountId: string; threadId: string; question: string; options: string[] }) => Promise<{ success: boolean; pollId?: string; error?: string }>;
         getUserInfoFacebookHtml: (params: { accountId: string; userId: string }) => Promise<{ success: boolean; name?: string; avatarUrl?: string; error?: string }>;
+        getE2EEStatus:       (params: { accountId: string }) => Promise<{ success: boolean; status?: string; connected?: boolean; available?: boolean; error?: string }>;
+        retryE2EE:           (params: { accountId: string }) => Promise<{ success: boolean; error?: string }>;
         // ─── Scan Data ────────────────────────────────────────────────
         scanGroupMembers:     (params: { accountId: string; groupId: string; cursor?: string | null }) => Promise<{ success: boolean; items: any[]; pageInfo: { endCursor: string | null; hasNextPage: boolean }; error?: string }>;
         scanGroupKeyword:     (params: { accountId: string; keyword: string; cursor?: string | null; filters?: string[]; bsid?: string; tsid?: string }) => Promise<{ success: boolean; items: any[]; pageInfo: { endCursor: string | null; hasNextPage: boolean }; error?: string; _nextBsid?: string; _nextTsid?: string }>;

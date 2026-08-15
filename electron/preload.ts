@@ -478,6 +478,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     editMessage:           (params: any) => ipcRenderer.invoke('fb:editMessage', params),
     createPoll:            (params: any) => ipcRenderer.invoke('fb:createPoll', params),
     getUserInfoFacebookHtml: (params: { accountId: string; userId: string }) => ipcRenderer.invoke('fb:getUserInfoFacebookHtml', params),
+    getE2EEStatus:       (params: { accountId: string }) => ipcRenderer.invoke('fb:getE2EEStatus', params),
+    retryE2EE:           (params: { accountId: string }) => ipcRenderer.invoke('fb:retryE2EE', params),
     // ─── Scan Data ────────────────────────────────────────────────
     scanGroupMembers:     (params: { accountId: string; groupId: string; cursor?: string | null }) => ipcRenderer.invoke('fb:scanGroupMembers', params),
     scanGroupKeyword:     (params: { accountId: string; keyword: string; cursor?: string | null; filters?: string[]; bsid?: string; tsid?: string }) => ipcRenderer.invoke('fb:scanGroupKeyword', params),
@@ -769,6 +771,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'fb:onSeen',
       'fb:onReadReceipt',
       'fb:onContactUpdate',
+      'fb:onE2EEStatus',
       // ─── ERP events ──────────────────────────────────────────────────
       'erp:event:taskCreated',
       'erp:event:taskUpdated',

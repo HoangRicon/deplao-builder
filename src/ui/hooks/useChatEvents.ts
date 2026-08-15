@@ -509,8 +509,10 @@ export function useChatEvents(): void {
       status: string;
     }) => {
       if (!data?.fbAccountId) return;
-      const isConnected = data.status === 'connected';
-      if (isConnected) {
+      const acc = useAccountStore.getState().accounts.find((a: any) => a.zalo_id === data.fbAccountId || a.facebook_id === data.fbAccountId);
+      if (!acc) return;
+      useAccountStore.getState().setE2EEStatus(acc.zalo_id, data.status);
+      if (data.status === 'connected') {
         console.log(`[useChatEvents] E2EE connected for ${data.fbAccountId}`);
       } else if (data.status === 'error') {
         console.warn(`[useChatEvents] E2EE error for ${data.fbAccountId}`);
