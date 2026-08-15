@@ -781,6 +781,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'fb:onTyping',
       'fb:onSeen',
       'fb:onReadReceipt',
+      'fb:onDelivered',
       'fb:onContactUpdate',
       'fb:onE2EEStatus',
       // ─── ERP events ──────────────────────────────────────────────────

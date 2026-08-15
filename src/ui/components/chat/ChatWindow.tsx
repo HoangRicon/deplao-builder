@@ -11,7 +11,7 @@ import ChatHistoryList from './ChatHistoryList';
 import SharedMessageContent from './SharedMessageContent';
 import * as channelIpc from '../../lib/channelIpc';
 import { getCapability, type Channel } from '@/../configs/channelConfig';
-import { CHANNEL, isNonZalo, isZalo, isFacebook, isTelegram as isTelegramCh, isTelegramForumGeneral } from '@/lib/channelHelper';
+import { CHANNEL, isNonZalo, isZalo, isFacebook, isTelegram as isTelegramCh, isTelegramForumGeneral, getFriendlyUserName } from '@/lib/channelHelper';
 import { ManagePanel } from './GroupInfoPanel';
 import { UserProfilePopup } from '../common/UserProfilePopup';
 import { RecalledBubble, BankCardBubble } from './MessageBubbles';
@@ -1277,7 +1277,10 @@ export default function ChatWindow() {
     const isGroup = threadContact?.contact_type === 'group'
       || String(threadContact?.contact_type) === '1'
       || msgs.some(message => Number(message.thread_type) === 1);
-    if (!isGroup) return;
+    // 1-1 FB cũng cần enrich khi contact chưa có tên (tránh hiển thị UID)
+    const accForCheck = useAccountStore.getState().accounts.find(a => a.zalo_id === activeAccountId);
+    const fbOneToOneNeedsEnrich = !isGroup && !!accForCheck && isFacebook(accForCheck.channel) && !threadContact?.display_name;
+    if (!isGroup && !fbOneToOneNeedsEnrich) return;
 
     const unknownSenders = new Set<string>();
     for (const msg of msgs) {
@@ -2759,7 +2762,8 @@ export default function ChatWindow() {
           const contactName = contact?.alias || contact?.display_name || '';
           const preferredContactName = contactName && contactName !== msg.sender_id ? contactName : '';
           const avatarUrl = toLocalMediaUrl(contact?.avatar_url || groupMember?.avatar || '');
-          const displayName = preferredContactName || groupMember?.displayName || contactName || msg.sender_id;
+          const senderNameFromMsg = msg.sender_name && msg.sender_name !== msg.sender_id && !/^-?\d+$/.test(String(msg.sender_name)) ? msg.sender_name : '';
+          const displayName = preferredContactName || groupMember?.displayName || contactName || senderNameFromMsg || getFriendlyUserName(msg.channel);
 
           const isRecalled = msg.is_recalled === 1 || msg.status === 'recalled' || msg.msg_type === 'recalled';
 

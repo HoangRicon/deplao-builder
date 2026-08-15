@@ -3240,12 +3240,38 @@ class DatabaseService {
                 try { merged = row.seen_uids ? JSON.parse(row.seen_uids) : []; } catch {}
                 merged = Array.from(new Set([...merged, readerId]));
                 this.run(
-                    `UPDATE messages SET is_seen = 1, seen_at = ?, delivered_at = ?, seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
+                    `UPDATE messages SET is_seen = 1, seen_at = ?, delivered_at = COALESCE(delivered_at, ?), seen_uids = ? WHERE msg_id = ? AND owner_zalo_id = ?`,
                     [now, now, JSON.stringify(merged), row.msg_id, ownerZaloId]
                 );
             }
         } catch (error: any) {
             Logger.error(`[DatabaseService] markFBThreadSeen error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Đánh dấu tin của mình đã nhận (Facebook delivery receipt — máy đối phương
+     * nhận được, chưa đọc). Sweep-to-anchor theo watermark: các tin của mình
+     * gửi trước watermark đều được đánh dấu delivered (nếu chưa seen).
+     * @param ownerZaloId tài khoản sở hữu (người gửi)
+     * @param threadId hội thoại
+     * @param watermarkTs timestamp receipt (tin cuối được delivered)
+     */
+    public markFBThreadDelivered(ownerZaloId: string, threadId: string, watermarkTs: number): void {
+        if (!this.initialized || !threadId || !ownerZaloId) return;
+        try {
+            const threadIdRaw = String(threadId).replace(/@.*$/, '');
+            const ts = watermarkTs || Date.now();
+            const now = Date.now();
+            this.run(
+                `UPDATE messages SET delivered_at = ?
+                 WHERE owner_zalo_id = ? AND thread_id = ? AND timestamp <= ?
+                   AND sender_id = ? AND is_sent = 1 AND channel = 'facebook'
+                   AND delivered_at IS NULL AND is_seen = 0`,
+                [now, ownerZaloId, threadIdRaw, ts, ownerZaloId]
+            );
+        } catch (error: any) {
+            Logger.error(`[DatabaseService] markFBThreadDelivered error: ${error.message}`);
         }
     }
 

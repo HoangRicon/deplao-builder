@@ -314,7 +314,15 @@ export async function getUserInfoFacebookHtml(cookie: string, userId: string, ht
  * Dùng HEAD request để follow redirects mà không download image body.
  * KHÔNG BAO GIỜ nhầm avatar vì Facebook tự xác định ảnh đúng.
  */
+// Negative cache: userId -> timestamp 404 gần nhất (tránh spam request + log)
+const cdnFailCache = new Map<string, number>();
+const CDN_FAIL_404_TTL = 30 * 60 * 1000;
+
 async function tryFetchCdnRedirect(cookie: string, userId: string, httpsAgent?: any): Promise<string | null> {
+  const now = Date.now();
+  const lastFail = cdnFailCache.get(userId);
+  if (lastFail && now - lastFail < CDN_FAIL_404_TTL) return null;
+
   // Dùng maxRedirects:0 để bắt redirect, đọc Location header
   // HEAD request → không download image body
   try {
@@ -338,7 +346,12 @@ async function tryFetchCdnRedirect(cookie: string, userId: string, httpsAgent?: 
     if (err.response?.headers?.location) {
       return err.response.headers.location;
     }
-    Logger.debug(`[FacebookSession] tryFetchCdnRedirect failed for ${userId}: ${err.message}`);
+    if (err?.response?.status === 404) {
+      cdnFailCache.set(userId, Date.now());
+      Logger.debug(`[FacebookSession] tryFetchCdnRedirect 404 for ${userId} (cached 30m)`);
+    } else {
+      Logger.debug(`[FacebookSession] tryFetchCdnRedirect failed for ${userId}: ${err.message}`);
+    }
   }
 
   // Fallback: GET request với maxRedirects=5 để axios tự follow
@@ -355,7 +368,12 @@ async function tryFetchCdnRedirect(cookie: string, userId: string, httpsAgent?: 
     const finalUrl = response.request?.res?.responseUrl || (response.request as any)?.responseUrl || '';
     if (finalUrl.includes('fbcdn') || finalUrl.includes('scontent')) return finalUrl;
   } catch (err: any) {
-    Logger.debug(`[FacebookSession] tryFetchCdnRedirect fallback failed for ${userId}: ${err.message}`);
+    if (err?.response?.status === 404) {
+      cdnFailCache.set(userId, Date.now());
+      Logger.debug(`[FacebookSession] tryFetchCdnRedirect fallback 404 for ${userId} (cached 30m)`);
+    } else {
+      Logger.debug(`[FacebookSession] tryFetchCdnRedirect fallback failed for ${userId}: ${err.message}`);
+    }
   }
   return null;
 }

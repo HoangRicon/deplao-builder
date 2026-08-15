@@ -70,6 +70,8 @@ interface MsgLike {
   local_paths?: string;   // JSON string of local file paths
   is_sent?: number;
   is_self?: number;
+  is_seen?: number;
+  delivered_at?: number;
   sender_id?: string;
   owner_zalo_id?: string;
 }
@@ -295,14 +297,18 @@ export function getTelegramPostMeta(msg: MsgLike): {
 
 /**
  * Get status display text.
- * Facebook: always "✓ Đã gửi" (no read receipts)
+ * Facebook: "✓✓ Đã xem" if is_seen, "✓✓ Đã nhận" if delivered_at, else "✓ Đã gửi"
  * Telegram: "✓ Đã xem" if status='read', otherwise "✓ Đã gửi"
  * Zalo: based on is_sent/is_read flags
  */
 export function getStatusDisplay(msg: MsgLike, isSelf: boolean): StatusDisplay {
   if (isFacebook(msg.channel)) {
+    if (msg.is_seen === 1 && isSelf) {
+      return { text: '✓✓ Đã xem', showCheckmark: true };
+    }
     if (msg.is_sent === 1 || isSelf) {
-      return { text: '✓ Đã gửi', showCheckmark: true };
+      const delivered = (msg as any).delivered_at;
+      return { text: delivered ? '✓✓ Đã nhận' : '✓ Đã gửi', showCheckmark: true };
     }
     return { text: '', showCheckmark: false };
   }

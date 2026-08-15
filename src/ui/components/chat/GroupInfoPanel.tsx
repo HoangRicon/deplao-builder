@@ -1186,7 +1186,7 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
               )}
             </button>
             <div className="flex-1 min-w-0">
-              <p className="text-sm text-gray-200 truncate">{m.displayName || m.userId}</p>
+              <p className="text-sm text-gray-200 truncate">{m.displayName || 'Thành viên'}</p>
               {getStatusText(m) && (
                 <p className={`text-[11px] truncate ${getStatusText(m) === 'Đang online' ? 'text-green-400' : 'text-gray-500'}`}>
                   {getStatusText(m)}
@@ -1223,7 +1223,7 @@ function MembersPanel({ groupInfo, groupId, onBack, onRefresh, myAccountId, chan
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl py-1 min-w-[180px]"
           style={{ top: ctxPos?.top ?? 200, left: Math.max(4, ctxPos?.left ?? 200) }}>
           <div className="px-3 py-2 border-b border-gray-700">
-            <p className="text-sm text-white font-medium">{ctxMember.displayName || ctxMember.userId}</p>
+            <p className="text-sm text-white font-medium">{ctxMember.displayName || 'Thành viên'}</p>
           </div>
           <button onClick={() => { onShowProfile?.(ctxMember.userId, (ctxPos?.left ?? 0) + 200, ctxPos?.top ?? 0); setCtxMember(null); }}
             className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white text-left"><UserIcon className="w-4 h-4 inline" /> Xem thông tin

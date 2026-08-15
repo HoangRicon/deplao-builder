@@ -15,7 +15,7 @@ import { Spinner } from '@/components/common/PageLoading';
 import GroupAvatar from '../common/GroupAvatar';
 import { toLocalMediaUrl } from '@/lib/localMedia';
 import { getCapability, channelSupports, type Channel } from '../../../configs/channelConfig';
-import { CHANNEL, isZalo as isZaloCh, isNonZalo, isFacebook, isTelegram as isTelegramCh } from '@/lib/channelHelper';
+import { CHANNEL, isZalo as isZaloCh, isNonZalo, isFacebook, isTelegram as isTelegramCh, getFriendlyUserName } from '@/lib/channelHelper';
 import { fetchContactInfo } from '@/hooks/useZaloEvents';
 import { BellIcon, BellOffIcon, GiftIcon, MapPinIcon, PhoneIcon, PinIcon, UserIcon, UsersIcon } from '@/components/common/icons';
 
@@ -82,8 +82,8 @@ function UserConversationInfo() {
   const activeAccount = getActiveAccount();
   const effectiveChannel = (contact?.channel || activeAccount?.channel || CHANNEL.ZALO) as Channel;
   const effectiveChannelCap = getCapability(effectiveChannel);
-  // Hiển thị: ưu tiên alias → display_name
-  const displayName = contact?.alias || contact?.display_name || activeThreadId || '';
+  // Hiển thị: ưu tiên alias → display_name → tên thân thiện theo channel (tránh hiển thị UID)
+  const displayName = contact?.alias || contact?.display_name || getFriendlyUserName(effectiveChannel) || '';
   const avatarUrl = contact?.avatar_url || '';
 
   // Check friends table mỗi khi thread thay đổi

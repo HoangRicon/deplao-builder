@@ -77,6 +77,8 @@ export interface MessageItem {
   thread_id: string;
   thread_type: number;
   sender_id: string;
+  /** Tên người gửi kèm theo tin nhắn (nếu có) — dùng làm fallback khi contact chưa có tên */
+  sender_name?: string;
   content: string;
   msg_type: string;
   timestamp: number;

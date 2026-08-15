@@ -49,6 +49,16 @@ export function isNonZalo(ch?: string): boolean {
   return (ch || CHANNEL.ZALO) !== CHANNEL.ZALO;
 }
 
+/**
+ * Tên hiển thị thân thiện khi contact/member chưa có tên.
+ * Tránh hiển thị UID/contact_id/sender_id dài trong UI.
+ */
+export function getFriendlyUserName(ch?: string): string {
+  if (isFacebook(ch)) return 'Người dùng Facebook';
+  if (isTelegram(ch)) return 'Người dùng Telegram';
+  return 'Người dùng';
+}
+
 // ─── Resolve channel ─────────────────────────────────────────────────────────
 
 /**

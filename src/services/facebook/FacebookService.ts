@@ -871,18 +871,25 @@ export class FacebookService {
     }
   }
 
-  /** Handle delivery receipt (seen) from MQTT delta */
+  /** Handle delivery receipt (delivered) from MQTT delta */
   private handleDeliveryReceipt(data: any): void {
     if (!data?.threadId || !data?.actorFbId) return;
 
     // Skip self-receipts (when our own messages are delivered)
     if (data.actorFbId === this.getFacebookId()) return;
 
-    EventBroadcaster.emit('fb:onSeen', {
-      fbAccountId: this.getFacebookId(),
-      threadId: data.threadId,
-      userId: data.actorFbId,
-      timestamp: data.timestampMs || Date.now(),
+    const fbId = this.getFacebookId();
+    const watermark = data.timestampMs || Date.now();
+    try {
+      DatabaseService.getInstance().markFBThreadDelivered(fbId, String(data.threadId), watermark);
+    } catch (err: any) {
+      Logger.warn(`[FacebookService:${this.accountId}] markFBThreadDelivered error: ${err.message}`);
+    }
+
+    EventBroadcaster.emit('fb:onDelivered', {
+      fbAccountId: fbId,
+      threadId: String(data.threadId),
+      timestamp: watermark,
     });
   }
 
@@ -1258,10 +1265,39 @@ export class FacebookService {
         break;
       }
 
-      case 'e2eeReceipt':
-        // Delivery receipt for E2EE messages - informational only
-        // The bridge handles delivery tracking internally
+      case 'e2eeReceipt': {
+        // Delivery/read receipt for E2EE messages
+        // data: { type, chat, sender, messageIds } (bridge events.go:788)
+        const stripJid = (id: string) => id.replace(/@.*$/, '');
+        const threadId = data?.chat ? stripJid(String(data.chat)) : '';
+        const sender = data?.sender ? stripJid(String(data.sender)) : '';
+        const fbId = this.getFacebookId();
+        if (!threadId || !sender || sender === fbId) break;
+        const type = String(data?.type || '').toLowerCase();
+        const ts = Date.now();
+        try {
+          const db = DatabaseService.getInstance();
+          if (type === 'read') {
+            db.markFBThreadSeen(fbId, threadId, ts, sender);
+            EventBroadcaster.emit('fb:onReadReceipt', {
+              fbAccountId: fbId,
+              threadId,
+              readerId: sender,
+              timestamp: ts,
+            });
+          } else if (type === 'delivered') {
+            db.markFBThreadDelivered(fbId, threadId, ts);
+            EventBroadcaster.emit('fb:onDelivered', {
+              fbAccountId: fbId,
+              threadId,
+              timestamp: ts,
+            });
+          }
+        } catch (err: any) {
+          Logger.warn(`[FacebookService:${this.accountId}] e2eeReceipt error: ${err.message}`);
+        }
         break;
+      }
 
       case 'messageUnsend': {
         // E2EE 1:1 message unsend from bridge

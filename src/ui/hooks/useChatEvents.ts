@@ -488,6 +488,18 @@ export function useChatEvents(): void {
     });
     if (unsubSeen) unsubscribers.push(unsubSeen);
 
+    // ─── fb:onDelivered → chatStore delivered status (MQTT delivery receipt) ──
+    const unsubDelivered = ipc.on?.('fb:onDelivered', (data: {
+      fbAccountId: string;
+      threadId: string;
+      timestamp: number;
+    }) => {
+      if (!data?.fbAccountId || !data?.threadId) return;
+      const tid = String(data.threadId).replace(/@.*$/, '');
+      useChatStore.getState().markMessageDelivered(data.fbAccountId, tid, '', [], false);
+    });
+    if (unsubDelivered) unsubscribers.push(unsubDelivered);
+
     // ─── fb:onReadReceipt → chatStore seen status (Go bridge readReceipt) ──
     const unsubReadReceipt = ipc.on?.('fb:onReadReceipt', (data: {
       fbAccountId: string;

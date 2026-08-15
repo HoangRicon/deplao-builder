@@ -14,7 +14,7 @@ import { extractUserProfile } from '../../../utils/profileUtils';
 import { fetchAllAliases } from '@/lib/zaloAliasUtils';
 import { Spinner } from '@/components/common/PageLoading';
 import { BotIcon } from '@/components/common/icons';
-import { CHANNEL, isZalo, isFacebook, isTelegram, isTelegramUser } from '@/lib/channelHelper';
+import { CHANNEL, isZalo, isFacebook, isTelegram, isTelegramUser, getFriendlyUserName } from '@/lib/channelHelper';
 
 interface HeaderLocalLabel {
   id: number;
@@ -595,8 +595,8 @@ export default function ChatHeader() {
 
   const contactList = contacts[activeAccountId] || [];
   const contact = contactList.find((c) => c.contact_id === activeThreadId);
-  // Ưu tiên alias → display_name
-  const displayName = contact?.alias || contact?.display_name || activeThreadId;
+  // Ưu tiên alias → display_name → tên thân thiện theo channel (tránh hiển thị UID)
+  const displayName = contact?.alias || contact?.display_name || getFriendlyUserName(contact?.channel || getActiveAccount()?.channel);
   const avatarUrl = toLocalMediaUrl(contact?.avatar_url || '');
   const isGroup = activeThreadType === 1 || contact?.contact_type === 'group';
   const activeAccount = getActiveAccount();
